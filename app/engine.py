@@ -14,7 +14,7 @@ from typing import Any, Optional
 import polars as pl
 
 from . import config
-from .semantic import Model, ModelError, Source, TIME_GRAINS
+from .semantic import Model, ModelError, Source, TIME_GRAINS, compile_expr
 
 FILTER_OPS = {"eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in", "contains"}
 
@@ -210,8 +210,19 @@ def run_query(model: Model, query: dict) -> dict:
     measure_names = query.get("measures", [])
     if not measure_names:
         raise QueryError("query needs at least one measure")
+    # inline measures: ad-hoc expressions scoped to this query (the measure
+    # lab / visual-scoped measures); they shadow model measures by name
+    inline = {}
+    for m in query.get("inline_measures") or []:
+        if not m.get("name") or not m.get("expr"):
+            raise QueryError("inline measures need a name and an expr")
+        inline[m["name"]] = m
     try:
-        measure_exprs = [model.measure(m).expr() for m in measure_names]
+        measure_exprs = [
+            compile_expr(inline[m]["expr"], f"measure '{m}'").alias(m) if m in inline
+            else model.measure(m).expr()
+            for m in measure_names
+        ]
     except ModelError as exc:
         raise QueryError(str(exc)) from exc
 
@@ -243,14 +254,17 @@ def run_query(model: Model, query: dict) -> dict:
     df = lf.limit(limit).collect()
     elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
 
+    def _measure_meta(m: str) -> dict:
+        if m in inline:
+            return {"name": m, "label": inline[m].get("label") or m, "kind": "measure",
+                    "format": inline[m].get("format") or "number", "inline": True}
+        meas = model.measure(m)
+        return {"name": m, "label": meas.label, "kind": "measure", "format": meas.format}
+
     columns = [
         {"name": d.name, "label": d.label, "kind": "dimension", "type": d.type}
         for d, _ in dim_specs
-    ] + [
-        {"name": m, "label": model.measure(m).label, "kind": "measure",
-         "format": model.measure(m).format}
-        for m in measure_names
-    ]
+    ] + [_measure_meta(m) for m in measure_names]
     # write_json serializes dates/decimals to JSON-safe values for us
     rows = json.loads(df.write_json())
     return {"columns": columns, "rows": rows, "row_count": df.height, "elapsed_ms": elapsed_ms}

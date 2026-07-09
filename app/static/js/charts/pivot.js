@@ -54,13 +54,17 @@ export function pivotResult(ctx) {
     return { xs, xCol, seriesCol, series, measure: mea, extraMeasures: meaCols.length - 1 };
   }
 
-  // series = the selected measures; slot = measure's position in the model (stable)
-  series = meaCols.map((mea) => ({
-    key: mea.name,
-    label: mea.label,
-    format: mea.format,
-    color: PALETTE[Math.max(0, ctx.model.measures.findIndex((m) => m.name === mea.name)) % PALETTE.length],
-    values: res.rows.map((r) => r[mea.name]),
-  }));
+  // series = the selected measures; slot = measure's position in the model
+  // (stable); inline/visual-scoped measures take slots after the model's
+  series = meaCols.map((mea, idx) => {
+    const mi = ctx.model.measures.findIndex((m) => m.name === mea.name);
+    return {
+      key: mea.name,
+      label: mea.label,
+      format: mea.format,
+      color: PALETTE[(mi >= 0 ? mi : ctx.model.measures.length + idx) % PALETTE.length],
+      values: res.rows.map((r) => r[mea.name]),
+    };
+  });
   return { xs, xCol, seriesCol: null, series, measure: meaCols[0], extraMeasures: 0 };
 }

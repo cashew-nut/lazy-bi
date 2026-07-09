@@ -179,6 +179,21 @@ scan — including joined columns — with click-to-insert. Saving writes the YA
 back to `models/`, hot-reloads the semantic layer, and re-syncs the query
 builder.
 
+### The measure lab
+
+*+ new measure* under the builder's measure list opens an inline editor on the
+visual itself. Completion triggers as you type — `pl.` offers expression
+starters, `pl.col("` offers the source's columns (post-join, with dtypes), `.`
+offers aggregation methods — and every keystroke re-runs the current query with
+the draft measure so it renders live in the chart (with the value shown
+directly when there are no dimensions). Two save paths:
+
+- **SAVE TO VISUAL** — the measure travels inside the visual's spec
+  (`inline_measures` on the query), works on dashboards and in focus mode, and
+  shows as a dashed *visual* chip with edit/remove.
+- **SAVE TO MODEL** — appends the measure to the model's yaml
+  (comment-preserving) and hot-reloads, promoting it to a shared model measure.
+
 > ⚠️ Measures are `eval`'d with `pl` in scope. Model YAML is trusted
 > configuration, the same trust level as the application code. Don't load
 > model files from untrusted users.

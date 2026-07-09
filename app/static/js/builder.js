@@ -9,7 +9,9 @@ import { $, api, el } from "./lib.js";
 import { hooks, modelByName, showView, state, valueCache } from "./state.js";
 
 export const dimByName = (name) => state.model.dimensions.find((d) => d.name === name);
-export const measureByName = (name) => state.model.measures.find((m) => m.name === name);
+export const measureByName = (name) =>
+  state.model.measures.find((m) => m.name === name)
+  || state.inlineMeasures.find((m) => m.name === name);
 
 function builderCtx() {
   return {
@@ -28,6 +30,7 @@ export function buildQuery() {
     model: state.model.name,
     dimensions: state.dims.map((d) => (d.grain ? { name: d.name, grain: d.grain } : d.name)),
     measures: state.measures,
+    inline_measures: state.inlineMeasures,
     filters: state.filters.filter((f) => f.field && filterReady(f)).map(toApiFilter),
     sort: state.sort.by ? { by: state.sort.by, desc: state.sort.desc } : null,
     limit: state.limit,
@@ -121,17 +124,38 @@ export function renderDims() {
 export function renderMeasures() {
   const box = $("#measure-list");
   box.innerHTML = "";
+  const toggle = (name) => {
+    if (state.measures.includes(name)) state.measures = state.measures.filter((m) => m !== name);
+    else state.measures.push(name);
+    renderMeasures(); syncSortOptions(); scheduleRun();
+  };
   for (const mea of state.model.measures) {
     const active = state.measures.includes(mea.name);
     const chip = el("div", { class: "chip measure" + (active ? " on" : ""), title: mea.expr },
       el("span", { class: "tick" }, active ? "◆" : "◇"),
       el("span", { class: "lbl" }, mea.label),
       el("span", { class: "hint" }, mea.format === "number" ? "" : mea.format));
-    chip.addEventListener("click", () => {
-      if (active) state.measures = state.measures.filter((m) => m !== mea.name);
-      else state.measures.push(mea.name);
+    chip.addEventListener("click", () => toggle(mea.name));
+    box.append(chip);
+  }
+  // visual-scoped measures from the lab — saved with the visual, not the model
+  for (const mea of state.inlineMeasures) {
+    const active = state.measures.includes(mea.name);
+    const edit = el("button", { class: "mini", title: "edit in the measure lab" }, "✎");
+    edit.addEventListener("click", (e) => { e.stopPropagation(); hooks.openLab(mea); });
+    const rm = el("button", { class: "mini rm", title: "remove from this visual" }, "✕");
+    rm.addEventListener("click", (e) => {
+      e.stopPropagation();
+      state.inlineMeasures = state.inlineMeasures.filter((m) => m.name !== mea.name);
+      state.measures = state.measures.filter((m) => m !== mea.name);
       renderMeasures(); syncSortOptions(); scheduleRun();
     });
+    const chip = el("div", { class: "chip measure inline" + (active ? " on" : ""), title: mea.expr },
+      el("span", { class: "tick" }, active ? "◆" : "◇"),
+      el("span", { class: "lbl" }, mea.label || mea.name),
+      el("span", { class: "hint" }, "visual"),
+      edit, rm);
+    chip.addEventListener("click", () => toggle(mea.name));
     box.append(chip);
   }
 }
@@ -249,6 +273,7 @@ export function loadVisual(v) {
   const q = v.spec.query || {};
   state.dims = (q.dimensions || []).map((d) => (typeof d === "string" ? { name: d } : { name: d.name, grain: d.grain }));
   state.measures = q.measures || [];
+  state.inlineMeasures = q.inline_measures || [];
   state.filters = (q.filters || []).map((f) => ({ field: f.field, op: f.op, value: f.value ?? "", values: f.values || [] }));
   state.sort = q.sort ? { by: q.sort.by, desc: !!q.sort.desc } : { by: "", desc: true };
   state.limit = q.limit || 1000;
@@ -278,6 +303,8 @@ export function selectModel(name) {
   state.model = modelByName(name);
   state.dims = [];
   state.measures = [];
+  state.inlineMeasures = [];
+  if (hooks.closeLab) hooks.closeLab(false);
   state.filters = [];
   state.sort = { by: "", desc: true };
   state.visualId = null;
