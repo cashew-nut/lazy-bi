@@ -1,0 +1,76 @@
+# Semantic model: sales order lines
+# `source.path` is any glob polars can scan lazily from the object store.
+# Measures are polars expressions evaluated with `pl` in scope; each must
+# reduce to a single value per group (an aggregation).
+name: sales
+label: Sales Orders
+description: Order lines from the street markets, 2024 - mid 2026.
+source:
+  format: parquet
+  path: s3://cash-intel/sales/*.parquet
+
+# lookup tables joined lazily into the base scan; their columns are then
+# available to dimensions and measures like any base column
+joins:
+  - name: products
+    source:
+      format: csv
+      path: s3://cash-intel/ref/products.csv
+    on: product        # shorthand for left_on/right_on; how defaults to left
+
+dimensions:
+  - name: order_date
+    column: order_date
+    label: Order Date
+    type: time
+  - name: region
+    label: Region
+  - name: channel
+    label: Sales Channel
+  - name: segment
+    label: Customer Segment
+  - name: category
+    label: Category
+  - name: product
+    label: Product
+  - name: supplier
+    label: Supplier
+    description: From the products.csv join.
+  - name: tier
+    label: Product Tier
+    description: From the products.csv join.
+
+measures:
+  - name: revenue
+    label: Revenue
+    format: currency
+    expr: (pl.col("unit_price") * pl.col("quantity")).sum()
+  - name: cost
+    label: Cost
+    format: currency
+    expr: (pl.col("unit_cost") * pl.col("quantity")).sum()
+  - name: profit
+    label: Profit
+    format: currency
+    expr: ((pl.col("unit_price") - pl.col("unit_cost")) * pl.col("quantity")).sum()
+  - name: margin_pct
+    label: Margin %
+    format: percent
+    description: Profit as a share of revenue.
+    expr: >
+      ((pl.col("unit_price") - pl.col("unit_cost")) * pl.col("quantity")).sum()
+      / (pl.col("unit_price") * pl.col("quantity")).sum()
+  - name: orders
+    label: Orders
+    expr: pl.col("order_id").n_unique()
+  - name: units
+    label: Units Sold
+    expr: pl.col("quantity").sum()
+  - name: aov
+    label: Avg Order Value
+    format: currency
+    expr: (pl.col("unit_price") * pl.col("quantity")).sum() / pl.col("order_id").n_unique()
+  - name: avg_unit_price
+    label: Avg Unit Price
+    format: currency
+    expr: pl.col("unit_price").mean()

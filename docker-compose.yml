@@ -1,0 +1,52 @@
+# Two ways to run:
+#   docker compose up                      -> demo mode (embedded S3 emulator) on :8080
+#   docker compose --profile minio up      -> also starts MinIO + a second app
+#                                             on :8081 backed by it
+services:
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - app-data:/data              # sqlite: saved visuals, dashboards, publications
+      - ./models:/srv/models        # edit semantic models from the host, live
+      - ./data_cache:/srv/data_cache:ro  # optional big datasets (app/load_taxi.py)
+
+  minio:
+    profiles: ["minio"]
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: cashintel
+      MINIO_ROOT_PASSWORD: cashintel-secret
+    ports:
+      - "9000:9000"
+      - "9001:9001"                 # web console
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app-minio:
+    profiles: ["minio"]
+    build: .
+    ports:
+      - "8081:8080"
+    environment:
+      CI_S3_ENDPOINT: http://minio:9000   # disables the embedded emulator
+      AWS_ACCESS_KEY_ID: cashintel
+      AWS_SECRET_ACCESS_KEY: cashintel-secret
+    volumes:
+      - app-data:/data
+      - ./models:/srv/models
+      - ./data_cache:/srv/data_cache:ro
+    depends_on:
+      minio:
+        condition: service_healthy
+
+volumes:
+  app-data:
+  minio-data:

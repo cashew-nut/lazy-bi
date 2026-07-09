@@ -1,0 +1,274 @@
+# CASH_INTELLIGENCE
+
+Lightweight BI over data files in S3. Polars scans the files **lazily** — only
+the columns and row-groups a query needs leave the bucket — aggregates them, and
+returns results to a cyberpunk query-builder UI. A YAML **semantic layer**
+defines the sources (**parquet / csv / Delta Lake**), **joins**, dimensions and
+measures the builder works with; saved visuals and **dashboards** persist in
+SQLite.
+
+```
+browser (query builder + dashboards + SVG charts)
+   │  POST /api/query {dimensions, measures, filters, sort, limit}
+   ▼
+FastAPI ──► semantic layer (models/*.yaml) ──► polars LazyFrame scan (+ lazy joins)
+   │                                              │ predicate/projection pushdown
+   ▼                                              ▼
+SQLite (visuals + dashboards)             S3 (moto emulator in demo mode)
+```
+
+## Run the demo
+
+**Docker (recommended):**
+
+```bash
+docker compose up              # demo mode on http://127.0.0.1:8080
+docker compose --profile minio up   # + MinIO-backed instance on :8081
+```
+
+The default service runs the embedded S3 emulator in-process and seeds it on
+start. SQLite state lives in the `app-data` volume; `./models` is mounted so
+semantic models are editable from the host (or the in-app editor); mount
+`./data_cache` after `python -m app.load_taxi` for the big-data model. The
+image runs a single uvicorn worker by design — the emulator is in-process and
+sqlite expects one writer. Scale out only against an external S3 endpoint.
+
+**Local (no Docker):**
+
+```bash
+python3 -m venv .venv          # Python 3.10+
+.venv/bin/pip install -r requirements.txt
+./run.sh                       # or: .venv/bin/uvicorn app.main:app --port 8080
+```
+
+**Tests:**
+
+```bash
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/python -m pytest tests/    # ~6s: semantic, engine, store, API suites
+```
+
+Open http://127.0.0.1:8080. On startup the app launches an **embedded moto S3
+server** on `127.0.0.1:9600`, creates the `cash-intel` bucket, and seeds it with
+demo data — only if the bucket is empty. One dataset per source format:
+
+| S3 key | format | model |
+|---|---|---|
+| `sales/<year>.parquet` | parquet glob | `sales` (60k order lines) |
+| `ref/products.csv` | csv | joined into `sales` (supplier, tier) |
+| `logistics/shipments` | Delta Lake | `logistics` (20k shipments) |
+| `marketing/spend.parquet` | parquet | `marketing` |
+
+To point at a real bucket or an external emulator (MinIO, LocalStack), set
+`CI_S3_ENDPOINT` (this also disables the embedded moto server) plus the usual
+`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, and `CI_BUCKET`.
+
+## Project layout
+
+```
+app/
+  config.py            env-driven settings (endpoints, paths, bucket)
+  main.py              app factory + lifecycle (emulator, seed, registry)
+  registry.py          runtime state: loaded models + store
+  semantic.py          semantic layer: yaml -> Model/Dimension/Measure/Join/Spine/Geo
+  engine.py            query engine: semantic query -> polars lazy scan
+  store.py             sqlite persistence: visuals, dashboards, publications
+  emulator.py, s3.py, seed.py, load_taxi.py
+  api/                 one router per resource: models, query, visuals,
+                       dashboards (+publish/portal), explorer (+health)
+  static/js/           ES modules: lib, state, filters, builder, dashboard,
+                       portal, explorer, editor, main
+  static/js/charts/    one renderer per chart + shared frame/pivot/dispatch
+models/*.yaml          semantic models (the editable contract)
+tests/                 pytest: semantic, engine, store, API
+Dockerfile, docker-compose.yml
+```
+
+## The semantic model
+
+One YAML file per model in `models/`. The query builder only exposes what the
+model declares — the UI never touches raw columns directly.
+
+```yaml
+name: sales
+label: Sales Orders
+source:
+  format: parquet                      # parquet | csv | delta
+  path: s3://cash-intel/sales/*.parquet  # any glob polars can scan (delta: table root)
+
+joins:                    # lookup tables joined lazily into the base scan;
+  - name: products        # joined columns are then usable in dimensions/measures
+    source: { format: csv, path: s3://cash-intel/ref/products.csv }
+    on: product           # or left_on/right_on; how: left (default) | inner
+
+dimensions:
+  - name: order_date
+    type: time            # gets day/week/month/quarter/year grains in the UI
+  - name: region          # column defaults to the name; label auto-titled
+  - name: category
+    column: cat_code      # column can differ from the semantic name
+    label: Category
+
+measures:                 # polars expression syntax, `pl` in scope
+  - name: revenue
+    label: Revenue
+    format: currency      # number | currency | percent (display hint)
+    expr: (pl.col("unit_price") * pl.col("quantity")).sum()
+  - name: margin_pct
+    format: percent
+    expr: >
+      ((pl.col("unit_price") - pl.col("unit_cost")) * pl.col("quantity")).sum()
+      / (pl.col("unit_price") * pl.col("quantity")).sum()
+```
+
+A measure is any polars expression that reduces to one value per group —
+ratios of aggregates, `n_unique`, conditional sums like
+`pl.col("x").filter(pl.col("flag")).sum()`, all fine. Expressions are validated
+at load time; edit a YAML and hit `POST /api/models/reload` (or restart) to
+pick it up.
+
+### Time-spine (point-in-time) measures
+
+A plain group-by puts each row in one time bucket. For "active customers"-style
+questions — the row has a start and an end date and should count in **every**
+bucket in between — mark a time dimension as a **spine**:
+
+```yaml
+dimensions:
+  - name: active_at
+    type: time
+    spine:
+      start: start_date
+      end: end_date        # null end = still active
+measures:
+  - name: active_customers
+    expr: pl.col("customer_id").n_unique()
+```
+
+Grouping by `active_at` generates a timeline at the requested grain and
+interval-joins it against `[start_date, end_date]` (polars `join_where`), so
+each row counts in every bucket it was active for — semantics are "active as of
+the bucket start". Range filters on the spine (`>=`, `<=`, `=`) bound the
+timeline window; `=` gives a single-date snapshot even with no grouping.
+Buckets with zero active rows are omitted. One spine dimension per query.
+See `models/subscriptions.yaml` for a working example (active customers, MRR,
+ARPU over a 30-month timeline).
+
+### Performance (13M-row fact table)
+
+`python -m app.load_taxi` downloads 4 months of the public NYC TLC yellow-taxi
+data (~13.1M rows, 209MB parquet) into `data_cache/`; on restart it is seeded
+into the emulator and queryable as the `taxi` model. Measured through the full
+stack (HTTP → semantic layer → polars lazy scan over emulated S3, x86 MacBook):
+
+| query | rows out | cold | warm |
+|---|---|---|---|
+| grand totals (trips, revenue, tip %) | 1 | 679ms | 471ms |
+| monthly trend (trips, revenue) | 9 | 2.5s | 2.1s |
+| avg fare by payment type | 6 | 591ms | 464ms |
+| daily trend, filtered to 2 weeks | 17 | 932ms | 933ms |
+
+Predicate/projection pushdown does the heavy lifting: only referenced columns'
+row groups leave the bucket. Against real S3, network latency dominates —
+expect these numbers to grow with round-trips, not data size.
+
+**Or edit in the app**: the *edit yaml* / *+ new model* buttons in the sidebar
+open a model editor with live validation (parse + measure-expression check on
+every keystroke, debounced) and a source-column panel that introspects the
+scan — including joined columns — with click-to-insert. Saving writes the YAML
+back to `models/`, hot-reloads the semantic layer, and re-syncs the query
+builder.
+
+> ⚠️ Measures are `eval`'d with `pl` in scope. Model YAML is trusted
+> configuration, the same trust level as the application code. Don't load
+> model files from untrusted users.
+
+## API
+
+| Route | What it does |
+|---|---|
+| `GET /api/models` | models with their dimensions + measures |
+| `POST /api/models/reload` | re-read `models/*.yaml` |
+| `GET /api/models/{m}/dimensions/{d}/values` | distinct values (filter pickers) |
+| `GET/PUT /api/models/{m}/yaml` | read / save a model's YAML (save validates + hot-reloads) |
+| `POST /api/models/validate` | parse-check YAML + introspect source columns |
+| `POST /api/models`, `DELETE /api/models/{m}` | create a model file / delete one |
+| `POST /api/query` | run a semantic query, returns columns + rows + timing |
+| `GET/POST /api/visuals`, `PUT/DELETE /api/visuals/{id}` | saved visuals (SQLite: `cash_intel.db`) |
+| `GET/POST /api/dashboards`, `GET/PUT/DELETE /api/dashboards/{id}` | dashboards — ordered tiles `{visual_id, w:1\|2}`; GET by id resolves tile visuals |
+
+Query shape:
+
+```json
+{
+  "model": "sales",
+  "dimensions": [{"name": "order_date", "grain": "1mo"}, "region"],
+  "measures": ["revenue", "margin_pct"],
+  "filters": [{"field": "segment", "op": "in", "values": ["corpo", "solo"]}],
+  "sort": {"by": "revenue", "desc": true},
+  "limit": 1000
+}
+```
+
+Filter ops: `eq ne gt gte lt lte in not_in contains`.
+
+## Studio, Portal, Data explorer
+
+The header nav splits the app into three surfaces:
+
+- **STUDIO** — the developer view: query builder, model editor, dashboard
+  editing. Everything below in "Frontend notes" lives here.
+- **PORTAL** — the consumption view. From a dashboard's toolbar in the studio,
+  **PUBLISH** puts it in the portal under a slash-separated folder path
+  (`ops/street` nests folders automatically; republish to move it, ✕ next to
+  the live badge to unpublish). Portal users navigate the folder tree and open
+  dashboards read-only: they can switch saved views, override the grain,
+  cross-filter, and expand tiles — but nothing they do edits or persists
+  anything (view switches in the portal don't even save the selection).
+- **DATA** — the data explorer: every object in the bucket with size and
+  modified date, matched against each model's source and join globs (Delta
+  table internals map to their model too). Model cards show per-model file
+  counts and bytes; clicking a model or chip jumps to it in the builder. Files
+  no model reads are flagged as unmapped.
+
+## Frontend notes
+
+Charts are hand-rolled SVG (no chart library): bar / line / **scatter** /
+**sankey** / **ribbon** / **geo bubble map** / stat tiles / table. AUTO picks
+from the query shape; the exotic types are explicit choices in DISPLAY:
+
+- **scatter** — ≥1 dimension + 2 measures (x, y); a second dimension colors the
+  points, with a distinct marker shape per series (color alone fails all-pairs
+  colorblind checks, shapes are the secondary encoding).
+- **sankey** — ≥2 dimensions as flow stages, first measure = link width.
+- **ribbon** — time dimension + categories; bands re-rank at every x, so lead
+  changes read as crossings.
+- **geo** — needs a map-enabled dimension: give it `geo: {lat, lon}` in the
+  model yaml (see `models/marketing.yaml`) and the engine carries mean
+  coordinates alongside the measures. Bubbles size by the first measure over a
+  vendored world outline (`static/world.geo.json`, no external tiles).
+
+**Dashboard interactions** (all ephemeral — never saved, a refresh resets them):
+
+- **cross-filtering** — click a categorical mark (bar, scatter point, sankey
+  node, ribbon band, map bubble) and every other tile whose model has that
+  dimension filters to the clicked value; the source tile glows pink and a chip
+  in the view bar shows the active cross-filter. Click the same mark (or the
+  chip) to clear.
+- **focus mode** — ⤢ on a tile expands it full-screen with its own ad-hoc
+  filter bar; nothing there touches the saved visual or dashboard.
+- **grain override** — the GRAIN select re-buckets every tile's time dimensions
+  (day → year) regardless of each visual's saved grain.
+
+**Dashboards**
+are grids of saved visuals: create one in the sidebar, `+ ADD` saved visuals as
+tiles, toggle each tile between half and full width — layout auto-saves.
+**Views** are named filter sets on a dashboard: filters in the view bar are
+pushed down to every tile whose model has that dimension (matched by name, so
+one `region` filter can drive tiles from different models; a `⧩` badge marks
+affected tiles). Filter edits auto-save into the active view; `+ VIEW` snapshots
+the current filters under a new name and the dropdown switches between them. The categorical
+palette is validated for the dark surface (lightness band, chroma floor,
+colorblind-safe adjacent separation, ≥3:1 contrast) — open `/?validate` and
+check the browser console to re-run the checks. Series colors follow entities,
+not ranks; more than 8 series folds the tail into "Other".

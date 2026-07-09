@@ -1,0 +1,33 @@
+# Semantic model: monthly marketing spend
+name: marketing
+label: Marketing Spend
+description: Monthly ad spend and impressions by region and channel.
+source:
+  format: parquet
+  path: s3://cash-intel/marketing/*.parquet
+
+dimensions:
+  - name: month
+    label: Month
+    type: time
+  - name: region
+    label: Region
+    geo:              # coordinates for map visuals
+      lat: region_lat
+      lon: region_lon
+  - name: channel
+    label: Ad Channel
+
+measures:
+  - name: spend
+    label: Spend
+    format: currency
+    expr: pl.col("spend").sum()
+  - name: impressions
+    label: Impressions
+    expr: pl.col("impressions").sum()
+  - name: cpm
+    label: Cost per Mille
+    format: currency
+    description: Spend per thousand impressions.
+    expr: pl.col("spend").sum() / (pl.col("impressions").sum() / 1000)

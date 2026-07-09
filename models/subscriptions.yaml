@@ -1,0 +1,48 @@
+# Semantic model: subscriptions — demonstrates SPINE (point-in-time) measures.
+#
+# `active_at` is not a real column: it is a generated timeline. Grouping by it
+# interval-joins each timeline bucket against [start_date, end_date], so a
+# subscription counts in every bucket it was active for ("active as of the
+# bucket start"; null end_date = still active). Filters on active_at (>=, <=, =)
+# bound the timeline window.
+name: subscriptions
+label: Subscriptions
+description: Customer subscription intervals — point-in-time actives via a time spine.
+source:
+  format: parquet
+  path: s3://cash-intel/subscriptions/*.parquet
+
+dimensions:
+  - name: active_at
+    label: Active At
+    type: time
+    spine:
+      start: start_date
+      end: end_date
+  - name: start_month
+    column: start_date
+    label: Signup Date
+    type: time
+  - name: plan
+    label: Plan
+  - name: region
+    label: Region
+
+measures:
+  - name: active_customers
+    label: Active Customers
+    description: Distinct customers active at each timeline point.
+    expr: pl.col("customer_id").n_unique()
+  - name: mrr
+    label: MRR
+    format: currency
+    description: Monthly recurring revenue of active subscriptions.
+    expr: pl.col("monthly_fee").sum()
+  - name: arpu
+    label: ARPU
+    format: currency
+    expr: pl.col("monthly_fee").sum() / pl.col("customer_id").n_unique()
+  - name: signups
+    label: Signups
+    description: Use with Signup Date (not the spine) for cohort counts.
+    expr: pl.len()

@@ -1,0 +1,32 @@
+# Semantic model: courier shipments — reads a Delta Lake table
+name: logistics
+label: Logistics
+description: Courier shipments out of the warehouses, Delta Lake source.
+source:
+  format: delta
+  path: s3://cash-intel/logistics/shipments
+
+dimensions:
+  - name: ship_date
+    label: Ship Date
+    type: time
+  - name: courier
+    label: Courier
+  - name: region
+    label: Region
+
+measures:
+  - name: shipments
+    label: Shipments
+    expr: pl.len()
+  - name: cost
+    label: Shipping Cost
+    format: currency
+    expr: pl.col("cost").sum()
+  - name: avg_delivery_hours
+    label: Avg Delivery Hours
+    expr: pl.col("delivery_hours").mean()
+  - name: cost_per_package
+    label: Cost per Package
+    format: currency
+    expr: pl.col("cost").sum() / pl.col("packages").sum()
