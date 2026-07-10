@@ -431,6 +431,52 @@ body.portal-dash #dash-name { pointer-events: none; }
 .model-chip.join { border-color: rgba(255, 46, 210, 0.4); color: var(--pink); }
 .unmapped { color: var(--ink-3); font-size: 10px; font-style: italic; }
 
+/* ── measure lab ────────────────────────────────────── */
+#measure-lab {
+  border-bottom: 1px solid var(--pink);
+  background: rgba(255, 46, 210, 0.03);
+  padding: 10px 16px;
+}
+.lab-row { display: flex; gap: 8px; align-items: center; }
+#lab-name { width: 180px; }
+#lab-label { width: 180px; }
+#lab-format { width: 110px; }
+#lab-status { flex: 1; font-size: 11px; color: var(--ink-2); letter-spacing: 0.5px; }
+#lab-status.err { color: var(--bad); }
+#lab-status .ok { color: #2bd97c; text-shadow: 0 0 6px rgba(43, 217, 124, 0.4); }
+.lab-expr-wrap { position: relative; margin-top: 8px; }
+#lab-expr {
+  width: 100%; resize: vertical; min-height: 44px;
+  background: var(--bg); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 3px;
+  font-family: var(--mono); font-size: 12.5px; line-height: 1.5;
+  padding: 8px 10px; outline: none;
+}
+#lab-expr:focus { border-color: var(--pink); box-shadow: 0 0 8px rgba(255, 46, 210, 0.25); }
+#lab-suggest {
+  position: absolute; left: 8px; top: 100%; z-index: 50;
+  min-width: 320px; max-width: 480px;
+  background: #0c1524; border: 1px solid var(--pink); border-radius: 3px;
+  box-shadow: 0 6px 20px rgba(255, 46, 210, 0.2);
+  font-size: 12px;
+}
+#lab-suggest .sug {
+  display: flex; justify-content: space-between; gap: 18px;
+  padding: 5px 10px; cursor: pointer; color: var(--ink);
+}
+#lab-suggest .sug .hint { color: var(--ink-3); font-size: 10px; }
+#lab-suggest .sug.sel, #lab-suggest .sug:hover { background: rgba(255, 46, 210, 0.14); }
+.lab-actions { margin-top: 8px; }
+.lab-hint { flex: 1; color: var(--ink-3); font-size: 10px; letter-spacing: 0.5px; }
+.chip.inline { border-style: dashed; }
+.chip.inline.on { border-color: var(--pink); }
+.chip button.mini {
+  background: none; border: none; color: var(--ink-3); cursor: pointer;
+  font-family: var(--mono); font-size: 11px; padding: 0 2px; flex: none;
+}
+.chip button.mini:hover { color: var(--neon); }
+.chip button.mini.rm:hover { color: var(--bad); }
+
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 5px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--ink-3); }

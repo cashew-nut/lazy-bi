@@ -15,6 +15,7 @@ import {
 import { deleteEditorModel, insertAtCursor, openEditor, saveEditor, scheduleValidate, validateEditor, editor } from "./editor.js";
 import { loadExplorer } from "./explorer.js";
 import { $, api } from "./lib.js";
+import { initMeasureLab } from "./measurelab.js";
 import { loadPortal, renderPortal } from "./portal.js";
 import { refreshPubs, showView, state } from "./state.js";
 
@@ -24,6 +25,7 @@ async function init() {
     $("#conn").innerHTML = `<span class="dot">◉</span> S3 ${health.s3_endpoint.replace(/^https?:\/\//, "")} · POLARS ONLINE`;
     state.models = models;
     if (!models.length) return vizMessage($("#chart"), "no semantic models found — add a yaml file to models/", true);
+    initMeasureLab();
 
     // ── builder ──
     $("#model-select").addEventListener("change", (e) => selectModel(e.target.value));

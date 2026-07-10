@@ -74,3 +74,7 @@ measures:
     label: Avg Unit Price
     format: currency
     expr: pl.col("unit_price").mean()
+  - name: margin_per_unit
+    label: Margin / Unit
+    format: currency
+    expr: ((pl.col("unit_price") - pl.col("unit_cost")) * pl.col("quantity")).sum() / pl.col("quantity").sum()

@@ -10,6 +10,7 @@ export const state = {
   model: null,          // selected model public dict (builder)
   dims: [],             // [{name, grain?}]
   measures: [],         // [name]
+  inlineMeasures: [],   // visual-scoped measure defs {name,label,expr,format}
   filters: [],          // [{field, op, value, values}]
   chartType: "auto",
   sort: { by: "", desc: true },

@@ -26,6 +26,17 @@ class ModelError(Exception):
     pass
 
 
+def compile_expr(source: str, owner: str = "expression") -> pl.Expr:
+    """Evaluate polars expression syntax (trusted config / single-user input)."""
+    try:
+        expr = eval(source, _EVAL_GLOBALS)  # noqa: S307 - see module docstring
+    except Exception as exc:
+        raise ModelError(f"{owner}: cannot evaluate expression: {exc}") from exc
+    if not isinstance(expr, pl.Expr):
+        raise ModelError(f"{owner}: expression is not a polars Expr")
+    return expr
+
+
 @dataclass
 class Source:
     path: str            # s3://bucket/prefix/*.parquet | .../table (delta root)
@@ -78,13 +89,7 @@ class Measure:
     description: str = ""
 
     def expr(self) -> pl.Expr:
-        try:
-            expr = eval(self.expr_source, _EVAL_GLOBALS)  # noqa: S307 - trusted model config
-        except Exception as exc:
-            raise ModelError(f"measure '{self.name}': cannot evaluate expression: {exc}") from exc
-        if not isinstance(expr, pl.Expr):
-            raise ModelError(f"measure '{self.name}': expression is not a polars Expr")
-        return expr.alias(self.name)
+        return compile_expr(self.expr_source, f"measure '{self.name}'").alias(self.name)
 
 
 @dataclass
@@ -194,6 +199,33 @@ def _parse_model(raw: dict, origin: Path) -> Model:
     except KeyError as exc:
         raise ModelError(f"{origin.name}: missing required key {exc}") from exc
     return model
+
+
+def append_measure_yaml(text: str, measure: dict) -> str:
+    """Insert a measure at the end of the `measures:` block of a model's yaml,
+    preserving the rest of the file byte-for-byte (comments included). yaml
+    handles the quoting of the new block itself."""
+    block = yaml.safe_dump([measure], default_flow_style=False, sort_keys=False, width=1000)
+    block = "".join("  " + line + "\n" for line in block.rstrip("\n").split("\n"))
+
+    lines = text.split("\n")
+    start = next((i for i, line in enumerate(lines) if line.rstrip() == "measures:"), None)
+    if start is None:
+        return text.rstrip("\n") + "\n\nmeasures:\n" + block
+
+    # the block ends before the next top-level key (or EOF); remember the last
+    # line that actually belongs to it so trailing blanks stay trailing
+    end = len(lines)
+    last_content = start
+    for i in range(start + 1, len(lines)):
+        line = lines[i]
+        if line.strip() and not line.startswith((" ", "\t", "#")):
+            end = i
+            break
+        if line.strip():
+            last_content = i
+    insert_at = min(last_content + 1, end)
+    return "\n".join(lines[:insert_at]) + "\n" + block + "\n".join(lines[insert_at:])
 
 
 def parse_model_text(text: str) -> Model:

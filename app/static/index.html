@@ -40,6 +40,7 @@
       <section>
         <div class="sec-title">Measures</div>
         <div id="measure-list" class="chip-list"></div>
+        <button class="ghost" id="lab-open" style="margin-top:6px">+ new measure</button>
       </section>
 
       <section>
@@ -99,6 +100,29 @@
           <button class="btn" id="save">SAVE</button>
         </div>
         <div id="meta"></div>
+        <div id="measure-lab" hidden>
+          <div class="lab-row">
+            <input id="lab-name" placeholder="measure_name" spellcheck="false">
+            <input id="lab-label" placeholder="Label (optional)" spellcheck="false">
+            <select id="lab-format">
+              <option value="number">number</option>
+              <option value="currency">currency</option>
+              <option value="percent">percent</option>
+            </select>
+            <span id="lab-status"></span>
+          </div>
+          <div class="lab-expr-wrap">
+            <textarea id="lab-expr" rows="2" spellcheck="false" autocomplete="off"
+              placeholder='pl.col("unit_price").mean()'></textarea>
+            <div id="lab-suggest" hidden></div>
+          </div>
+          <div class="lab-row lab-actions">
+            <span class="lab-hint">visual measures travel with the visual · model measures append to the yaml</span>
+            <button class="btn alt" id="lab-save-visual">SAVE TO VISUAL</button>
+            <button class="btn" id="lab-save-model">SAVE TO MODEL</button>
+            <button class="btn plain" id="lab-cancel">CANCEL</button>
+          </div>
+        </div>
         <div id="legend" class="legend-box"></div>
         <div id="chart" class="chart-box"><div class="msg">initialising…</div></div>
         <div id="table-wrap" hidden></div>

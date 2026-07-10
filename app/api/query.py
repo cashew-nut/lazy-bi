@@ -16,6 +16,7 @@ class QueryRequest(BaseModel):
     model: str
     dimensions: list = []
     measures: list[str] = []
+    inline_measures: list[dict] = []   # ad-hoc exprs scoped to this query
     filters: list[dict] = []
     sort: Optional[dict] = None
     limit: Optional[int] = None

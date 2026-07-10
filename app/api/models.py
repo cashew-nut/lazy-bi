@@ -1,8 +1,12 @@
 """Semantic model endpoints: listing, dimension values, and the yaml editor."""
 from __future__ import annotations
 
+import re
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+
+_MEASURE_NAME = re.compile(r"^[a-z_][a-z0-9_]*$")
 
 from .. import config, engine, semantic
 from ..registry import registry
@@ -13,6 +17,14 @@ router = APIRouter(tags=["models"])
 
 class YamlIn(BaseModel):
     yaml: str
+
+
+class MeasureIn(BaseModel):
+    name: str
+    expr: str
+    label: str = ""
+    format: str = "number"
+    description: str = ""
 
 
 def _reload_or_400() -> None:
@@ -96,6 +108,51 @@ def delete_model(name: str):
     model = get_model(name)
     model.origin.unlink()
     _reload_or_400()
+
+
+@router.get("/models/{name}/schema")
+def model_schema(name: str):
+    """Source columns (post-join) with dtypes — feeds the measure editor's
+    completion list."""
+    model = get_model(name)
+    try:
+        schema = engine.scan(model).collect_schema()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"source not reachable: {exc}")
+    return {"columns": [{"name": n, "dtype": str(t)} for n, t in schema.items()]}
+
+
+@router.post("/models/{name}/measures", status_code=201)
+def add_measure(name: str, m: MeasureIn):
+    """Append a measure to the model's yaml file (comment-preserving) and
+    hot-reload — the 'save to model' path of the measure lab."""
+    model = get_model(name)
+    if not _MEASURE_NAME.match(m.name):
+        raise HTTPException(status_code=400, detail="measure name must be snake_case (a-z, 0-9, _)")
+    if m.name in model.measures or m.name in model.dimensions:
+        raise HTTPException(status_code=409, detail=f"'{m.name}' already exists on model '{name}'")
+    if m.format not in ("number", "currency", "percent"):
+        raise HTTPException(status_code=400, detail=f"unknown format '{m.format}'")
+    try:
+        semantic.compile_expr(m.expr, f"measure '{m.name}'")
+    except semantic.ModelError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    entry = {"name": m.name}
+    if m.label:
+        entry["label"] = m.label
+    if m.format != "number":
+        entry["format"] = m.format
+    if m.description:
+        entry["description"] = m.description
+    entry["expr"] = m.expr
+    new_text = semantic.append_measure_yaml(model.origin.read_text(), entry)
+    parsed = _parse_or_400(new_text)  # belt and braces before touching disk
+    if m.name not in parsed.measures:
+        raise HTTPException(status_code=500, detail="failed to place the measure in the yaml")
+    model.origin.write_text(new_text)
+    _reload_or_400()
+    return registry.models[name].to_public()
 
 
 @router.get("/models/{name}/dimensions/{dimension}/values")
