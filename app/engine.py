@@ -14,7 +14,7 @@ from typing import Any, Optional
 import polars as pl
 
 from . import config
-from .semantic import Model, ModelError, Source, TIME_GRAINS, compile_expr
+from .semantic import ImportBinding, Model, ModelError, Source, TIME_GRAINS, compile_expr
 
 FILTER_OPS = {"eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in", "contains"}
 
@@ -32,14 +32,79 @@ def _scan_source(source: Source) -> pl.LazyFrame:
     return pl.scan_parquet(source.path, storage_options=opts)
 
 
+def scan_source(source: Source) -> pl.LazyFrame:
+    """Public: lazily scan a single source (no joins). Used by the dimension
+    bundle editor to introspect one dataset's own columns."""
+    return _scan_source(source)
+
+
+def _scan_bundle(binding: ImportBinding) -> pl.LazyFrame:
+    """Build one imported dimension bundle's combined lazy frame: scan the
+    anchor dataset, then join in every other dataset the import resolved as
+    reachable, via the bundle's own declared DatasetJoins. Each join is
+    applied with the already-accumulated side as polars' left operand and
+    `how` taken from the edge as declared — so an import always preserves
+    the anchor (and anything already pulled in) in full, gaining nullable
+    columns for anything only reachable in the reverse of how the bundle's
+    author happened to declare that particular edge."""
+    bundle = binding.bundle
+    included = set(binding.included_datasets)
+
+    edge_by_pair: dict[tuple[str, str], object] = {}
+    for ds in bundle.datasets.values():
+        for j in ds.joins:
+            edge_by_pair[(ds.name, j.to)] = j
+
+    anchor = binding.import_spec.anchor_dataset
+    lf = _scan_source(bundle.datasets[anchor].source)
+    joined = {anchor}
+    remaining = included - joined
+    while remaining:
+        progressed = False
+        for ds_name in list(remaining):
+            edge, reversed_edge = None, False
+            for joined_name in joined:
+                if (joined_name, ds_name) in edge_by_pair:
+                    edge = edge_by_pair[(joined_name, ds_name)]
+                    break
+                if (ds_name, joined_name) in edge_by_pair:
+                    edge, reversed_edge = edge_by_pair[(ds_name, joined_name)], True
+                    break
+            if edge is None:
+                continue
+            left_on, right_on = (edge.right_on, edge.left_on) if reversed_edge else (edge.left_on, edge.right_on)
+            lf = lf.join(
+                _scan_source(bundle.datasets[ds_name].source),
+                left_on=left_on, right_on=right_on, how=edge.how,
+            )
+            joined.add(ds_name)
+            remaining.discard(ds_name)
+            progressed = True
+        if not progressed:
+            # resolve_imports() computes `included` via the same reachability
+            # rules, so everything in it must connect back to the anchor
+            raise ModelError(
+                f"dimension bundle '{bundle.name}': internal error resolving join "
+                f"order for datasets {sorted(remaining)}"
+            )
+    return lf
+
+
 def scan(model: Model) -> pl.LazyFrame:
-    """Base source plus any semantic-layer joins, all lazy — polars pushes
-    the needed columns down into each side of the join."""
+    """Base source plus any semantic-layer joins and imported dimension
+    bundles, all lazy — polars pushes the needed columns down into each
+    side of every join."""
     lf = _scan_source(model.source)
     for join in model.joins:
         lf = lf.join(
             _scan_source(join.source),
             left_on=join.left_on, right_on=join.right_on, how=join.how,
+        )
+    for binding in model.import_bindings:
+        lf = lf.join(
+            _scan_bundle(binding),
+            left_on=binding.import_spec.left_on, right_on=binding.import_spec.right_on,
+            how=binding.import_spec.how,
         )
     return lf
 

@@ -19,7 +19,12 @@ def explorer():
     prefix = f"s3://{config.BUCKET}/"
     matchers = []  # (model_name, role, match_fn)
     for m in registry.models.values():
-        sources = [("source", m.source)] + [(f"join: {j.name}", j.source) for j in m.joins]
+        sources = (
+            [("source", m.source)]
+            + [(f"join: {j.name}", j.source) for j in m.joins]
+            + [(f"import: {binding.bundle.name}.{ds}", binding.bundle.datasets[ds].source)
+               for binding in m.import_bindings for ds in binding.included_datasets]
+        )
         for role, src in sources:
             if not src.path.startswith(prefix):
                 continue

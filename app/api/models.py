@@ -36,7 +36,9 @@ def _reload_or_400() -> None:
 
 def _parse_or_400(text: str) -> semantic.Model:
     try:
-        return semantic.parse_model_text(text)
+        model = semantic.parse_model_text(text)
+        semantic.resolve_imports(model, registry.dimension_bundles)
+        return model
     except semantic.ModelError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -58,6 +60,7 @@ def validate_model(body: YamlIn):
     so the editor can show the columns available to dimensions and measures."""
     try:
         parsed = semantic.parse_model_text(body.yaml)
+        semantic.resolve_imports(parsed, registry.dimension_bundles)
     except semantic.ModelError as exc:
         return {"ok": False, "error": str(exc)}
     out = {

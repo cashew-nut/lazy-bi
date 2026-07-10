@@ -12,7 +12,8 @@ import {
   publishCurrent, refreshDashList, renderDashboard, renderDashFilters,
   renderFocusFilters, saveDash,
 } from "./dashboard.js";
-import { deleteEditorModel, insertAtCursor, openEditor, saveEditor, scheduleValidate, validateEditor, editor } from "./editor.js";
+import { deleteEditorItem, insertAtCursor, openEditor, saveEditor, scheduleValidate, validateEditor, editor } from "./editor.js";
+import { renderBundleList } from "./dimlab.js";
 import { loadExplorer } from "./explorer.js";
 import { $, api } from "./lib.js";
 import { initMeasureLab } from "./measurelab.js";
@@ -53,12 +54,13 @@ async function init() {
       renderBuilderViz();
     });
 
-    // ── model editor ──
-    $("#edit-model").addEventListener("click", () => openEditor(state.model.name));
-    $("#new-model").addEventListener("click", () => openEditor(null));
+    // ── model / common-dimension editor ──
+    $("#edit-model").addEventListener("click", () => openEditor("model", state.model.name));
+    $("#new-model").addEventListener("click", () => openEditor("model", null));
+    $("#new-bundle").addEventListener("click", () => openEditor("bundle", null));
     $("#editor-back").addEventListener("click", () => showView("builder"));
     $("#editor-save").addEventListener("click", saveEditor);
-    $("#editor-delete").addEventListener("click", deleteEditorModel);
+    $("#editor-delete").addEventListener("click", deleteEditorItem);
     $("#editor-revert").addEventListener("click", () => {
       $("#yaml-editor").value = editor.original;
       validateEditor();
@@ -189,6 +191,7 @@ async function init() {
 
     selectModel(models[0].name);
     refreshSaved();
+    renderBundleList();
     await refreshPubs();
     refreshDashList();
   } catch (err) {

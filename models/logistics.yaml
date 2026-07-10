@@ -6,14 +6,20 @@ source:
   format: delta
   path: s3://cash-intel/logistics/shipments
 
+# region comes from the `geography` common dimensional model (see
+# dimensions/geography.yaml) — shared with sales.yaml, so a region edit
+# there updates both models with no changes needed here
+dimension_imports:
+  - bundle: geography
+    anchor_dataset: regions
+    on: region
+
 dimensions:
   - name: ship_date
     label: Ship Date
     type: time
   - name: courier
     label: Courier
-  - name: region
-    label: Region
 
 measures:
   - name: shipments

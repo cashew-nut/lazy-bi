@@ -101,6 +101,29 @@ SUPPLIERS = {
 }
 
 
+# territory rollup for the `geography` dimension bundle — proves common
+# dimensions can span multiple joined tables (regions -> territories), not
+# just flat single-table lookups
+TERRITORIES = {
+    "Neo-Tokyo": "pacific-rim", "Pacifica": "pacific-rim",
+    "Night City": "north-america", "Badlands": "north-america",
+    "Euro-Zone": "emea",
+}
+TERRITORY_NAMES = {"pacific-rim": "Pacific Rim", "north-america": "North America", "emea": "EMEA"}
+
+
+def _regions_frame() -> pl.DataFrame:
+    rows = []
+    for region in REGIONS:
+        lat, lon = REGION_COORDS[region]
+        rows.append({"region": region, "region_lat": lat, "region_lon": lon, "territory": TERRITORIES[region]})
+    return pl.DataFrame(rows)
+
+
+def _territories_frame() -> pl.DataFrame:
+    return pl.DataFrame([{"territory": code, "name": name} for code, name in TERRITORY_NAMES.items()])
+
+
 def _products_frame() -> pl.DataFrame:
     rows = []
     for category, products in CATEGORIES.items():
@@ -191,6 +214,10 @@ def seed_bucket() -> bool:
     _upload(client, "marketing/spend.parquet", _marketing_frame(rng))
     client.put_object(Bucket=config.BUCKET, Key="ref/products.csv",
                       Body=_products_frame().write_csv().encode())
+    client.put_object(Bucket=config.BUCKET, Key="ref/regions.csv",
+                      Body=_regions_frame().write_csv().encode())
+    client.put_object(Bucket=config.BUCKET, Key="ref/territories.csv",
+                      Body=_territories_frame().write_csv().encode())
     write_deltalake(f"s3://{config.BUCKET}/logistics/shipments", _shipments_frame(rng),
                     storage_options=config.delta_write_options())
     _upload(client, "subscriptions/subs.parquet", _subscriptions_frame(rng))

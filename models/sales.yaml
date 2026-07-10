@@ -18,13 +18,19 @@ joins:
       path: s3://cash-intel/ref/products.csv
     on: product        # shorthand for left_on/right_on; how defaults to left
 
+# region comes from the `geography` common dimensional model below (not
+# declared here) — importing it gains map coordinates and a territory
+# rollup for free, shared with every other model that imports the same bundle
+dimension_imports:
+  - bundle: geography
+    anchor_dataset: regions
+    on: region
+
 dimensions:
   - name: order_date
     column: order_date
     label: Order Date
     type: time
-  - name: region
-    label: Region
   - name: channel
     label: Sales Channel
   - name: segment

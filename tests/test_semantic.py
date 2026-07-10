@@ -79,3 +79,180 @@ def test_bundled_models_load(models):
     assert sales.joins and sales.joins[0].source.format == "csv"
     assert models["subscriptions"].dimensions["active_at"].spine is not None
     assert models["marketing"].dimensions["region"].geo is not None
+
+
+# --- Dimension bundles (common dimensional models) -------------------------
+
+BUNDLE = """
+name: geo
+label: Geo
+datasets:
+  - name: regions
+    source: {format: csv, path: s3://b/regions.csv}
+    dimensions:
+      - name: region
+        label: Region
+      - name: territory
+        label: Territory Code
+    joins:
+      - to: territories
+        on: territory
+  - name: territories
+    source: {format: csv, path: s3://b/territories.csv}
+    dimensions:
+      - name: territory_name
+        column: name
+        label: Territory
+"""
+
+FACT = """
+name: fact
+source: {format: parquet, path: s3://b/fact/*.parquet}
+measures:
+  - name: rows
+    expr: pl.len()
+"""
+
+
+def test_bundle_parses_datasets_and_internal_join():
+    bundle = semantic.parse_bundle_text(BUNDLE)
+    assert set(bundle.datasets) == {"regions", "territories"}
+    assert bundle.datasets["regions"].joins[0].to == "territories"
+    assert bundle.datasets["regions"].joins[0].left_on == ["territory"]
+
+
+def test_bundle_rejects_cyclical_joins():
+    # a-b alone would just collapse to one undirected edge (not a cycle) —
+    # a genuine cycle needs a third dataset closing the loop: a -> b -> c -> a
+    cyclic = """
+name: bad
+datasets:
+  - {name: a, source: {format: csv, path: s3://b/a.csv}, joins: [{to: b, on: k}]}
+  - {name: b, source: {format: csv, path: s3://b/b.csv}, joins: [{to: c, on: k}]}
+  - {name: c, source: {format: csv, path: s3://b/c.csv}, joins: [{to: a, on: k}]}
+"""
+    with pytest.raises(semantic.ModelError, match="cyclical"):
+        semantic.parse_bundle_text(cyclic)
+
+
+def test_bundle_rejects_cross_dataset_dimension_collision():
+    collide = """
+name: bad
+datasets:
+  - {name: a, source: {format: csv, path: s3://b/a.csv}, dimensions: [{name: owner, label: Owner}]}
+  - {name: b, source: {format: csv, path: s3://b/b.csv}, dimensions: [{name: owner, label: Owner}]}
+"""
+    with pytest.raises(semantic.ModelError, match="owner"):
+        semantic.parse_bundle_text(collide)
+
+
+def test_bundle_rejects_join_to_unknown_dataset():
+    bad = """
+name: bad
+datasets:
+  - {name: a, source: {format: csv, path: s3://b/a.csv}, joins: [{to: nope, on: k}]}
+"""
+    with pytest.raises(semantic.ModelError, match="nope"):
+        semantic.parse_bundle_text(bad)
+
+
+def test_bundle_rejects_empty_datasets():
+    with pytest.raises(semantic.ModelError, match="no datasets"):
+        semantic.parse_bundle_text("name: empty\ndatasets: []\n")
+
+
+def test_import_resolves_transitively_by_default():
+    bundle = semantic.parse_bundle_text(BUNDLE)
+    model = semantic.parse_model_text(
+        FACT + "dimension_imports:\n  - {bundle: geo, anchor_dataset: regions, on: region}\n"
+    )
+    semantic.resolve_imports(model, {"geo": bundle})
+    assert {"region", "territory", "territory_name"} <= set(model.dimensions)
+
+
+def test_import_subset_excludes_unlisted_datasets():
+    bundle = semantic.parse_bundle_text(BUNDLE)
+    model = semantic.parse_model_text(
+        FACT + "dimension_imports:\n"
+        "  - {bundle: geo, anchor_dataset: regions, on: region, datasets: [regions]}\n"
+    )
+    semantic.resolve_imports(model, {"geo": bundle})
+    assert "territory" in model.dimensions
+    assert "territory_name" not in model.dimensions
+
+
+def test_import_subset_omitted_matches_explicit_whole_bundle():
+    bundle = semantic.parse_bundle_text(BUNDLE)
+    whole_default = semantic.parse_model_text(
+        FACT + "dimension_imports:\n  - {bundle: geo, anchor_dataset: regions, on: region}\n"
+    )
+    whole_explicit = semantic.parse_model_text(
+        FACT + "dimension_imports:\n"
+        "  - {bundle: geo, anchor_dataset: regions, on: region, datasets: [regions, territories]}\n"
+    )
+    semantic.resolve_imports(whole_default, {"geo": bundle})
+    semantic.resolve_imports(whole_explicit, {"geo": bundle})
+    assert set(whole_default.dimensions) == set(whole_explicit.dimensions)
+
+
+def test_import_subset_rejects_unknown_dataset():
+    bundle = semantic.parse_bundle_text(BUNDLE)
+    model = semantic.parse_model_text(
+        FACT + "dimension_imports:\n"
+        "  - {bundle: geo, anchor_dataset: regions, on: region, datasets: [nope]}\n"
+    )
+    with pytest.raises(semantic.ModelError, match="nope"):
+        semantic.resolve_imports(model, {"geo": bundle})
+
+
+def test_import_unknown_bundle_rejected():
+    model = semantic.parse_model_text(
+        FACT + "dimension_imports:\n  - {bundle: nope, anchor_dataset: x, on: region}\n"
+    )
+    with pytest.raises(semantic.ModelError, match="nope"):
+        semantic.resolve_imports(model, {})
+
+
+def test_import_unknown_anchor_rejected():
+    bundle = semantic.parse_bundle_text(BUNDLE)
+    model = semantic.parse_model_text(
+        FACT + "dimension_imports:\n  - {bundle: geo, anchor_dataset: nope, on: region}\n"
+    )
+    with pytest.raises(semantic.ModelError, match="nope"):
+        semantic.resolve_imports(model, {"geo": bundle})
+
+
+def test_native_dimension_shadows_imported():
+    bundle = semantic.parse_bundle_text(BUNDLE)
+    model = semantic.parse_model_text(
+        FACT + "dimension_imports:\n  - {bundle: geo, anchor_dataset: regions, on: region}\n"
+        "dimensions:\n  - {name: region, label: My Own Region}\n"
+    )
+    semantic.resolve_imports(model, {"geo": bundle})
+    assert model.dimensions["region"].label == "My Own Region"
+
+
+def test_two_imports_with_colliding_dimension_rejected():
+    bundle_a = semantic.parse_bundle_text(
+        "name: a\ndatasets:\n"
+        "  - {name: x, source: {format: csv, path: s3://b/x.csv}, dimensions: [{name: shared, label: Shared}]}\n"
+    )
+    bundle_b = semantic.parse_bundle_text(
+        "name: b\ndatasets:\n"
+        "  - {name: y, source: {format: csv, path: s3://b/y.csv}, dimensions: [{name: shared, label: Shared}]}\n"
+    )
+    model = semantic.parse_model_text(
+        FACT + "dimension_imports:\n"
+        "  - {bundle: a, anchor_dataset: x, on: k}\n"
+        "  - {bundle: b, anchor_dataset: y, on: k}\n"
+    )
+    with pytest.raises(semantic.ModelError, match="shared"):
+        semantic.resolve_imports(model, {"a": bundle_a, "b": bundle_b})
+
+
+def test_real_geography_bundle_resolves_into_sales(models):
+    # `models` fixture resolves imports against the real dimensions/*.yaml
+    sales = models["sales"]
+    assert "territory_name" in sales.dimensions
+    assert sales.dimensions["region"].geo is not None
+    assert {"bundle": "geography", "anchor_dataset": "regions", "datasets": None} in sales.to_public()["imports"]
