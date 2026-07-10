@@ -3,9 +3,9 @@
   "configurations": [
     {
       "name": "cash-intelligence",
-      "runtimeExecutable": ".venv/bin/uvicorn",
-      "runtimeArgs": ["app.main:app", "--host", "127.0.0.1", "--port", "8080"],
-      "port": 8080
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "exec .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port ${PORT:-8080}"],
+      "autoPort": true
     }
   ]
 }
