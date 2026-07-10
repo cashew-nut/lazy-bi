@@ -1,0 +1,34 @@
+# Common dimensional model: shared region/territory reference data.
+# Any fact model with its own region-shaped column can import this bundle to
+# gain a validated region dimension (with map coordinates) and its territory
+# rollup, without hand-copying the region list or re-declaring geo columns
+# per model. See specs/006-common-dimensions/.
+name: geography
+label: Geography
+description: Shared region and territory reference data, imported by fact models with a region-shaped column.
+
+datasets:
+  - name: regions
+    source:
+      format: csv
+      path: s3://cash-intel/ref/regions.csv
+    dimensions:
+      - name: region
+        label: Region
+        geo:
+          lat: region_lat
+          lon: region_lon
+      - name: territory
+        label: Territory Code
+    joins:
+      - to: territories
+        on: territory
+
+  - name: territories
+    source:
+      format: csv
+      path: s3://cash-intel/ref/territories.csv
+    dimensions:
+      - name: territory_name
+        column: name
+        label: Territory

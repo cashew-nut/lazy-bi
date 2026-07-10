@@ -20,6 +20,7 @@ AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 
 # Semantic models + persistence
 MODELS_DIR = Path(os.environ.get("CI_MODELS_DIR", PROJECT_ROOT / "models"))
+DIMENSIONS_DIR = Path(os.environ.get("CI_DIMENSIONS_DIR", PROJECT_ROOT / "dimensions"))
 DB_PATH = Path(os.environ.get("CI_DB_PATH", PROJECT_ROOT / "cash_intel.db"))
 
 # Hard cap on rows returned to the browser

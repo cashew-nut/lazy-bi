@@ -42,7 +42,11 @@ def seeded(moto_server):
 def models(seeded):
     from app import config, semantic
 
-    return semantic.load_models(config.MODELS_DIR)
+    bundles = semantic.load_dimension_bundles(config.DIMENSIONS_DIR)
+    loaded = semantic.load_models(config.MODELS_DIR)
+    for model in loaded.values():
+        semantic.resolve_imports(model, bundles)
+    return loaded
 
 
 @pytest.fixture(scope="session")

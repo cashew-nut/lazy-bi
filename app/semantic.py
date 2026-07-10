@@ -53,6 +53,16 @@ class Join:
 
 
 @dataclass
+class DatasetJoin:
+    """A join from one Dataset to a sibling Dataset in the same
+    DimensionBundle (as opposed to Join, which targets a raw Source)."""
+    to: str
+    left_on: list[str]
+    right_on: list[str]
+    how: str = "left"
+
+
+@dataclass
 class Spine:
     """Marks a time dimension as a generated timeline: a row is counted in every
     time bucket between its start and end columns (point-in-time semantics —
@@ -93,6 +103,57 @@ class Measure:
 
 
 @dataclass
+class Dataset:
+    """A single source + the dimensions it exposes, living inside a
+    DimensionBundle - the bundle-scoped equivalent of a Model, minus
+    measures (common dimensional models declare no measures)."""
+    name: str
+    source: Source
+    dimensions: dict[str, Dimension] = field(default_factory=dict)
+    joins: list[DatasetJoin] = field(default_factory=list)
+
+
+@dataclass
+class DimensionBundle:
+    """A named, reusable set of Datasets (plus the joins between them),
+    independent of any single fact Model. See Model.imports."""
+    name: str
+    label: str
+    description: str
+    datasets: dict[str, Dataset] = field(default_factory=dict)
+    origin: Optional[Path] = None
+
+    def dataset(self, name: str) -> Dataset:
+        try:
+            return self.datasets[name]
+        except KeyError:
+            raise ModelError(f"unknown dataset '{name}' in dimension bundle '{self.name}'")
+
+
+@dataclass
+class Import:
+    """A Model's reference to a DimensionBundle: an anchor (how the model's
+    own source connects to one dataset in the bundle) plus an optional
+    subset of the bundle's datasets to include (default: all of them)."""
+    bundle: str
+    anchor_dataset: str
+    left_on: list[str]
+    right_on: list[str]
+    how: str = "left"
+    datasets: Optional[list[str]] = None  # None = whole bundle
+
+
+@dataclass
+class ImportBinding:
+    """Resolved, engine-facing form of an Import - computed once at
+    load/hot-reload time by resolve_imports(), not part of the YAML shape."""
+    import_spec: Import
+    bundle: DimensionBundle
+    included_datasets: list[str]           # BFS-reachable from anchor_dataset, subset-filtered
+    dimension_owners: dict[str, str]        # imported dimension name -> owning dataset name
+
+
+@dataclass
 class Model:
     name: str
     label: str
@@ -101,6 +162,8 @@ class Model:
     joins: list[Join] = field(default_factory=list)
     dimensions: dict[str, Dimension] = field(default_factory=dict)
     measures: dict[str, Measure] = field(default_factory=dict)
+    imports: list[Import] = field(default_factory=list)
+    import_bindings: list[ImportBinding] = field(default_factory=list)  # populated by resolve_imports
     origin: Optional[Path] = None  # yaml file the model was loaded from
 
     def dimension(self, name: str) -> Dimension:
@@ -124,6 +187,11 @@ class Model:
             "format": self.source.format,
             "file": self.origin.name if self.origin else None,
             "joins": [{"name": j.name, "path": j.source.path, "format": j.source.format} for j in self.joins],
+            "imports": [
+                {"bundle": b.import_spec.bundle, "anchor_dataset": b.import_spec.anchor_dataset,
+                 "datasets": b.import_spec.datasets}
+                for b in self.import_bindings
+            ],
             "dimensions": [
                 {"name": d.name, "label": d.label, "type": d.type,
                  "description": d.description, "spine": bool(d.spine), "geo": bool(d.geo)}
@@ -148,6 +216,56 @@ def _as_list(v) -> list[str]:
     return v if isinstance(v, list) else [v]
 
 
+def _parse_join_keys(j: dict, owner: str, join_desc: str) -> tuple[list[str], list[str], str]:
+    """Shared on/left_on/right_on/how resolution for both Join (model -> raw
+    source) and DatasetJoin (dataset -> sibling dataset in a bundle). YAML 1.1
+    parses a bare `on:` key as boolean True — accept both."""
+    on = j.get("on", j.get(True))
+    left_on = _as_list(j["left_on"] if "left_on" in j else on)
+    right_on = _as_list(j["right_on"] if "right_on" in j else on)
+    how = j.get("how", "left")
+    if not left_on or left_on == [None]:
+        raise ModelError(f"{owner}: {join_desc} needs 'on' or 'left_on'/'right_on'")
+    if how not in JOIN_KINDS:
+        raise ModelError(f"{owner}: {join_desc}: unsupported how '{how}'")
+    return left_on, right_on, how
+
+
+def _parse_dimensions(raw_list: list, owner: str) -> dict[str, Dimension]:
+    """Shared `dimensions:` block parsing for both Model and Dataset."""
+    dims: dict[str, Dimension] = {}
+    for d in raw_list:
+        spine_raw = d.get("spine")
+        geo_raw = d.get("geo")
+        dim = Dimension(
+            name=d["name"],
+            column=d.get("column", d["name"]),
+            label=d.get("label", d["name"].replace("_", " ").title()),
+            type=d.get("type", "categorical"),
+            description=d.get("description", ""),
+            spine=Spine(start=spine_raw["start"], end=spine_raw["end"]) if spine_raw else None,
+            geo=Geo(lat=geo_raw["lat"], lon=geo_raw["lon"]) if geo_raw else None,
+        )
+        if dim.spine and dim.type != "time":
+            raise ModelError(f"{owner}: spine dimension '{dim.name}' must have type: time")
+        dims[dim.name] = dim
+    return dims
+
+
+def _parse_import(raw: dict, owner: str) -> Import:
+    anchor = raw.get("anchor_dataset")
+    if not anchor:
+        raise ModelError(f"{owner}: dimension_imports entry needs 'anchor_dataset'")
+    left_on, right_on, how = _parse_join_keys(raw, owner, f"import of '{raw.get('bundle')}'")
+    datasets = raw.get("datasets")
+    if datasets is not None and not isinstance(datasets, list):
+        raise ModelError(f"{owner}: import of '{raw.get('bundle')}': 'datasets' must be a list")
+    return Import(
+        bundle=raw["bundle"], anchor_dataset=anchor,
+        left_on=left_on, right_on=right_on, how=how, datasets=datasets,
+    )
+
+
 def _parse_model(raw: dict, origin: Path) -> Model:
     try:
         model = Model(
@@ -157,35 +275,12 @@ def _parse_model(raw: dict, origin: Path) -> Model:
             source=_parse_source(raw["source"], origin),
         )
         for j in raw.get("joins", []):
-            # YAML 1.1 parses a bare `on:` key as boolean True — accept both
-            on = j.get("on", j.get(True))
-            join = Join(
-                name=j.get("name", "join"),
-                source=_parse_source(j["source"], origin),
-                left_on=_as_list(j["left_on"] if "left_on" in j else on),
-                right_on=_as_list(j["right_on"] if "right_on" in j else on),
-                how=j.get("how", "left"),
-            )
-            if not join.left_on or join.left_on == [None]:
-                raise ModelError(f"{origin.name}: join '{join.name}' needs 'on' or 'left_on'/'right_on'")
-            if join.how not in JOIN_KINDS:
-                raise ModelError(f"{origin.name}: join '{join.name}': unsupported how '{join.how}'")
-            model.joins.append(join)
-        for d in raw.get("dimensions", []):
-            spine_raw = d.get("spine")
-            geo_raw = d.get("geo")
-            dim = Dimension(
-                name=d["name"],
-                column=d.get("column", d["name"]),
-                label=d.get("label", d["name"].replace("_", " ").title()),
-                type=d.get("type", "categorical"),
-                description=d.get("description", ""),
-                spine=Spine(start=spine_raw["start"], end=spine_raw["end"]) if spine_raw else None,
-                geo=Geo(lat=geo_raw["lat"], lon=geo_raw["lon"]) if geo_raw else None,
-            )
-            if dim.spine and dim.type != "time":
-                raise ModelError(f"{origin.name}: spine dimension '{dim.name}' must have type: time")
-            model.dimensions[dim.name] = dim
+            left_on, right_on, how = _parse_join_keys(j, origin.name, f"join '{j.get('name', 'join')}'")
+            model.joins.append(Join(
+                name=j.get("name", "join"), source=_parse_source(j["source"], origin),
+                left_on=left_on, right_on=right_on, how=how,
+            ))
+        model.dimensions = _parse_dimensions(raw.get("dimensions", []), origin.name)
         for m in raw.get("measures", []):
             meas = Measure(
                 name=m["name"],
@@ -196,6 +291,8 @@ def _parse_model(raw: dict, origin: Path) -> Model:
             )
             meas.expr()  # validate at load time
             model.measures[meas.name] = meas
+        for imp in raw.get("dimension_imports", []):
+            model.imports.append(_parse_import(imp, origin.name))
     except KeyError as exc:
         raise ModelError(f"{origin.name}: missing required key {exc}") from exc
     return model
@@ -248,3 +345,202 @@ def load_models(models_dir: Path) -> dict[str, Model]:
         model.origin = path
         models[model.name] = model
     return models
+
+
+# ---------------------------------------------------------------------------
+# Dimension bundles (common dimensional models) and import resolution.
+# A bundle groups reusable Datasets, declared once, that any fact Model can
+# import by name instead of re-declaring the same source/joins/dimensions.
+# ---------------------------------------------------------------------------
+
+def _parse_dataset_join(j: dict, origin: Path, owner: str) -> DatasetJoin:
+    to = j.get("to")
+    if not to:
+        raise ModelError(f"{origin.name}: {owner}: dataset join needs 'to'")
+    left_on, right_on, how = _parse_join_keys(j, origin.name, f"{owner}: join to '{to}'")
+    return DatasetJoin(to=to, left_on=left_on, right_on=right_on, how=how)
+
+
+def _parse_dataset(raw: dict, origin: Path) -> Dataset:
+    try:
+        dataset = Dataset(name=raw["name"], source=_parse_source(raw["source"], origin))
+    except KeyError as exc:
+        raise ModelError(f"{origin.name}: dataset missing required key {exc}") from exc
+    owner = f"dataset '{dataset.name}'"
+    dataset.dimensions = _parse_dimensions(raw.get("dimensions", []), f"{origin.name}: {owner}")
+    for j in raw.get("joins", []):
+        dataset.joins.append(_parse_dataset_join(j, origin, owner))
+    return dataset
+
+
+def _bundle_edges(bundle: DimensionBundle) -> dict[str, set[str]]:
+    """Undirected adjacency: a DatasetJoin declared on either side makes both
+    datasets reachable from each other once the bundle is walked from an
+    arbitrary anchor."""
+    edges: dict[str, set[str]] = {name: set() for name in bundle.datasets}
+    for ds in bundle.datasets.values():
+        for j in ds.joins:
+            edges[ds.name].add(j.to)
+            edges[j.to].add(ds.name)
+    return edges
+
+
+def _check_acyclic(bundle: DimensionBundle) -> None:
+    edges = _bundle_edges(bundle)
+    visited: set[str] = set()
+
+    def dfs(node: str, parent: Optional[str]) -> None:
+        visited.add(node)
+        for neighbor in edges[node]:
+            if neighbor == parent:
+                continue
+            if neighbor in visited:
+                raise ModelError(
+                    f"dimension bundle '{bundle.name}': cyclical join between "
+                    f"datasets '{node}' and '{neighbor}'"
+                )
+            dfs(neighbor, node)
+
+    for start in bundle.datasets:
+        if start not in visited:
+            dfs(start, None)
+
+
+def _check_no_cross_dataset_collisions(bundle: DimensionBundle) -> None:
+    owner_of: dict[str, str] = {}
+    for ds in bundle.datasets.values():
+        for dim_name in ds.dimensions:
+            if dim_name in owner_of and owner_of[dim_name] != ds.name:
+                raise ModelError(
+                    f"dimension bundle '{bundle.name}': dimension '{dim_name}' is declared "
+                    f"by both dataset '{owner_of[dim_name]}' and dataset '{ds.name}' — rename one"
+                )
+            owner_of[dim_name] = ds.name
+
+
+def _parse_bundle(raw: dict, origin: Path) -> DimensionBundle:
+    try:
+        bundle = DimensionBundle(
+            name=raw["name"],
+            label=raw.get("label", raw["name"]),
+            description=raw.get("description", ""),
+        )
+        for d in raw.get("datasets", []):
+            dataset = _parse_dataset(d, origin)
+            if dataset.name in bundle.datasets:
+                raise ModelError(f"{origin.name}: bundle '{bundle.name}': duplicate dataset '{dataset.name}'")
+            bundle.datasets[dataset.name] = dataset
+    except KeyError as exc:
+        raise ModelError(f"{origin.name}: missing required key {exc}") from exc
+    if not bundle.datasets:
+        raise ModelError(f"{origin.name}: dimension bundle '{bundle.name}' has no datasets")
+
+    for ds in bundle.datasets.values():
+        for j in ds.joins:
+            if j.to not in bundle.datasets:
+                raise ModelError(
+                    f"{origin.name}: bundle '{bundle.name}': dataset '{ds.name}' joins "
+                    f"to unknown dataset '{j.to}'"
+                )
+    _check_acyclic(bundle)
+    _check_no_cross_dataset_collisions(bundle)
+    return bundle
+
+
+def parse_bundle_text(text: str) -> DimensionBundle:
+    """Parse and validate a dimension bundle from editor-supplied YAML text."""
+    try:
+        raw = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise ModelError(f"invalid yaml: {exc}")
+    if not isinstance(raw, dict):
+        raise ModelError("yaml must be a mapping with name / datasets")
+    return _parse_bundle(raw, Path("<editor>"))
+
+
+def load_dimension_bundles(dimensions_dir: Path) -> dict[str, DimensionBundle]:
+    bundles: dict[str, DimensionBundle] = {}
+    if not dimensions_dir.is_dir():
+        return bundles
+    for path in sorted(dimensions_dir.glob("*.y*ml")):
+        with open(path) as fh:
+            raw = yaml.safe_load(fh)
+        bundle = _parse_bundle(raw, path)
+        bundle.origin = path
+        bundles[bundle.name] = bundle
+    return bundles
+
+
+def _bfs_reachable(bundle: DimensionBundle, start: str, allowed: set[str]) -> list[str]:
+    """Datasets reachable from `start` walking only through `allowed` nodes —
+    excluding a dataset also prunes anything reachable only through it."""
+    edges = _bundle_edges(bundle)
+    order = [start]
+    frontier = [start]
+    seen = {start}
+    while frontier:
+        node = frontier.pop()
+        for neighbor in edges[node]:
+            if neighbor in seen or neighbor not in allowed:
+                continue
+            seen.add(neighbor)
+            order.append(neighbor)
+            frontier.append(neighbor)
+    return order
+
+
+def resolve_imports(model: Model, bundles: dict[str, DimensionBundle]) -> Model:
+    """Merge each of a model's declared imports into model.dimensions and
+    attach the ImportBinding metadata engine.scan() needs to build the join
+    chain. A native dimension always shadows a same-named imported one; a
+    same-named dimension offered by two different imports is a load-time
+    error (subset one of the imports to resolve it). Mutates and returns
+    `model`; safe to call once per freshly-parsed model."""
+    native_names = set(model.dimensions)
+    claimed: dict[str, str] = {}  # dimension name -> "bundle.dataset" that claimed it
+    model.import_bindings = []
+
+    for imp in model.imports:
+        bundle = bundles.get(imp.bundle)
+        if bundle is None:
+            raise ModelError(f"model '{model.name}': imports unknown dimension bundle '{imp.bundle}'")
+        if imp.anchor_dataset not in bundle.datasets:
+            raise ModelError(
+                f"model '{model.name}': import of '{imp.bundle}' anchors to unknown "
+                f"dataset '{imp.anchor_dataset}'"
+            )
+        if imp.datasets is not None:
+            unknown = [d for d in imp.datasets if d not in bundle.datasets]
+            if unknown:
+                raise ModelError(f"model '{model.name}': import of '{imp.bundle}' names unknown dataset(s) {unknown}")
+            if imp.anchor_dataset not in imp.datasets:
+                raise ModelError(
+                    f"model '{model.name}': import of '{imp.bundle}' anchors to "
+                    f"'{imp.anchor_dataset}', which is not in its own 'datasets' subset"
+                )
+
+        allowed = set(imp.datasets) if imp.datasets is not None else set(bundle.datasets)
+        included = _bfs_reachable(bundle, imp.anchor_dataset, allowed)
+
+        dimension_owners: dict[str, str] = {}
+        for ds_name in included:
+            for dim_name in bundle.datasets[ds_name].dimensions:
+                dimension_owners[dim_name] = ds_name
+
+        for dim_name, ds_name in dimension_owners.items():
+            if dim_name in native_names:
+                continue  # native shadows imported (FR-010)
+            owner_tag = f"{imp.bundle}.{ds_name}"
+            if dim_name in claimed and claimed[dim_name] != owner_tag:
+                raise ModelError(
+                    f"model '{model.name}': dimension '{dim_name}' is offered by both "
+                    f"{claimed[dim_name]} and {owner_tag} — subset one of the imports"
+                )
+            claimed[dim_name] = owner_tag
+            model.dimensions[dim_name] = bundle.datasets[ds_name].dimensions[dim_name]
+
+        model.import_bindings.append(ImportBinding(
+            import_spec=imp, bundle=bundle,
+            included_datasets=included, dimension_owners=dimension_owners,
+        ))
+    return model

@@ -13,14 +13,26 @@ from .store import VisualStore
 class Registry:
     def __init__(self) -> None:
         self.models: dict[str, semantic.Model] = {}
+        self.dimension_bundles: dict[str, semantic.DimensionBundle] = {}
         self.store: Optional[VisualStore] = None
 
     def init(self) -> None:
-        self.reload_models()
+        self.reload_all()
         self.store = VisualStore(config.DB_PATH)
 
-    def reload_models(self) -> None:
+    def reload_all(self) -> None:
+        """Reload dimension bundles, then models, then resolve each model's
+        imports against the freshly-loaded bundles — bundles must load first
+        since models validate their imports against them."""
+        self.dimension_bundles = semantic.load_dimension_bundles(config.DIMENSIONS_DIR)
         self.models = semantic.load_models(config.MODELS_DIR)
+        for model in self.models.values():
+            semantic.resolve_imports(model, self.dimension_bundles)
+
+    def reload_models(self) -> None:
+        """Back-compat name — also reloads dimension bundles, since models may
+        import them and the two must always be resolved together."""
+        self.reload_all()
 
 
 registry = Registry()

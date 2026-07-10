@@ -271,6 +271,13 @@ table.data tr:hover td { background: rgba(0, 229, 255, 0.04); }
 }
 .col-chip:hover { border-color: var(--neon); color: var(--ink); }
 .col-chip .dt { margin-left: auto; color: var(--ink-3); font-size: 9px; }
+.editor-cols .ds-head { color: var(--pink); font-size: 10px; letter-spacing: 1px; margin: 8px 0 2px; text-transform: uppercase; }
+
+/* common-dimension import panel in the model editor side */
+#editor-imports { margin-top: 16px; }
+.import-card { border: 1px solid var(--line); border-radius: 4px; padding: 8px; margin-top: 6px; background: var(--bg); }
+.import-card .nm { color: var(--ink); font-size: 11px; letter-spacing: 1px; margin-bottom: 5px; }
+.import-datasets { display: flex; flex-direction: column; gap: 3px; }
 
 /* ── dashboards ─────────────────────────────────────── */
 .dash-views-bar {

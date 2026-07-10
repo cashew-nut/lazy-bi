@@ -7,6 +7,7 @@ import { $, api } from "./lib.js";
 
 export const state = {
   models: [],
+  bundles: [],          // common dimensional models from /api/dimensions
   model: null,          // selected model public dict (builder)
   dims: [],             // [{name, grain?}]
   measures: [],         // [name]

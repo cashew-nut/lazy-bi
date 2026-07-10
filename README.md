@@ -70,16 +70,18 @@ app/
   config.py            env-driven settings (endpoints, paths, bucket)
   main.py              app factory + lifecycle (emulator, seed, registry)
   registry.py          runtime state: loaded models + store
-  semantic.py          semantic layer: yaml -> Model/Dimension/Measure/Join/Spine/Geo
+  semantic.py          semantic layer: yaml -> Model/Dimension/Measure/Join/Spine/Geo/
+                       DimensionBundle/Import
   engine.py            query engine: semantic query -> polars lazy scan
   store.py             sqlite persistence: visuals, dashboards, publications
   emulator.py, s3.py, seed.py, load_taxi.py
-  api/                 one router per resource: models, query, visuals,
+  api/                 one router per resource: models, dimensions, query, visuals,
                        dashboards (+publish/portal), explorer (+health)
   static/js/           ES modules: lib, state, filters, builder, dashboard,
                        portal, explorer, editor, main
   static/js/charts/    one renderer per chart + shared frame/pivot/dispatch
 models/*.yaml          semantic models (the editable contract)
+dimensions/*.yaml      dimension bundles shared across models (see below)
 tests/                 pytest: semantic, engine, store, API
 Dockerfile, docker-compose.yml
 ```
@@ -153,6 +155,68 @@ timeline window; `=` gives a single-date snapshot even with no grouping.
 Buckets with zero active rows are omitted. One spine dimension per query.
 See `models/subscriptions.yaml` for a working example (active customers, MRR,
 ARPU over a 30-month timeline).
+
+### Common dimensional models (shared dimensions)
+
+Some dimensions belong to more than one fact model — region, account,
+product — and hand-copying the same join into every model that wants them
+means one edit has to happen N times. A **dimension bundle**, one YAML file
+per bundle in `dimensions/`, declares a set of reusable **datasets** (a
+source plus dimensions, no measures) and the joins between them, once:
+
+```yaml
+# dimensions/geography.yaml
+name: geography
+label: Geography
+datasets:
+  - name: regions
+    source: { format: csv, path: s3://cash-intel/ref/regions.csv }
+    dimensions:
+      - name: region
+        geo: { lat: region_lat, lon: region_lon }
+      - name: territory
+    joins:                    # joins to another dataset *in this same bundle*
+      - to: territories
+        on: territory
+  - name: territories
+    source: { format: csv, path: s3://cash-intel/ref/territories.csv }
+    dimensions:
+      - name: territory_name
+        column: name
+```
+
+A fact model imports a bundle by declaring an **anchor** — how its own
+column maps to a key on one dataset in the bundle:
+
+```yaml
+# models/sales.yaml
+dimension_imports:
+  - bundle: geography
+    anchor_dataset: regions
+    on: region             # sales.region = geography.regions.region
+    # datasets: [regions]  # optional — omit for the whole bundle (default)
+```
+
+By default the *whole* bundle becomes available, including datasets only
+reachable through the bundle's own internal joins — importing `regions`
+above also pulls in `territory_name` from `territories`, with no separate
+declaration. Imported dimensions behave exactly like native ones everywhere
+(builder, filters, dashboards, cross-filtering by name); a same-named
+dimension declared natively on the fact model always wins over an imported
+one. See `dimensions/geography.yaml`, imported by both `models/sales.yaml`
+and `models/logistics.yaml`, for a working example — editing the bundle
+updates both models with no changes to either model file.
+
+**Or author it in the app**: the sidebar's *Common Dimensions* section
+(**+ new common model**, or click one to edit) opens the same live-validating
+YAML editor the fact-model editor uses — with per-dataset source-column
+introspection. And while editing a fact model, the editor's *Common
+Dimensions* panel lists every bundle and its datasets; clicking one inserts a
+ready-to-go `dimension_imports` block. Common dimensional models never appear
+in the builder's model picker — they provide dimensions, they aren't queried
+directly — and one that's currently imported can't be deleted until its
+importers drop it. Endpoints mirror the model API under `/api/dimensions`
+(list, validate, create, `{name}/yaml` GET/PUT, delete, reload).
 
 ### Performance (13M-row fact table)
 

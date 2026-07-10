@@ -57,6 +57,85 @@ def test_explorer_maps_files_to_models(client):
     assert any(h["model"] == "sales" and h["role"].startswith("join") for h in csv_hit)
 
 
+def test_explorer_attributes_dimension_bundle_sources(client):
+    # regions.csv/territories.csv back the `geography` bundle sales.yaml
+    # imports — they must not show up as unmapped just because no model
+    # declares them directly as a source or a plain join
+    data = client.get("/api/explorer").json()
+    by_key = {f["key"]: f for f in data["files"]}
+    for key in ("ref/regions.csv", "ref/territories.csv"):
+        hits = by_key[key]["models"]
+        assert hits, f"{key} should not be unmapped"
+        assert any(h["model"] == "sales" and h["role"].startswith("import:") for h in hits)
+
+
+def test_dimension_bundles_list(client):
+    bundles = client.get("/api/dimensions").json()
+    geo = next(b for b in bundles if b["name"] == "geography")
+    assert geo["file"] == "geography.yaml"
+    assert {d["name"] for d in geo["datasets"]} == {"regions", "territories"}
+
+
+def test_dimension_bundle_yaml_roundtrip(client):
+    got = client.get("/api/dimensions/geography/yaml").json()
+    assert got["file"] == "geography.yaml"
+    assert "territories" in got["yaml"]
+
+    # round-trip an unchanged save; a real edit is covered by parsing tests
+    put = client.put("/api/dimensions/geography/yaml", json={"yaml": got["yaml"]})
+    assert put.status_code == 200
+    assert put.json()["name"] == "geography"
+
+    # models that import this bundle must re-resolve after the reload the PUT triggers
+    sales = next(m for m in client.get("/api/models").json() if m["name"] == "sales")
+    assert any(d["name"] == "territory_name" for d in sales["dimensions"])
+
+
+def test_dimension_bundle_reload(client):
+    assert client.post("/api/dimensions/reload").json()["loaded"] == ["geography"]
+
+
+def test_unknown_dimension_bundle_is_404(client):
+    assert client.get("/api/dimensions/nope/yaml").status_code == 404
+
+
+def test_dimension_bundle_validate(client):
+    ok = client.post("/api/dimensions/validate", json={"yaml": (
+        "name: probe\ndatasets:\n"
+        "  - name: regions\n    source: {format: csv, path: s3://cash-intel/ref/regions.csv}\n"
+        "    dimensions: [{name: region}]\n")}).json()
+    assert ok["ok"]
+    ds = ok["bundle"]["datasets"][0]
+    assert ds["name"] == "regions"
+    assert any(c["name"] == "region" for c in ds["columns"])  # source introspected
+
+    bad = client.post("/api/dimensions/validate", json={"yaml": "name: x\ndatasets: []"}).json()
+    assert not bad["ok"] and "no datasets" in bad["error"]
+
+
+def test_dimension_bundle_create_and_delete(client):
+    yaml = ("name: throwaway_geo\ndatasets:\n"
+            "  - name: regions\n    source: {format: csv, path: s3://cash-intel/ref/regions.csv}\n"
+            "    dimensions: [{name: region}]\n")
+    created = client.post("/api/dimensions", json={"yaml": yaml})
+    assert created.status_code == 201
+    assert created.json()["name"] == "throwaway_geo"
+    assert client.post("/api/dimensions", json={"yaml": yaml}).status_code == 409  # duplicate
+    assert client.delete("/api/dimensions/throwaway_geo").status_code == 204
+    assert client.get("/api/dimensions/throwaway_geo/yaml").status_code == 404
+
+
+def test_delete_imported_bundle_refused(client):
+    # geography is imported by sales + logistics — deleting it must be refused,
+    # naming the importers, rather than breaking every importer on reload
+    res = client.delete("/api/dimensions/geography")
+    assert res.status_code == 409
+    detail = res.json()["detail"]
+    assert "sales" in detail and "logistics" in detail
+    # still present and still resolving after the refused delete
+    assert client.get("/api/dimensions/geography/yaml").status_code == 200
+
+
 def test_editor_validate(client):
     ok = client.post("/api/models/validate", json={"yaml": (
         "name: probe\nsource: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"

@@ -33,6 +33,12 @@
       </section>
 
       <section>
+        <div class="sec-title">Common Dimensions</div>
+        <div id="bundle-list"></div>
+        <button class="ghost" id="new-bundle" style="margin-top:6px">+ new common model</button>
+      </section>
+
+      <section>
         <div class="sec-title">Dimensions</div>
         <div id="dim-list" class="chip-list"></div>
       </section>
@@ -143,8 +149,9 @@
             <div class="sec-title">Validation</div>
             <div id="editor-report" class="editor-report"></div>
             <div class="sec-title" style="margin-top:16px">Source Columns</div>
-            <div class="empty-note">click to insert at cursor</div>
+            <div class="empty-note" id="editor-cols-note">click to insert at cursor</div>
             <div id="editor-cols" class="editor-cols"></div>
+            <div id="editor-imports" hidden></div>
           </div>
         </div>
       </div>
