@@ -176,3 +176,104 @@ def test_new_model_opens_the_form_not_the_editor(client):
     modelling = client.get("/static/js/modelling.js").text
     assert "openModelForm" in modelling
     assert 'openEditor("model", m.name)' in modelling  # raw yaml editing still reachable
+
+
+# ── bundle form backend (guided common-model authoring) ─────────
+
+def _geography_spec():
+    text = open("dimensions/geography.yaml").read()
+    return semantic.bundle_to_spec(semantic.parse_bundle_text(text))
+
+
+def test_bundle_spec_yaml_round_trip():
+    spec = _geography_spec()
+    reparsed = semantic.parse_bundle_text(semantic.bundle_spec_to_yaml(spec))
+    original = semantic.parse_bundle_text(open("dimensions/geography.yaml").read())
+    assert list(reparsed.datasets) == list(original.datasets)
+    regions = reparsed.datasets["regions"]
+    assert (regions.joins[0].to, regions.joins[0].left_on) == ("territories", ["territory"])
+    assert regions.dimensions["region"].geo.lat == "region_lat"           # geo survives
+    assert reparsed.datasets["territories"].dimensions["territory_name"].column == "name"
+
+
+def test_bundle_spec_to_yaml_differing_relationship_columns():
+    spec = _geography_spec()
+    spec["datasets"][0]["joins"][0]["right_on"] = ["terr_code"]
+    parsed = semantic.parse_bundle_text(semantic.bundle_spec_to_yaml(spec))
+    assert parsed.datasets["regions"].joins[0].left_on == ["territory"]
+    assert parsed.datasets["regions"].joins[0].right_on == ["terr_code"]
+
+
+def test_bundle_spec_endpoint(client):
+    res = client.get("/api/dimensions/geography/spec")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["file"] == "geography.yaml"
+    ds = {d["name"]: d for d in body["spec"]["datasets"]}
+    assert ds["regions"]["joins"][0] == {
+        "to": "territories", "left_on": ["territory"], "right_on": ["territory"], "how": "left"}
+    assert ds["territories"]["dimensions"][0]["column"] == "name"
+
+
+def test_bundle_generate_returns_valid_yaml_and_columns(client):
+    spec = client.get("/api/dimensions/geography/spec").json()["spec"]
+    body = client.post("/api/dimensions/generate", json=spec).json()
+    assert body["ok"] is True
+    regions = next(d for d in body["bundle"]["datasets"] if d["name"] == "regions")
+    assert "region_lat" in [c["name"] for c in regions["columns"]]
+    check = client.post("/api/dimensions/validate", json={"yaml": body["yaml"]})
+    assert check.json()["ok"] is True
+
+
+def test_bundle_generate_reports_bad_spec_with_yaml(client):
+    spec = client.get("/api/dimensions/geography/spec").json()["spec"]
+    # same dimension name declared by two datasets -> load-time collision
+    spec["datasets"][1]["dimensions"][0]["name"] = spec["datasets"][0]["dimensions"][0]["name"]
+    body = client.post("/api/dimensions/generate", json=spec).json()
+    assert body["ok"] is False
+    assert "declared by both" in body["error"]
+    assert body["yaml"]  # still returned for EDIT YAML DIRECTLY
+
+
+def test_bundle_form_save_flow_creates_importable_bundle(client):
+    """Wizard backend path: spec -> generate -> POST /dimensions -> importable
+    by a fact model -> delete."""
+    spec = {
+        "name": "catalog", "label": "Catalog", "description": "",
+        "datasets": [{
+            "name": "products_ref",
+            "source": {"path": "s3://cash-intel/ref/products.csv", "format": "csv"},
+            "dimensions": [{"name": "supplier", "column": "supplier", "label": "Supplier",
+                            "type": "categorical", "description": "", "spine": None, "geo": None}],
+            "joins": [],
+        }],
+    }
+    gen = client.post("/api/dimensions/generate", json=spec).json()
+    assert gen["ok"] is True
+    created = client.post("/api/dimensions", json={"yaml": gen["yaml"]})
+    assert created.status_code == 201
+    try:
+        model_yaml = (
+            "name: catalog_probe\n"
+            "source: {format: parquet, path: s3://cash-intel/marketing/spend.parquet}\n"
+            "dimension_imports:\n"
+            "  - bundle: catalog\n    anchor_dataset: products_ref\n"
+            "    left_on: channel\n    right_on: supplier\n"
+            "measures:\n  - name: rows\n    expr: pl.len()\n"
+        )
+        check = client.post("/api/models/validate", json={"yaml": model_yaml})
+        assert check.json()["ok"] is True
+    finally:
+        assert client.delete("/api/dimensions/catalog").status_code == 204
+
+
+def test_bundleform_view_present(client):
+    html = client.get("/").text
+    assert 'id="bundleform-view"' in html
+    assert 'id="bf-yaml"' in html
+    assert client.get("/static/js/bundleform.js").status_code == 200
+    main = client.get("/static/js/main.js").text
+    assert '$("#mk-new-bundle").addEventListener("click", () => openBundleForm(null))' in main
+    modelling = client.get("/static/js/modelling.js").text
+    assert "openBundleForm" in modelling
+    assert 'openEditor("bundle", b.name)' in modelling  # raw yaml editing still reachable

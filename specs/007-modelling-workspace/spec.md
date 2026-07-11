@@ -25,6 +25,7 @@ feature, not a new feature.
 
 - Q: Should model authoring lead with a yaml editor or a structured form? → A: Form-first — creating/editing a fact model opens a guided, stepped form (source dataset → joined datasets → common models → dimensions & measures → review) whose output is server-generated YAML. The raw YAML editor remains one click away ("edit yaml directly") for anything the form does not surface.
 - Q: What is the source of truth when a form exists alongside the text editor? → A: The structured spec while the form is open; the yaml file on disk always. The form's spec renders to canonical YAML server-side (`POST /api/models/generate`) and an existing file re-opens into the form via `GET /api/models/{name}/spec`. Round-trips are semantically lossless; comments/hand-formatting are not preserved by a form save, and the review step says so.
+- Q: Does form-first authoring cover common (shared-dimension) models too? → A: Yes — creating/editing a common model opens its own guided form (name & datasets → relationships between the bundle's datasets → per-dataset dimensions → review & save) with the same server-generated-YAML contract and the same raw-yaml escape hatch.
 - Q: How are relationships (joins, common-model imports) expressed in the form? → A: As explicit column pairs — this model's column ⇄ the other dataset's column — chosen from each side's real (introspected) schema, so the two sides do NOT need to share a name (`left_on`/`right_on`; collapsed to `on` in the yaml only when they match). Sides degrade to free-text when a schema is unreachable.
 
 ## User Scenarios & Testing *(mandatory)*
@@ -178,6 +179,7 @@ A power user who already thinks in the model YAML wants to edit the raw file dir
 - **FR-026**: The review step MUST show the exact YAML that saving will persist, together with its validation verdict; SAVE MUST be disabled while the document is invalid.
 - **FR-027**: From anywhere in the form the author MUST be able to hand the current state to the raw YAML editor ("edit yaml directly") and continue there; the handed-over text arrives as an unsaved edit with revert-to-disk still available.
 - **FR-028**: Leaving the form with in-progress edits MUST warn before discarding (same guarantee as FR-021); nothing is persisted until SAVE writes the generated yaml.
+- **FR-029**: Common (shared-dimension) models MUST get the same form-first treatment: a guided form covering the bundle's datasets, the relationships between them (as column pairs per FR-024), and each dataset's dimensions — with FR-025's attribute preservation, FR-026's review gate, FR-027's yaml hand-over, and FR-028's leave guard all applying equally.
 
 ### Key Entities *(include if feature involves data)*
 

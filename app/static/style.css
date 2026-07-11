@@ -539,9 +539,9 @@ button.ghost.mk-new { margin-top: 2px; }
 ::-webkit-scrollbar-track { background: transparent; }
 
 /* ── guided model form (modelform.js) ── */
-#mf-status { flex: 1; font-size: 11px; letter-spacing: 0.5px; color: var(--ink-3); }
-#mf-status .ok { color: #2bd97c; text-shadow: 0 0 6px rgba(43, 217, 124, 0.5); }
-#mf-status .err { color: var(--bad); }
+#mf-status, #bf-status { flex: 1; font-size: 11px; letter-spacing: 0.5px; color: var(--ink-3); }
+#mf-status .ok, #bf-status .ok { color: #2bd97c; text-shadow: 0 0 6px rgba(43, 217, 124, 0.5); }
+#mf-status .err, #bf-status .err { color: var(--bad); }
 .mf-body { flex: 1; min-height: 0; display: flex; }
 .mf-steps {
   width: 210px; flex: none; border-right: 1px solid var(--line); background: var(--panel);

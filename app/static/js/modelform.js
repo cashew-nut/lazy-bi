@@ -9,10 +9,13 @@
 
 import { refreshModels } from "./builder.js";
 import { openEditor } from "./editor.js";
-import { $, api, el, fmtBytes } from "./lib.js";
+import {
+  colsOf, datasetCards, loadDatasets, manualPathRow, NAME_RE, note, pairRow,
+  sourceSchema, textField, titleCase,
+} from "./formkit.js";
+import { $, api, el } from "./lib.js";
 import { hooks, showView, state } from "./state.js";
 
-const NAME_RE = /^[a-z_][a-z0-9_]*$/;
 const STEPS = ["SOURCE", "JOINS", "COMMON MODELS", "DIMENSIONS & MEASURES", "REVIEW & SAVE"];
 const AGGS = { sum: "sum()", mean: "mean()", min: "min()", max: "max()", n_unique: "n_unique()" };
 
@@ -27,25 +30,9 @@ const form = {
   dimensions: [],      // spec dimension dicts (column/type/label/spine/geo preserved)
   measures: [],        // {name, label, expr, format, description}
 };
-let datasets = null;        // /api/datasets payload (fetched once per open)
 let generated = null;       // last /api/models/generate response
-const schemaCache = {};     // "format|path" -> [{name,dtype}] | null (unreachable)
 
 const setStatus = (html) => { $("#mf-status").innerHTML = html; };
-
-async function sourceSchema(path, format) {
-  const key = `${format}|${path}`;
-  if (key in schemaCache) return schemaCache[key];
-  try {
-    const res = await api(`/api/datasets/schema?path=${encodeURIComponent(path)}&format=${encodeURIComponent(format)}`);
-    schemaCache[key] = res.columns;
-  } catch {
-    schemaCache[key] = null;   // unreachable — pairs fall back to text inputs
-  }
-  return schemaCache[key];
-}
-
-const colsOf = (src) => (src && schemaCache[`${src.format}|${src.path}`]) || null;
 
 // model-side columns offered as the LEFT half of a relationship: the source's
 // own columns plus everything the declared joins pull in
@@ -93,7 +80,7 @@ export async function openModelForm(name) {
   setStatus(name ? "loading…" : "");
   render();
   if (!state.bundles.length) state.bundles = await api("/api/dimensions").catch(() => []);
-  if (!datasets) datasets = await api("/api/datasets").catch(() => null);
+  await loadDatasets();
   if (name) {
     const { spec } = await api(`/api/models/${name}/spec`);
     Object.assign(form, {
@@ -171,77 +158,31 @@ function stepError() {
   return null;
 }
 
-const note = (text) => el("div", { class: "empty-note mf-note" }, text);
-const textField = (label, value, oninput, ph = "") => {
-  const input = el("input", { value, placeholder: ph, spellcheck: "false" });
-  input.addEventListener("input", () => { oninput(input.value); markDirty(); $("#mf-hint").textContent = stepError() || ""; $("#mf-next").disabled = !!stepError(); });
-  return el("div", { class: "mf-field" }, el("div", { class: "field-label" }, label), input);
-};
+// textField wrapper: every keystroke also refreshes the dirty flag + step gate
+const field = (label, value, set, ph) => textField(label, value, (v) => {
+  set(v);
+  markDirty();
+  $("#mf-hint").textContent = stepError() || "";
+  $("#mf-next").disabled = !!stepError();
+}, ph);
 
-// a LEFT↔RIGHT relationship pair row; either side degrades to a text input
-// when its schema is unreachable. The two names do not have to match.
-function pairRow(pair, leftCols, rightCols, onchange, onremove) {
-  const side = (val, cols, set, ph) => {
-    if (!cols || !cols.length) {
-      const input = el("input", { value: val, placeholder: ph, spellcheck: "false" });
-      input.addEventListener("input", () => { set(input.value); markDirty(); });
-      return input;
-    }
-    const sel = el("select", {}, el("option", { value: "" }, `— ${ph} —`));
-    if (val && !cols.some((c) => c.name === val)) sel.append(el("option", { value: val }, val));
-    for (const c of cols) sel.append(el("option", { value: c.name }, `${c.name} · ${c.dtype}`));
-    sel.value = val;
-    sel.addEventListener("change", () => { set(sel.value); markDirty(); onchange(); });
-    return sel;
-  };
-  const rm = el("button", { class: "rm", title: "remove pair" }, "✕");
-  rm.addEventListener("click", onremove);
-  return el("div", { class: "mf-pair" },
-    side(pair.left, leftCols, (v) => { pair.left = v; }, "this model's column"),
-    el("span", { class: "mf-link" }, "⇄"),
-    side(pair.right, rightCols, (v) => { pair.right = v; }, "their column"),
-    rm);
-}
-
-function datasetCards(onpick, current) {
-  const box = el("div", { class: "mf-ds-grid" });
-  if (!datasets) { box.append(note("bucket not reachable — enter a path manually below")); return box; }
-  for (const ds of datasets.datasets) {
-    const on = current && current.path === ds.path;
-    const card = el("div", { class: "mk-card clickable" + (on ? " sel" : "") },
-      el("div", { class: "mk-top" }, el("span", { class: "nm" }, ds.key || "(root)"), el("span", { class: "fmt" }, ds.format)),
-      el("div", { class: "path" }, ds.path),
-      el("div", { class: "mk-sub" }, `${ds.object_count} obj · ${fmtBytes(ds.bytes)}`
-        + (ds.models.length ? ` · read by ${[...new Set(ds.models.map((m) => m.name))].join(", ")}` : " · unmapped")
-        + (ds.format_ambiguous ? " · ⚠ mixed types" : "")));
-    card.addEventListener("click", () => onpick({ key: ds.key, path: ds.path, format: ds.format }));
-    // grouped globs are drillable to one exact object (FR-006)
-    if (ds.format !== "delta" && ds.objects.length > 1) {
-      const drill = el("div", { class: "import-datasets" });
-      for (const o of ds.objects) {
-        const chip = el("div", { class: "col-chip", title: `use just ${o.key}` },
-          el("span", {}, o.key.split("/").pop()), el("span", { class: "dt" }, o.format));
-        chip.addEventListener("click", (e) => {
-          e.stopPropagation();
-          onpick({ key: o.key, path: `s3://${datasets.bucket}/${o.key}`, format: o.format });
-        });
-        drill.append(chip);
-      }
-      card.append(drill);
-    }
-    box.append(card);
-  }
-  return box;
-}
+const PAIR_PH = { leftPh: "this model's column", rightPh: "their column" };
+const modelPair = (pair, leftCols, rightCols, onremove) =>
+  pairRow(pair, leftCols, rightCols, {
+    ...PAIR_PH,
+    onchange: () => { markDirty(); render(); },
+    oninput: markDirty,
+    onremove,
+  });
 
 // ── step 1: SOURCE ──
 
 function renderSource(main) {
   main.append(el("div", { class: "sec-title" }, "1 · Name"));
   main.append(el("div", { class: "mf-row3" },
-    textField("NAME (snake_case)", form.name, (v) => { form.name = v; }, "my_model"),
-    textField("LABEL", form.label, (v) => { form.label = v; }, "My Model"),
-    textField("DESCRIPTION", form.description, (v) => { form.description = v; }, "What this model covers.")));
+    field("NAME (snake_case)", form.name, (v) => { form.name = v; }, "my_model"),
+    field("LABEL", form.label, (v) => { form.label = v; }, "My Model"),
+    field("DESCRIPTION", form.description, (v) => { form.description = v; }, "What this model covers.")));
 
   main.append(el("div", { class: "sec-title", style: "margin-top:14px" }, "2 · Source dataset"));
   main.append(note("the glob / dataset this model scans — pick one from the bucket:"));
@@ -253,19 +194,12 @@ function renderSource(main) {
     render();
   }, form.source));
 
-  const path = el("input", { value: form.source?.path || "", placeholder: "s3://bucket/prefix/*.parquet", spellcheck: "false" });
-  const fmt = el("select", {}, ...["parquet", "csv", "delta"].map((f) => el("option", { value: f }, f)));
-  fmt.value = form.source?.format || "parquet";
-  const load = el("button", { class: "btn plain" }, "USE PATH");
-  load.addEventListener("click", async () => {
-    if (!path.value.trim()) return;
-    form.source = { path: path.value.trim(), format: fmt.value };
+  main.append(manualPathRow(form.source, async (src) => {
+    form.source = src;
     markDirty();
-    await sourceSchema(form.source.path, form.source.format);
+    await sourceSchema(src.path, src.format);
     render();
-  });
-  main.append(el("div", { class: "mf-manual" }, el("div", { class: "field-label" }, "OR TYPE A PATH"),
-    el("div", { class: "mf-manual-row" }, path, fmt, load)));
+  }));
 
   if (form.source) {
     const cols = colsOf(form.source);
@@ -293,8 +227,8 @@ function renderJoins(main) {
     card.append(el("div", { class: "mf-card-head" }, nameIn, el("span", { class: "fmt" }, j.format), how, rm),
       el("div", { class: "path" }, j.path),
       el("div", { class: "field-label", style: "margin-top:8px" }, "RELATIONSHIP · this model ⇄ " + j.name));
-    j.pairs.forEach((p, pi) => card.append(pairRow(p, colsOf(form.source), colsOf(j),
-      () => render(), () => { j.pairs.splice(pi, 1); markDirty(); render(); })));
+    j.pairs.forEach((p, pi) => card.append(modelPair(p, colsOf(form.source), colsOf(j),
+      () => { j.pairs.splice(pi, 1); markDirty(); render(); })));
     const addPair = el("button", { class: "ghost" }, "+ relate another column pair");
     addPair.addEventListener("click", () => { j.pairs.push({ left: "", right: "" }); markDirty(); render(); });
     card.append(addPair);
@@ -372,8 +306,8 @@ function importControls(b, imp) {
 
   const anchorDs = bundleDataset(b.name, imp.anchor);
   out.push(el("div", { class: "field-label", style: "margin-top:8px" }, `RELATIONSHIP · this model ⇄ ${b.name}.${imp.anchor}`));
-  imp.pairs.forEach((p, pi) => out.push(pairRow(p, modelColumns(), anchorDs && colsOf(anchorDs),
-    () => render(), () => { imp.pairs.splice(pi, 1); markDirty(); render(); })));
+  imp.pairs.forEach((p, pi) => out.push(modelPair(p, modelColumns(), anchorDs && colsOf(anchorDs),
+    () => { imp.pairs.splice(pi, 1); markDirty(); render(); })));
   const addPair = el("button", { class: "ghost" }, "+ relate another column pair");
   addPair.addEventListener("click", () => { imp.pairs.push({ left: "", right: "" }); markDirty(); render(); });
   out.push(addPair);
@@ -460,8 +394,7 @@ function renderDims(box) {
     tick.addEventListener("click", () => {
       if (dim) form.dimensions = form.dimensions.filter((d) => d !== dim);
       else form.dimensions.push({
-        name: c.name, column: c.name,
-        label: c.name.replace(/_/g, " ").replace(/\b\w/g, (ch) => ch.toUpperCase()),
+        name: c.name, column: c.name, label: titleCase(c.name),
         type: /date|time/i.test(c.dtype) ? "time" : "categorical", description: "", spine: null, geo: null,
       });
       markDirty();

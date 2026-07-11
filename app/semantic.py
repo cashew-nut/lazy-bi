@@ -486,6 +486,15 @@ GENERATED_HEADER = (
 )
 
 
+def _dimension_to_spec(d: Dimension) -> dict:
+    return {
+        "name": d.name, "column": d.column, "label": d.label, "type": d.type,
+        "description": d.description,
+        "spine": {"start": d.spine.start, "end": d.spine.end} if d.spine else None,
+        "geo": {"lat": d.geo.lat, "lon": d.geo.lon} if d.geo else None,
+    }
+
+
 def model_to_spec(model: Model) -> dict:
     """Form-facing dict for a parsed-but-unresolved Model (native dimensions
     only — imported dimensions live in the bundle, not this file)."""
@@ -505,19 +514,52 @@ def model_to_spec(model: Model) -> dict:
              "datasets": i.datasets}
             for i in model.imports
         ],
-        "dimensions": [
-            {"name": d.name, "column": d.column, "label": d.label, "type": d.type,
-             "description": d.description,
-             "spine": {"start": d.spine.start, "end": d.spine.end} if d.spine else None,
-             "geo": {"lat": d.geo.lat, "lon": d.geo.lon} if d.geo else None}
-            for d in model.dimensions.values()
-        ],
+        "dimensions": [_dimension_to_spec(d) for d in model.dimensions.values()],
         "measures": [
             {"name": m.name, "label": m.label, "expr": m.expr_source,
              "format": m.format, "description": m.description}
             for m in model.measures.values()
         ],
     }
+
+
+def bundle_to_spec(bundle: DimensionBundle) -> dict:
+    """Form-facing dict for a parsed DimensionBundle — the common-model
+    counterpart of model_to_spec."""
+    return {
+        "name": bundle.name,
+        "label": bundle.label,
+        "description": bundle.description,
+        "datasets": [
+            {"name": ds.name,
+             "source": {"path": ds.source.path, "format": ds.source.format},
+             "dimensions": [_dimension_to_spec(d) for d in ds.dimensions.values()],
+             "joins": [{"to": j.to, "left_on": j.left_on, "right_on": j.right_on, "how": j.how}
+                       for j in ds.joins]}
+            for ds in bundle.datasets.values()
+        ],
+    }
+
+
+def _spec_dimension_entries(dims: list[dict]) -> list[dict]:
+    """Spec dimension dicts -> tersest correct yaml entries (defaults omitted)."""
+    out = []
+    for d in dims:
+        entry = {"name": d["name"]}
+        if d.get("column") and d["column"] != d["name"]:
+            entry["column"] = d["column"]
+        if d.get("label"):
+            entry["label"] = d["label"]
+        if d.get("type", "categorical") != "categorical":
+            entry["type"] = d["type"]
+        if d.get("description"):
+            entry["description"] = d["description"]
+        if d.get("spine"):
+            entry["spine"] = {"start": d["spine"]["start"], "end": d["spine"]["end"]}
+        if d.get("geo"):
+            entry["geo"] = {"lat": d["geo"]["lat"], "lon": d["geo"]["lon"]}
+        out.append(entry)
+    return out
 
 
 def _spec_join_keys(entry: dict, spec: dict) -> None:
@@ -564,23 +606,7 @@ def spec_to_yaml(spec: dict) -> str:
     if imports:
         doc["dimension_imports"] = imports
 
-    dims = []
-    for d in spec.get("dimensions") or []:
-        entry = {"name": d["name"]}
-        if d.get("column") and d["column"] != d["name"]:
-            entry["column"] = d["column"]
-        if d.get("label"):
-            entry["label"] = d["label"]
-        if d.get("type", "categorical") != "categorical":
-            entry["type"] = d["type"]
-        if d.get("description"):
-            entry["description"] = d["description"]
-        if d.get("spine"):
-            entry["spine"] = {"start": d["spine"]["start"], "end": d["spine"]["end"]}
-        if d.get("geo"):
-            entry["geo"] = {"lat": d["geo"]["lat"], "lon": d["geo"]["lon"]}
-        dims.append(entry)
-    doc["dimensions"] = dims
+    doc["dimensions"] = _spec_dimension_entries(spec.get("dimensions") or [])
 
     measures = []
     for m in spec.get("measures") or []:
@@ -595,11 +621,41 @@ def spec_to_yaml(spec: dict) -> str:
         measures.append(entry)
     doc["measures"] = measures
 
+    return _dump_generated(doc)
+
+
+def _dump_generated(doc: dict) -> str:
     text = yaml.safe_dump(doc, sort_keys=False, default_flow_style=False, width=1000, allow_unicode=True)
     # yaml 1.1 quotes the boolean-ish `on` key; hand-written models use it bare
     # (the parser accepts both — see _parse_join_keys)
     text = re.sub(r"^(\s*(?:- )?)'on':", r"\1on:", text, flags=re.MULTILINE)
     return GENERATED_HEADER + text
+
+
+def bundle_spec_to_yaml(spec: dict) -> str:
+    """Render a form spec dict to canonical dimension-bundle YAML."""
+    doc: dict = {"name": spec["name"]}
+    if spec.get("label"):
+        doc["label"] = spec["label"]
+    if spec.get("description"):
+        doc["description"] = spec["description"]
+    entries = []
+    for ds in spec.get("datasets") or []:
+        entry: dict = {
+            "name": ds["name"],
+            "source": {"format": ds["source"].get("format", "parquet"), "path": ds["source"]["path"]},
+            "dimensions": _spec_dimension_entries(ds.get("dimensions") or []),
+        }
+        joins = []
+        for j in ds.get("joins") or []:
+            join_entry = {"to": j["to"]}
+            _spec_join_keys(join_entry, j)
+            joins.append(join_entry)
+        if joins:
+            entry["joins"] = joins
+        entries.append(entry)
+    doc["datasets"] = entries
+    return _dump_generated(doc)
 
 
 # ---------------------------------------------------------------------------

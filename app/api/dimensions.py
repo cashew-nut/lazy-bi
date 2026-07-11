@@ -11,12 +11,37 @@ from pydantic import BaseModel
 from .. import config, engine, semantic
 from ..registry import registry
 from .deps import get_bundle
+from .models import DimensionSpec, SourceSpec
 
 router = APIRouter(tags=["dimensions"])
 
 
 class YamlIn(BaseModel):
     yaml: str
+
+
+class BundleJoinSpec(BaseModel):
+    to: str
+    left_on: list[str] = []
+    right_on: list[str] = []
+    how: str = "left"
+
+
+class BundleDatasetSpec(BaseModel):
+    name: str
+    source: SourceSpec
+    dimensions: list[DimensionSpec] = []
+    joins: list[BundleJoinSpec] = []
+
+
+class BundleSpec(BaseModel):
+    """Structured form of a common model — what the guided bundle form edits.
+    POST /dimensions/generate renders it to YAML; GET /dimensions/{name}/spec
+    is the inverse for opening an existing file in the form."""
+    name: str
+    label: str = ""
+    description: str = ""
+    datasets: list[BundleDatasetSpec] = []
 
 
 def _to_public(bundle: semantic.DimensionBundle) -> dict:
@@ -79,6 +104,43 @@ def validate_dimension_bundle(body: YamlIn):
         datasets.append(entry)
     return {"ok": True, "error": None,
             "bundle": {"name": parsed.name, "label": parsed.label, "datasets": datasets}}
+
+
+@router.post("/dimensions/generate")
+def generate_bundle_yaml(spec: BundleSpec):
+    """Render the guided bundle form's structured spec to canonical YAML, then
+    run the same parse + per-dataset schema introspection as
+    /dimensions/validate so the form gets document and verdict in one call."""
+    text = semantic.bundle_spec_to_yaml(spec.model_dump())
+    try:
+        parsed = semantic.parse_bundle_text(text)
+    except semantic.ModelError as exc:
+        return {"ok": False, "error": str(exc), "yaml": text}
+    datasets = []
+    for ds in parsed.datasets.values():
+        entry = {"name": ds.name, "dimensions": len(ds.dimensions),
+                 "joins": [j.to for j in ds.joins]}
+        try:
+            schema = engine.scan_source(ds.source).collect_schema()
+            entry["columns"] = [{"name": n, "dtype": str(t)} for n, t in schema.items()]
+        except Exception as exc:
+            entry["columns"] = None
+            entry["schema_error"] = f"source not reachable: {exc}"
+        datasets.append(entry)
+    return {"ok": True, "error": None, "yaml": text,
+            "bundle": {"name": parsed.name, "label": parsed.label, "datasets": datasets}}
+
+
+@router.get("/dimensions/{name}/spec")
+def get_bundle_spec(name: str):
+    """The bundle's yaml re-parsed into the structured spec the guided form
+    edits (mirrors GET /models/{name}/spec)."""
+    bundle = get_bundle(name)
+    try:
+        parsed = semantic.parse_bundle_text(bundle.origin.read_text())
+    except semantic.ModelError as exc:  # file edited into a bad state on disk
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"name": name, "file": bundle.origin.name, "spec": semantic.bundle_to_spec(parsed)}
 
 
 @router.post("/dimensions", status_code=201)
