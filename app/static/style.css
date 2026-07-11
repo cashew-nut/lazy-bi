@@ -322,6 +322,8 @@ table.data tr:hover td { background: rgba(0, 229, 255, 0.04); }
   width: auto; max-width: 130px; padding: 3px 5px; font-size: 11px;
 }
 .dash-filter select[multiple] { height: 52px; }
+.time-val { display: inline-flex; align-items: center; gap: 4px; }
+.time-val .time-mode { max-width: 84px; }
 .dash-filter .rm {
   background: none; border: none; color: var(--ink-3); cursor: pointer;
   font-family: var(--mono); padding: 0 3px;
@@ -440,6 +442,10 @@ body.portal-dash .tile-head button:not([title*="expand"]) { display: none !impor
 body.portal-dash #dash-name { pointer-events: none; }
 .dash-filter.readonly { color: var(--ink-2); font-size: 11px; padding: 4px 8px; }
 .dash-filter.readonly b { color: var(--neon); }
+/* creator left this filter's value unset — the viewer sets it here,
+   ephemerally, distinct from the fixed readonly chips above */
+.dash-filter.portal-editable { border-color: var(--pink); }
+.dash-filter.portal-editable > span:first-child { color: var(--ink-2); font-size: 11px; }
 
 /* ── modelling workspace ────────────────────────────── */
 .explorer-body { flex: 1; min-height: 0; display: flex; }

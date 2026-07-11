@@ -1,6 +1,7 @@
 """Query engine against the seeded emulator bucket: aggregation, filters,
 joins, time grains, spine semantics, delta sources."""
 import io
+from datetime import date
 
 import polars as pl
 import pytest
@@ -39,6 +40,51 @@ def test_filters(models):
     assert filtered["row_count"] == 1
     assert filtered["rows"][0]["region"] == "Badlands"
     assert filtered["rows"][0]["orders"] < max(r["orders"] for r in base["rows"])
+
+
+def test_relative_date_filter_matches_resolved_fixed_date(models):
+    # "today" on a plain time column must behave exactly like the ISO date
+    # it resolves to today, re-evaluated at query time rather than baked in.
+    today = date.today().isoformat()
+    dynamic = run(models, "sales", dimensions=["region"], measures=["orders"],
+                  filters=[{"field": "order_date", "op": "lte", "value": "today"}])
+    fixed = run(models, "sales", dimensions=["region"], measures=["orders"],
+                filters=[{"field": "order_date", "op": "lte", "value": today}])
+    assert dynamic["rows"] == fixed["rows"]
+
+
+def test_relative_date_filter_on_spine_dimension(models):
+    today = date.today().isoformat()
+    dynamic = run(models, "subscriptions", dimensions=[], measures=["active_customers"],
+                  filters=[{"field": "active_at", "op": "lte", "value": "today"}])
+    fixed = run(models, "subscriptions", dimensions=[], measures=["active_customers"],
+                filters=[{"field": "active_at", "op": "lte", "value": today}])
+    assert dynamic["rows"] == fixed["rows"]
+
+
+@pytest.mark.parametrize("token", ["today", "TODAY", "Start_Of_Month", "today-7d", "today+2w", "not_a_token"])
+def test_resolve_relative_date(token):
+    ref = date(2026, 7, 11)  # a Saturday
+    resolved = engine.resolve_relative_date(token, today=ref)
+    expected = {
+        "today": ref, "TODAY": ref,
+        "Start_Of_Month": date(2026, 7, 1),
+        "today-7d": date(2026, 7, 4),
+        "today+2w": date(2026, 7, 25),
+        "not_a_token": None,
+    }[token]
+    assert resolved == expected
+
+
+def test_resolve_relative_date_month_and_quarter_boundaries():
+    ref = date(2026, 7, 11)
+    assert engine.resolve_relative_date("end_of_month", today=ref) == date(2026, 7, 31)
+    assert engine.resolve_relative_date("start_of_quarter", today=ref) == date(2026, 7, 1)
+    assert engine.resolve_relative_date("end_of_quarter", today=ref) == date(2026, 9, 30)
+    assert engine.resolve_relative_date("start_of_year", today=ref) == date(2026, 1, 1)
+    assert engine.resolve_relative_date("end_of_year", today=ref) == date(2026, 12, 31)
+    # crossing a year boundary via month offset
+    assert engine.resolve_relative_date("today-8mo", today=ref) == date(2025, 11, 11)
 
 
 def test_join_columns_usable(models):

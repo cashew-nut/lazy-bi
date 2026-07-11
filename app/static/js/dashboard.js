@@ -1,11 +1,13 @@
 /* Dashboards: tile grid, named filter-set views, ephemeral cross-filtering,
    grain override, and focus mode. Serves both the studio (editable) and the
-   portal (read-only consumption — saveDash is a no-op there). */
+   portal (view/grain/filter-value choices stay local — saveDash is a no-op
+   there, so nothing a viewer sets, including values for filters the creator
+   left blank, ever writes back into the saved view). */
 "use strict";
 
 import { renderViz, vizMessage } from "./charts/index.js";
 import { fetchDimValues, tooltipHide } from "./charts/common.js";
-import { FILTER_OPS, filterReady, toApiFilter } from "./filters.js";
+import { FILTER_OPS, filterReady, timeValueControl, toApiFilter } from "./filters.js";
 import { $, api, el } from "./lib.js";
 import { hooks, modelByName, pubFor, refreshPubs, showView, state, valueCache } from "./state.js";
 
@@ -48,6 +50,11 @@ export async function openDashboard(id, portal = false) {
   const dash = await api(`/api/dashboards/${id}`);
   for (const view of dash.views) {
     view.filters = (view.filters || []).map((f) => ({ value: "", values: [], ...f }));
+    // portal only: filters the creator left unset become the viewer's own
+    // controls (see renderDashFilters) — decided once at load time, from
+    // the as-saved value, so picking a value doesn't flip the control into
+    // a fixed chip and strand the viewer unable to change it again
+    if (portal) for (const f of view.filters) f.portalEditable = !!f.field && !filterReady(f);
   }
   state.portal = portal;
   showView("dashboard");
@@ -111,21 +118,68 @@ export function dashDimUnion() {
   return union;
 }
 
+// value control for one filter's value(s) — a plain/multi select for
+// enumerable dimensions, timeValueControl for time dimensions, else text.
+// `dim` may be a dashDimUnion() entry (carries `.models`) or a plain model
+// dimension; `srcModel` is the model to pull distinct values from (or falsy
+// if none, e.g. a spine-only dimension).
+function filterValueControl(flt, dim, srcModel, onChange, onListLoaded) {
+  const isTime = dim && dim.type === "time";
+  const multi = flt.op === "in" || flt.op === "not_in";
+  if (isTime && !multi && flt.op !== "contains") return timeValueControl(flt, onChange);
+  const distinct = srcModel && valueCache[srcModel + ":" + flt.field];
+  const haveList = Array.isArray(distinct) && distinct.length;
+  if (multi || ((flt.op === "eq" || flt.op === "ne") && dim && !isTime)) {
+    if (!haveList && srcModel) fetchDimValues(srcModel, flt.field, onListLoaded);
+    const sel = el("select", multi
+      ? { multiple: "multiple", onchange: (e) => { flt.values = [...e.target.selectedOptions].map((o) => o.value); onChange(); } }
+      : { onchange: (e) => { flt.value = e.target.value; onChange(); } });
+    if (!multi) sel.append(el("option", { value: "" }, "— pick —"));
+    for (const v of (haveList ? distinct : [])) {
+      const opt = el("option", { value: String(v) }, String(v));
+      if (multi && flt.values.includes(String(v))) opt.selected = true;
+      sel.append(opt);
+    }
+    if (!multi) sel.value = flt.value || "";
+    return sel;
+  }
+  return el("input", {
+    type: "text", value: flt.value || "", placeholder: "value…",
+    onchange: (e) => { flt.value = e.target.value; onChange(); },
+  });
+}
+
+// a dashboard-view dimension's source model: whichever backing model holds
+// it as a plain (non-spine) column, so distinct values can be fetched
+const unionSrcModel = (dim, field) =>
+  dim && dim.models.find((m) => !modelByName(m).dimensions.find((d) => d.name === field).spine);
+
 export function renderDashFilters() {
   const box = $("#dash-filters");
   box.innerHTML = "";
   const view = activeView();
+  const union = dashDimUnion();
   if (state.portal) {
-    // consumption mode: the view's filters are visible but fixed
+    // consumption mode: filters the creator gave a value stay fixed; ones
+    // the creator left unset become the viewer's own controls here — never
+    // saved back into the view (saveDash() no-ops in portal mode)
     const opLabel = (op) => (FILTER_OPS.find(([o]) => o === op) || [op, op])[1];
-    for (const flt of view.filters.filter(filterReady)) {
-      box.append(el("div", { class: "dash-filter readonly" },
-        el("span", {}, `${flt.field} ${opLabel(flt.op)} `),
-        el("b", {}, flt.op === "in" || flt.op === "not_in" ? flt.values.join(", ") : String(flt.value))));
+    for (const flt of view.filters) {
+      if (!flt.field) continue;
+      if (!flt.portalEditable) {
+        box.append(el("div", { class: "dash-filter readonly" },
+          el("span", {}, `${flt.field} ${opLabel(flt.op)} `),
+          el("b", {}, flt.op === "in" || flt.op === "not_in" ? flt.values.join(", ") : String(flt.value))));
+        continue;
+      }
+      const dim = union.get(flt.field);
+      const row = el("div", { class: "dash-filter portal-editable" },
+        el("span", {}, `${flt.field} ${opLabel(flt.op)} `));
+      row.append(filterValueControl(flt, dim, unionSrcModel(dim, flt.field), dashFiltersChanged, renderDashFilters));
+      box.append(row);
     }
     return;
   }
-  const union = dashDimUnion();
   view.filters.forEach((flt, idx) => {
     const row = el("div", { class: "dash-filter" });
     const dimSel = el("select", { onchange: (e) => { flt.field = e.target.value; flt.value = ""; flt.values = []; dashFiltersChanged(); } });
@@ -138,31 +192,7 @@ export function renderDashFilters() {
     row.append(dimSel, opSel);
 
     const dim = union.get(flt.field);
-    const isTime = dim && dim.type === "time";
-    const multi = flt.op === "in" || flt.op === "not_in";
-    const srcModel = dim && dim.models.find((m) => !modelByName(m).dimensions.find((d) => d.name === flt.field).spine);
-    const distinct = srcModel && valueCache[srcModel + ":" + flt.field];
-    const haveList = Array.isArray(distinct) && distinct.length;
-    if (multi || ((flt.op === "eq" || flt.op === "ne") && dim && !isTime)) {
-      if (!haveList && srcModel) fetchDimValues(srcModel, flt.field, renderDashFilters);
-      const sel = el("select", multi
-        ? { multiple: "multiple", onchange: (e) => { flt.values = [...e.target.selectedOptions].map((o) => o.value); dashFiltersChanged(); } }
-        : { onchange: (e) => { flt.value = e.target.value; dashFiltersChanged(); } });
-      if (!multi) sel.append(el("option", { value: "" }, "— pick —"));
-      for (const v of (haveList ? distinct : [])) {
-        const opt = el("option", { value: String(v) }, String(v));
-        if (multi && flt.values.includes(String(v))) opt.selected = true;
-        sel.append(opt);
-      }
-      if (!multi) sel.value = flt.value || "";
-      row.append(sel);
-    } else {
-      row.append(el("input", {
-        type: isTime && flt.op !== "contains" ? "date" : "text",
-        value: flt.value || "", placeholder: "value…",
-        onchange: (e) => { flt.value = e.target.value; dashFiltersChanged(); },
-      }));
-    }
+    row.append(filterValueControl(flt, dim, unionSrcModel(dim, flt.field), dashFiltersChanged, renderDashFilters));
     row.append(el("button", { class: "rm", onclick: () => { view.filters.splice(idx, 1); dashFiltersChanged(); } }, "✕"));
     box.append(row);
   });
@@ -421,30 +451,8 @@ export function renderFocusFilters() {
     row.append(dimSel, opSel);
 
     const dim = model.dimensions.find((d) => d.name === flt.field);
-    const isTime = dim && dim.type === "time";
-    const multi = flt.op === "in" || flt.op === "not_in";
-    const distinct = !dim.spine && valueCache[model.name + ":" + flt.field];
-    const haveList = Array.isArray(distinct) && distinct.length;
-    if (multi || ((flt.op === "eq" || flt.op === "ne") && !isTime)) {
-      if (!haveList && !dim.spine) fetchDimValues(model.name, flt.field, renderFocusFilters);
-      const sel = el("select", multi
-        ? { multiple: "multiple", onchange: (e) => { flt.values = [...e.target.selectedOptions].map((o) => o.value); focusChanged(); } }
-        : { onchange: (e) => { flt.value = e.target.value; focusChanged(); } });
-      if (!multi) sel.append(el("option", { value: "" }, "— pick —"));
-      for (const v of (haveList ? distinct : [])) {
-        const opt = el("option", { value: String(v) }, String(v));
-        if (multi && flt.values.includes(String(v))) opt.selected = true;
-        sel.append(opt);
-      }
-      if (!multi) sel.value = flt.value || "";
-      row.append(sel);
-    } else {
-      row.append(el("input", {
-        type: isTime && flt.op !== "contains" ? "date" : "text",
-        value: flt.value || "", placeholder: "value…",
-        onchange: (e) => { flt.value = e.target.value; focusChanged(); },
-      }));
-    }
+    const srcModel = dim && !dim.spine ? model.name : null;
+    row.append(filterValueControl(flt, dim, srcModel, focusChanged, renderFocusFilters));
     row.append(el("button", { class: "rm", onclick: () => { focus.filters.splice(idx, 1); renderFocusFilters(); focusChanged(); } }, "✕"));
     box.append(row);
   });

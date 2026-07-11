@@ -6,9 +6,11 @@ groups a query needs leave the (emulated) bucket.
 """
 from __future__ import annotations
 
+import calendar
 import json
+import re
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Optional
 
 import polars as pl
@@ -17,6 +19,70 @@ from . import config
 from .semantic import ImportBinding, Model, ModelError, Source, TIME_GRAINS, compile_expr
 
 FILTER_OPS = {"eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in", "contains"}
+
+# ── dynamic ("relative") date filter values ──────────────────────
+# A time filter's value may be a keyword like "today" or "start_of_month"
+# instead of a fixed ISO date. It's resolved against the current date on
+# every query, so a saved "today" keeps meaning today on every future run.
+
+def _end_of_month(d: date) -> date:
+    return d.replace(day=calendar.monthrange(d.year, d.month)[1])
+
+
+def _start_of_quarter(d: date) -> date:
+    return d.replace(month=(d.month - 1) // 3 * 3 + 1, day=1)
+
+
+def _end_of_quarter(d: date) -> date:
+    start = _start_of_quarter(d)
+    return _end_of_month(start.replace(month=start.month + 2))
+
+
+RELATIVE_DATE_KEYWORDS = {
+    "today": lambda d: d,
+    "yesterday": lambda d: d - timedelta(days=1),
+    "tomorrow": lambda d: d + timedelta(days=1),
+    "start_of_week": lambda d: d - timedelta(days=d.weekday()),
+    "end_of_week": lambda d: d - timedelta(days=d.weekday()) + timedelta(days=6),
+    "start_of_month": lambda d: d.replace(day=1),
+    "end_of_month": _end_of_month,
+    "start_of_quarter": _start_of_quarter,
+    "end_of_quarter": _end_of_quarter,
+    "start_of_year": lambda d: d.replace(month=1, day=1),
+    "end_of_year": lambda d: d.replace(month=12, day=31),
+}
+
+_RELATIVE_OFFSET_RE = re.compile(r"^today([+-])(\d+)(d|w|mo|y)$")
+
+
+def _add_months(d: date, n: int) -> date:
+    month0 = d.month - 1 + n
+    year = d.year + month0 // 12
+    month = month0 % 12 + 1
+    day = min(d.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def resolve_relative_date(value: Any, today: Optional[date] = None) -> Optional[date]:
+    """Resolve a relative-date keyword to a concrete date, or return None if
+    `value` isn't one (the caller then falls back to parsing a fixed date)."""
+    key = str(value).strip().lower()
+    keyword = RELATIVE_DATE_KEYWORDS.get(key)
+    if keyword:
+        return keyword(today or date.today())
+    m = _RELATIVE_OFFSET_RE.match(key)
+    if not m:
+        return None
+    sign, n, unit = m.group(1), int(m.group(2)), m.group(3)
+    n = n if sign == "+" else -n
+    base = today or date.today()
+    if unit == "d":
+        return base + timedelta(days=n)
+    if unit == "w":
+        return base + timedelta(weeks=n)
+    if unit == "mo":
+        return _add_months(base, n)
+    return _add_months(base, n * 12)  # "y"
 
 
 class QueryError(Exception):
@@ -114,8 +180,12 @@ def _coerce(value: Any, dtype: pl.DataType) -> Any:
     if value is None:
         return None
     if dtype == pl.Date:
-        return date.fromisoformat(str(value))
+        relative = resolve_relative_date(value)
+        return relative if relative is not None else date.fromisoformat(str(value))
     if isinstance(dtype, pl.Datetime) or dtype == pl.Datetime:
+        relative = resolve_relative_date(value)
+        if relative is not None:
+            return datetime.combine(relative, datetime.min.time())
         return datetime.fromisoformat(str(value))
     if dtype.is_integer():
         return int(value)
@@ -223,10 +293,12 @@ def run_query(model: Model, query: dict) -> dict:
     spine_lo = spine_hi = None
     for dim, spec in spine_filters:
         op = spec.get("op", "eq")
-        try:
-            v = date.fromisoformat(str(spec.get("value")))
-        except ValueError:
-            raise QueryError(f"spine filter on '{dim.name}' needs an ISO date value")
+        v = resolve_relative_date(spec.get("value"))
+        if v is None:
+            try:
+                v = date.fromisoformat(str(spec.get("value")))
+            except ValueError:
+                raise QueryError(f"spine filter on '{dim.name}' needs an ISO date value")
         s, e = pl.col(dim.spine.start), pl.col(dim.spine.end)
         if op in ("gte", "gt"):
             lf = lf.filter(e >= v)
