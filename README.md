@@ -75,10 +75,10 @@ app/
   engine.py            query engine: semantic query -> polars lazy scan
   store.py             sqlite persistence: visuals, dashboards, publications
   emulator.py, s3.py, seed.py, load_taxi.py
-  api/                 one router per resource: models, dimensions, query, visuals,
-                       dashboards (+publish/portal), explorer (+health)
+  api/                 one router per resource: models, dimensions, datasets, query,
+                       visuals, dashboards (+publish/portal), explorer (+health)
   static/js/           ES modules: lib, state, filters, builder, dashboard,
-                       portal, explorer, editor, main
+                       portal, modelling, editor, completion, measurelab, main
   static/js/charts/    one renderer per chart + shared frame/pivot/dispatch
 models/*.yaml          semantic models (the editable contract)
 dimensions/*.yaml      dimension bundles shared across models (see below)
@@ -207,12 +207,13 @@ one. See `dimensions/geography.yaml`, imported by both `models/sales.yaml`
 and `models/logistics.yaml`, for a working example — editing the bundle
 updates both models with no changes to either model file.
 
-**Or author it in the app**: the sidebar's *Common Dimensions* section
-(**+ new common model**, or click one to edit) opens the same live-validating
-YAML editor the fact-model editor uses — with per-dataset source-column
-introspection. And while editing a fact model, the editor's *Common
-Dimensions* panel lists every bundle and its datasets; clicking one inserts a
-ready-to-go `dimension_imports` block. Common dimensional models never appear
+**Or author it in the app**: the **Modelling** workspace lists every common
+model (**+ COMMON MODEL**, or click one to edit) and opens the same
+live-validating YAML editor the fact-model editor uses — with per-dataset
+source-column introspection. And while editing a fact model, the editor's
+*Common Dimensions* panel lists every bundle and its datasets; clicking one
+inserts a ready-to-go `dimension_imports` block (whose `on:` key gets
+column-name intellisense). Common dimensional models never appear
 in the builder's model picker — they provide dimensions, they aren't queried
 directly — and one that's currently imported can't be deleted until its
 importers drop it. Endpoints mirror the model API under `/api/dimensions`
@@ -236,12 +237,25 @@ Predicate/projection pushdown does the heavy lifting: only referenced columns'
 row groups leave the bucket. Against real S3, network latency dominates —
 expect these numbers to grow with round-trips, not data size.
 
-**Or edit in the app**: the *edit yaml* / *+ new model* buttons in the sidebar
-open a model editor with live validation (parse + measure-expression check on
-every keystroke, debounced) and a source-column panel that introspects the
-scan — including joined columns — with click-to-insert. Saving writes the YAML
-back to `models/`, hot-reloads the semantic layer, and re-syncs the query
-builder.
+**Or author it in the app**: the **Modelling** workspace (see below) is the
+home for model authoring — *edit yaml* on any model card, or *+ MODEL* — opening
+a model editor with live validation (parse + measure-expression check on every
+keystroke, debounced) and a source-column panel that introspects the scan —
+including joined columns — with click-to-insert. Three delight affordances make
+authoring less of a memory test:
+
+- **◇ DATASET** browses the bucket as prefix-grouped datasets (drillable to a
+  single object) and fills in the `source:` block for you — no hand-typed
+  `s3://…` paths. Once a source is picked, its real columns light up the palette.
+- **Intellisense anywhere in the YAML**: inside a measure `expr:` you get polars
+  completion (`pl.`, `.`, `pl.col("` → real columns); in a dimension/join/key
+  context you get bare column-name completion. Same engine as the measure lab.
+- **Unsaved edits are guarded** — navigating away warns before discarding, and
+  nothing is written to `models/` until you save.
+
+Saving writes the YAML back to `models/`, hot-reloads the semantic layer, and
+re-syncs the query builder. Plain-text YAML editing stays fully first-class —
+the affordances only insert/patch the one document.
 
 ### The measure lab
 
@@ -272,6 +286,7 @@ directly when there are no dimensions). Two save paths:
 | `GET/PUT /api/models/{m}/yaml` | read / save a model's YAML (save validates + hot-reloads) |
 | `POST /api/models/validate` | parse-check YAML + introspect source columns |
 | `POST /api/models`, `DELETE /api/models/{m}` | create a model file / delete one |
+| `GET /api/datasets` | bucket objects grouped into pickable datasets (source picker) |
 | `POST /api/query` | run a semantic query, returns columns + rows + timing |
 | `GET/POST /api/visuals`, `PUT/DELETE /api/visuals/{id}` | saved visuals (SQLite: `cash_intel.db`) |
 | `GET/POST /api/dashboards`, `GET/PUT/DELETE /api/dashboards/{id}` | dashboards — ordered tiles `{visual_id, w:1\|2}`; GET by id resolves tile visuals |
@@ -291,12 +306,13 @@ Query shape:
 
 Filter ops: `eq ne gt gte lt lte in not_in contains`.
 
-## Studio, Portal, Data explorer
+## Studio, Modelling, Portal
 
 The header nav splits the app into three surfaces:
 
-- **STUDIO** — the developer view: query builder, model editor, dashboard
-  editing. Everything below in "Frontend notes" lives here.
+- **STUDIO** — the query builder: pick a model, add dimensions/measures/filters,
+  chart it, save visuals, and edit dashboards. Model *authoring* no longer lives
+  here — Studio is for building visuals against whatever models exist.
 - **PORTAL** — the consumption view. From a dashboard's toolbar in the studio,
   **PUBLISH** puts it in the portal under a slash-separated folder path
   (`ops/street` nests folders automatically; republish to move it, ✕ next to
@@ -304,11 +320,14 @@ The header nav splits the app into three surfaces:
   dashboards read-only: they can switch saved views, override the grain,
   cross-filter, and expand tiles — but nothing they do edits or persists
   anything (view switches in the portal don't even save the selection).
-- **DATA** — the data explorer: every object in the bucket with size and
-  modified date, matched against each model's source and join globs (Delta
-  table internals map to their model too). Model cards show per-model file
-  counts and bytes; clicking a model or chip jumps to it in the builder. Files
-  no model reads are flagged as unmapped.
+- **MODELLING** — the home for the semantic layer (formerly "Data"). A left
+  rail manages every fact model and common model — *edit yaml*, *build ►*, and
+  *+ MODEL* / *+ COMMON MODEL* — and the right pane is the data overview: every
+  object in the bucket with size and modified date, matched against each model's
+  source and join globs (Delta table internals map to their model too). Clicking
+  a model chip jumps to it in the builder; files no model reads are flagged as
+  unmapped. This is where authoring — the dataset picker, guided common-model
+  import, and expression intellisense described above — lives.
 
 ## Frontend notes
 

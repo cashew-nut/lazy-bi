@@ -12,11 +12,10 @@ import {
   publishCurrent, refreshDashList, renderDashboard, renderDashFilters,
   renderFocusFilters, saveDash,
 } from "./dashboard.js";
-import { deleteEditorItem, insertAtCursor, openEditor, saveEditor, scheduleValidate, validateEditor, editor } from "./editor.js";
-import { renderBundleList } from "./dimlab.js";
-import { loadExplorer } from "./explorer.js";
+import { attachEditor, confirmLeaveEditor, deleteEditorItem, openEditor, saveEditor } from "./editor.js";
 import { $, api } from "./lib.js";
 import { initMeasureLab } from "./measurelab.js";
+import { loadModelling } from "./modelling.js";
 import { loadPortal, renderPortal } from "./portal.js";
 import { refreshPubs, showView, state } from "./state.js";
 
@@ -54,23 +53,16 @@ async function init() {
       renderBuilderViz();
     });
 
-    // ── model / common-dimension editor ──
-    $("#edit-model").addEventListener("click", () => openEditor("model", state.model.name));
-    $("#new-model").addEventListener("click", () => openEditor("model", null));
-    $("#new-bundle").addEventListener("click", () => openEditor("bundle", null));
-    $("#editor-back").addEventListener("click", () => showView("builder"));
+    // ── semantic editor (opened from the Modelling workspace) ──
+    attachEditor();   // input/keydown/completion/dataset-picker/revert/beforeunload
+    $("#mk-new-model").addEventListener("click", () => openEditor("model", null));
+    $("#mk-new-bundle").addEventListener("click", () => openEditor("bundle", null));
     $("#editor-save").addEventListener("click", saveEditor);
     $("#editor-delete").addEventListener("click", deleteEditorItem);
-    $("#editor-revert").addEventListener("click", () => {
-      $("#yaml-editor").value = editor.original;
-      validateEditor();
-    });
-    $("#yaml-editor").addEventListener("input", scheduleValidate);
-    $("#yaml-editor").addEventListener("keydown", (e) => {
-      if (e.key === "Tab") {
-        e.preventDefault();
-        insertAtCursor(e.target, "  ");
-      }
+    $("#editor-back").addEventListener("click", () => {
+      if (!confirmLeaveEditor()) return;
+      showView("modelling");
+      loadModelling();
     });
 
     // ── dashboards ──
@@ -166,16 +158,18 @@ async function init() {
       renderFocusFilters();
     });
 
-    // mode nav: studio / data explorer / portal
+    // mode nav: studio / modelling / portal
     for (const btn of document.querySelectorAll("#mode-nav button")) {
       btn.addEventListener("click", () => {
+        // guard: leaving the editor with unsaved edits must warn (FR-021)
+        if (state.view === "editor" && !confirmLeaveEditor()) return;
         const m = btn.dataset.mode;
         if (m === "studio") showView("builder");
-        else if (m === "data") { showView("explorer"); loadExplorer(); }
+        else if (m === "modelling") { showView("modelling"); loadModelling(); }
         else { state.portalFolder = ""; showView("portal"); loadPortal(); }
       });
     }
-    $("#explorer-refresh").addEventListener("click", loadExplorer);
+    $("#modelling-refresh").addEventListener("click", loadModelling);
 
     // re-render charts when the window or panel resizes
     let resizeTimer = null;
@@ -191,7 +185,6 @@ async function init() {
 
     selectModel(models[0].name);
     refreshSaved();
-    renderBundleList();
     await refreshPubs();
     refreshDashList();
   } catch (err) {

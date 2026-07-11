@@ -21,7 +21,7 @@ export const state = {
   showTable: false,
   result: null,
   queryToken: 0,
-  view: "builder",      // builder | dashboard | editor | portal | explorer
+  view: "builder",      // builder | dashboard | editor | portal | modelling
   dashboards: [],       // list from /api/dashboards
   dash: null,           // open dashboard {id, name, items, views, visuals}
   tileCtxs: [],         // rendered tile ctxs, for resize re-render
@@ -47,13 +47,13 @@ export const pubFor = (dashId) => state.publications.find((p) => p.dashboard_id 
 
 export function showView(view) {
   state.view = view;
-  for (const v of ["builder", "dashboard", "editor", "portal", "explorer"]) {
+  for (const v of ["builder", "dashboard", "editor", "portal", "modelling"]) {
     $(`#${v}-view`).hidden = view !== v;
   }
   if (view !== "dashboard") { state.dash = null; state.tileCtxs = []; }
-  if (["builder", "editor", "explorer"].includes(view)) state.portal = false;
+  if (["builder", "editor", "modelling"].includes(view)) state.portal = false;
   const mode = view === "portal" || (view === "dashboard" && state.portal) ? "portal"
-    : view === "explorer" ? "data" : "studio";
+    : (view === "modelling" || view === "editor") ? "modelling" : "studio";
   document.body.dataset.mode = mode;
   document.body.classList.toggle("portal-dash", view === "dashboard" && state.portal);
   for (const btn of document.querySelectorAll("#mode-nav button")) {

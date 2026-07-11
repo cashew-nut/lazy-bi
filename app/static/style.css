@@ -247,6 +247,7 @@ table.data tr:hover td { background: rgba(0, 229, 255, 0.04); }
 #editor-status .ok { color: #2bd97c; text-shadow: 0 0 6px rgba(43, 217, 124, 0.5); }
 #editor-status .err { color: var(--bad); }
 .editor-body { flex: 1; min-height: 0; display: flex; }
+.editor-main { flex: 1; min-width: 0; position: relative; display: flex; }
 #yaml-editor {
   flex: 1; min-width: 0; resize: none; border: none; outline: none;
   background: var(--bg); color: var(--ink);
@@ -254,6 +255,30 @@ table.data tr:hover td { background: rgba(0, 229, 255, 0.04); }
   padding: 14px 16px; tab-size: 2;
 }
 #yaml-editor:focus { box-shadow: inset 2px 0 0 var(--neon); }
+/* intellisense popup in the yaml editor (shares the measure-lab look) */
+#editor-suggest {
+  position: absolute; left: 16px; top: 40%; z-index: 50;
+  min-width: 300px; max-width: 460px;
+  background: #0c1524; border: 1px solid var(--neon); border-radius: 3px;
+  box-shadow: 0 6px 20px rgba(0, 229, 255, 0.2); font-size: 12px;
+}
+#editor-suggest .sug {
+  display: flex; justify-content: space-between; gap: 18px;
+  padding: 5px 10px; cursor: pointer; color: var(--ink);
+}
+#editor-suggest .sug .hint { color: var(--ink-3); font-size: 10px; }
+#editor-suggest .sug.sel, #editor-suggest .sug:hover { background: rgba(0, 229, 255, 0.14); }
+
+/* dataset picker panel in the editor side */
+#editor-datasets { margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.ds-pick-head {
+  display: flex; align-items: baseline; gap: 8px; cursor: pointer;
+  color: var(--ink); font-size: 11px; letter-spacing: 1px;
+}
+.ds-pick-head:hover { color: var(--neon); }
+.ds-pick-head .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ds-pick-head .fmt { font-size: 9px; color: var(--pink); border: 1px solid var(--line); padding: 1px 5px; border-radius: 2px; }
+.ds-pick-meta { color: var(--ink-3); font-size: 10px; margin: 3px 0 6px; }
 .editor-side {
   width: 280px; flex: none; overflow-y: auto;
   border-left: 1px solid var(--line); background: var(--panel);
@@ -381,7 +406,7 @@ table.data tr:hover td { background: rgba(0, 229, 255, 0.04); }
 #mode-nav button:last-child { border-right: none; }
 #mode-nav button:hover { color: var(--ink); }
 #mode-nav button.on { color: var(--bg); background: var(--neon); font-weight: 700; }
-body[data-mode="data"] aside, body[data-mode="portal"] aside { display: none; }
+body[data-mode="modelling"] aside, body[data-mode="portal"] aside { display: none; }
 
 /* ── portal ─────────────────────────────────────────── */
 .crumbs { flex: 1; color: var(--ink-2); font-size: 12px; letter-spacing: 1px; }
@@ -416,8 +441,32 @@ body.portal-dash #dash-name { pointer-events: none; }
 .dash-filter.readonly { color: var(--ink-2); font-size: 11px; padding: 4px 8px; }
 .dash-filter.readonly b { color: var(--neon); }
 
-/* ── data explorer ──────────────────────────────────── */
+/* ── modelling workspace ────────────────────────────── */
 .explorer-body { flex: 1; min-height: 0; display: flex; }
+.modelling-side {
+  width: 320px; flex: none; overflow-y: auto; padding: 14px;
+  border-right: 1px solid var(--line);
+}
+.mk-card {
+  border: 1px solid var(--line); border-radius: 4px; padding: 9px 11px;
+  background: var(--panel); margin-bottom: 8px;
+}
+.mk-card.clickable { cursor: pointer; }
+.mk-card.clickable:hover { border-color: var(--pink); }
+.mk-card .mk-top { display: flex; align-items: baseline; gap: 8px; }
+.mk-card .nm { flex: 1; color: var(--ink); letter-spacing: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mk-card .fmt { font-size: 9px; color: var(--pink); border: 1px solid var(--line); padding: 1px 5px; border-radius: 2px; }
+.mk-card .path { color: var(--ink-3); font-size: 10px; margin-top: 4px; word-break: break-all; }
+.mk-card .mk-sub { color: var(--ink-2); font-size: 10px; margin-top: 5px; }
+.mk-card .mk-actions { display: flex; gap: 6px; margin-top: 8px; }
+.mini-btn {
+  background: transparent; border: 1px solid var(--line); border-radius: 3px;
+  color: var(--ink-2); cursor: pointer; font-family: var(--mono); font-size: 10px;
+  padding: 3px 9px; letter-spacing: 0.5px;
+}
+.mini-btn:hover { color: var(--neon); border-color: var(--neon); }
+.mini-btn.go:hover { color: var(--pink); border-color: var(--pink); }
+button.ghost.mk-new { margin-top: 2px; }
 .explorer-models {
   width: 300px; flex: none; overflow-y: auto; padding: 14px;
   border-right: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px;
