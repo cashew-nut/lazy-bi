@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import fnmatch
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
-from .. import config, s3, semantic
+from .. import config, engine, s3, semantic
 from ..registry import registry
 
 router = APIRouter(tags=["datasets"])
@@ -63,3 +63,16 @@ def list_datasets():
         ds["models"] = readers
 
     return {"bucket": config.BUCKET, "endpoint": config.S3_ENDPOINT, "datasets": datasets}
+
+
+@router.get("/datasets/schema")
+def dataset_schema(path: str, format: str = "parquet"):
+    """Columns of an arbitrary source path — feeds the guided form's
+    relationship pickers (join / import keys) before any model exists."""
+    if format not in semantic.SOURCE_FORMATS:
+        raise HTTPException(status_code=400, detail=f"unsupported source format '{format}'")
+    try:
+        schema = engine.scan_source(semantic.Source(path=path, format=format)).collect_schema()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"source not reachable: {exc}")
+    return {"columns": [{"name": n, "dtype": str(t)} for n, t in schema.items()]}

@@ -102,7 +102,7 @@ const cfg = () => KINDS[editor.kind];
 // yaml keys whose value is a bare source-column reference (not an expression)
 const COLUMN_KEYS = new Set(["column", "on", "left_on", "right_on", "start", "end", "lat", "lon"]);
 
-export async function openEditor(kind, name) {
+export async function openEditor(kind, name, opts = {}) {
   // guard: never silently drop unsaved edits when opening another artifact
   if (state.view === "editor" && !confirmLeaveEditor()) return;
   editor.kind = kind in KINDS ? kind : "model";
@@ -117,8 +117,10 @@ export async function openEditor(kind, name) {
     editor.file = editor.kind === "bundle" ? "dimensions/<name>.yaml" : "models/<name>.yaml";
     editor.original = cfg().template;
   }
-  ta.value = editor.original;
-  editor.dirty = false;
+  // opts.text: open with handed-over content (the guided form's generated
+  // yaml) as an unsaved edit — REVERT still restores the on-disk original
+  ta.value = opts.text ?? editor.original;
+  editor.dirty = opts.text != null && opts.text !== editor.original;
   editor.columns = [];
   $("#editor-datasets").hidden = true;
   $("#editor-file").textContent = editor.file;
