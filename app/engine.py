@@ -16,7 +16,7 @@ from typing import Any, Optional
 import polars as pl
 
 from . import config
-from .semantic import ImportBinding, Model, ModelError, Source, TIME_GRAINS, compile_expr
+from .semantic import ImportBinding, Model, ModelError, Source, TIME_GRAINS, compile_expr, compile_frame
 
 FILTER_OPS = {"eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in", "contains"}
 
@@ -354,25 +354,68 @@ def run_query(model: Model, query: dict) -> dict:
         if not m.get("name") or not m.get("expr"):
             raise QueryError("inline measures need a name and an expr")
         inline[m["name"]] = m
+    # split measures into plain aggregations (applied in one group_by over the
+    # scan) and framed measures, whose expr aggregates over a derived
+    # intermediary frame instead (Measure.frame_source / inline "frame")
+    plain_exprs: list[pl.Expr] = []
+    framed: list[tuple[str, str, pl.Expr]] = []  # (name, frame_source, agg expr)
     try:
-        measure_exprs = [
-            compile_expr(inline[m]["expr"], f"measure '{m}'").alias(m) if m in inline
-            else model.measure(m).expr()
-            for m in measure_names
-        ]
+        for m in measure_names:
+            if m in inline:
+                frame_source = inline[m].get("frame")
+                expr = compile_expr(inline[m]["expr"], f"measure '{m}'").alias(m)
+            else:
+                meas = model.measure(m)
+                frame_source, expr = meas.frame_source, meas.expr()
+            if frame_source:
+                framed.append((m, frame_source, expr))
+            else:
+                plain_exprs.append(expr)
     except ModelError as exc:
         raise QueryError(str(exc)) from exc
 
     # geo dimensions carry their members' coordinates along as hidden columns
     for dim, _ in dim_specs:
         if dim.geo:
-            measure_exprs.append(pl.col(dim.geo.lat).mean().alias(f"__lat_{dim.name}"))
-            measure_exprs.append(pl.col(dim.geo.lon).mean().alias(f"__lon_{dim.name}"))
+            plain_exprs.append(pl.col(dim.geo.lat).mean().alias(f"__lat_{dim.name}"))
+            plain_exprs.append(pl.col(dim.geo.lon).mean().alias(f"__lon_{dim.name}"))
 
+    dim_names = [d.name for d, _ in dim_specs]
     if dim_specs:
-        lf = lf.group_by([e for _, e in dim_specs]).agg(measure_exprs)
+        # even with zero plain measures the group_by yields every dimension
+        # combination, staying the join base for the framed results below
+        out = lf.group_by([e for _, e in dim_specs]).agg(plain_exprs)
     else:
-        lf = lf.select(measure_exprs)
+        out = lf.select(plain_exprs) if plain_exprs else None
+
+    # each framed measure runs its snippet against the filtered scan (with the
+    # query's dimension columns materialized), then its expr aggregates the
+    # derived frame per dimension group; results join back on the dimensions
+    if framed:
+        base = lf.with_columns([e for _, e in dim_specs]) if dim_specs else lf
+    for name, frame_source, expr in framed:
+        try:
+            derived = compile_frame(frame_source, base, dim_names, f"measure '{name}'")
+        except ModelError as exc:
+            raise QueryError(str(exc)) from exc
+        try:
+            derived_schema = derived.collect_schema()
+        except Exception as exc:
+            raise QueryError(f"measure '{name}': invalid intermediary frame: {exc}") from exc
+        missing = [d for d in dim_names if d not in derived_schema]
+        if missing:
+            raise QueryError(
+                f"measure '{name}': the intermediary frame lost dimension column(s) {missing} — "
+                "carry the query's dimensions through with `dims` (e.g. group_by([*keys, *dims]))"
+            )
+        part = derived.group_by(dim_names).agg(expr) if dim_names else derived.select(expr)
+        if out is None:
+            out = part
+        elif dim_names:
+            out = out.join(part, on=dim_names, how="left", nulls_equal=True)
+        else:
+            out = out.join(part, how="cross")
+    lf = out
 
     sort = query.get("sort") or {}
     valid_sort_keys = {d.name for d, _ in dim_specs} | set(measure_names)

@@ -129,6 +129,48 @@ ratios of aggregates, `n_unique`, conditional sums like
 at load time; edit a YAML and hit `POST /api/models/reload` (or restart) to
 pick it up.
 
+### Measures over an intermediary frame
+
+Some metrics can't be written as one aggregation over the raw rows — they need
+business logic *between* the scan and the final reduce ("per entity, derive X;
+then take the median of X across entities"). Give a measure a `frame:` block —
+a python snippet that builds a derived LazyFrame — and its `expr:` then
+aggregates over that frame instead of the raw scan:
+
+```yaml
+measures:
+  - name: median_days_to_75pct
+    description: Median days for a study to log 75% of its events.
+    frame: |                       # `lf`, `dims`, `pl` in scope
+      keys = list(dict.fromkeys(["study_id", *dims]))
+      ordered = lf.sort("event_date").with_columns(
+          (pl.int_range(1, pl.len() + 1).over(keys) / pl.len().over(keys)).alias("cume"),
+          pl.col("event_date").min().over(keys).alias("first_event"),
+      )
+      frame = (
+          ordered.filter(pl.col("cume") >= 0.75)
+          .group_by(keys)
+          .agg(pl.col("first_event").first(), pl.col("event_date").min().alias("date_75"))
+          .with_columns((pl.col("date_75") - pl.col("first_event")).dt.total_days().alias("days_to_75"))
+      )
+    expr: pl.col("days_to_75").median()
+```
+
+The snippet sees `lf` — the model's scan with the query's filters applied and
+its dimension columns already materialized (grains included) — plus `dims`, the
+list of those dimension names, and `pl`. It is either a single expression or
+statements assigning the result to a variable named `frame`. Carry `dims`
+through every `group_by` (as above) and the measure re-aggregates correctly at
+whatever grouping the query asks for; the engine groups the derived frame by
+`dims`, applies `expr`, and left-joins the result onto the other measures, so
+framed and plain measures mix freely in one query. Groups the derived frame
+has no rows for come back null. Everything stays lazy end to end.
+
+See `median_months_to_75pct_randomised` in `models/clinical_ops_recruitment.yaml`
+for a live example (median months for a study's cumulative randomisations to
+cross 75% of its total). Inline (visual-scoped) measures may pass a `frame`
+alongside `expr` in the query API too.
+
 ### Time-spine (point-in-time) measures
 
 A plain group-by puts each row in one time bucket. For "active customers"-style
