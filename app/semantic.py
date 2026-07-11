@@ -155,6 +155,10 @@ class Measure:
     # optional intermediary step: a python snippet building a derived LazyFrame
     # (business logic) that expr_source then aggregates over — see compile_frame
     frame_source: Optional[str] = None
+    # dimensions the frame computes itself (columns of the derived frame, e.g.
+    # a per-entity milestone date): excluded from `dims` during the step, and
+    # grouped — time grains included — on the frame's output afterwards
+    frame_emits: list[str] = field(default_factory=list)
 
     def expr(self) -> pl.Expr:
         return compile_expr(self.expr_source, f"measure '{self.name}'").alias(self.name)
@@ -258,7 +262,7 @@ class Model:
             "measures": [
                 {"name": m.name, "label": m.label, "format": m.format,
                  "description": m.description, "expr": m.expr_source,
-                 "frame": m.frame_source}
+                 "frame": m.frame_source, "frame_emits": m.frame_emits}
                 for m in self.measures.values()
             ],
         }
@@ -348,9 +352,14 @@ def _parse_model(raw: dict, origin: Path) -> Model:
                 format=m.get("format", "number"),
                 description=m.get("description", ""),
                 frame_source=m.get("frame"),
+                frame_emits=_as_list(m["frame_emits"]) if m.get("frame_emits") else [],
             )
             if meas.frame_source:
                 validate_frame(meas.frame_source, f"measure '{meas.name}'")
+            elif meas.frame_emits:
+                raise ModelError(
+                    f"{origin.name}: measure '{meas.name}': 'frame_emits' needs a 'frame'"
+                )
             meas.expr()  # validate at load time
             model.measures[meas.name] = meas
         for imp in raw.get("dimension_imports", []):
@@ -592,7 +601,7 @@ def model_to_spec(model: Model) -> dict:
         "measures": [
             {"name": m.name, "label": m.label, "expr": m.expr_source,
              "format": m.format, "description": m.description,
-             "frame": m.frame_source}
+             "frame": m.frame_source, "frame_emits": m.frame_emits}
             for m in model.measures.values()
         ],
     }
@@ -694,6 +703,8 @@ def spec_to_yaml(spec: dict) -> str:
             entry["description"] = m["description"]
         if m.get("frame"):
             entry["frame"] = m["frame"]
+        if m.get("frame_emits"):
+            entry["frame_emits"] = list(m["frame_emits"])
         entry["expr"] = m["expr"]
         measures.append(entry)
     doc["measures"] = measures

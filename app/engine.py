@@ -358,17 +358,18 @@ def run_query(model: Model, query: dict) -> dict:
     # scan) and framed measures, whose expr aggregates over a derived
     # intermediary frame instead (Measure.frame_source / inline "frame")
     plain_exprs: list[pl.Expr] = []
-    framed: list[tuple[str, str, pl.Expr]] = []  # (name, frame_source, agg expr)
+    framed: list[tuple[str, str, set, pl.Expr]] = []  # (name, frame_source, frame_emits, agg expr)
     try:
         for m in measure_names:
             if m in inline:
                 frame_source = inline[m].get("frame")
+                emits = set(inline[m].get("frame_emits") or [])
                 expr = compile_expr(inline[m]["expr"], f"measure '{m}'").alias(m)
             else:
                 meas = model.measure(m)
-                frame_source, expr = meas.frame_source, meas.expr()
+                frame_source, emits, expr = meas.frame_source, set(meas.frame_emits), meas.expr()
             if frame_source:
-                framed.append((m, frame_source, expr))
+                framed.append((m, frame_source, emits, expr))
             else:
                 plain_exprs.append(expr)
     except ModelError as exc:
@@ -381,21 +382,33 @@ def run_query(model: Model, query: dict) -> dict:
             plain_exprs.append(pl.col(dim.geo.lon).mean().alias(f"__lon_{dim.name}"))
 
     dim_names = [d.name for d, _ in dim_specs]
-    if dim_specs:
-        # even with zero plain measures the group_by yields every dimension
-        # combination, staying the join base for the framed results below
-        out = lf.group_by([e for _, e in dim_specs]).agg(plain_exprs)
+    if plain_exprs:
+        if dim_specs:
+            out = lf.group_by([e for _, e in dim_specs]).agg(plain_exprs)
+        else:
+            out = lf.select(plain_exprs)
     else:
-        out = lf.select(plain_exprs) if plain_exprs else None
+        # all measures framed: the derived frames alone define which dimension
+        # groups exist (an emitted timeline shouldn't inherit raw-row buckets)
+        out = None
 
     # each framed measure runs its snippet against the filtered scan (with the
     # query's dimension columns materialized), then its expr aggregates the
-    # derived frame per dimension group; results join back on the dimensions
+    # derived frame per dimension group; results join back on the dimensions.
+    # dimensions in the measure's frame_emits are the frame's own output
+    # columns (e.g. a per-entity milestone date): they're withheld from `dims`
+    # during the step and bucketed on the derived frame afterwards, so a
+    # timeline groups the derived rows, not the raw events feeding them
     if framed:
-        base = lf.with_columns([e for _, e in dim_specs]) if dim_specs else lf
-    for name, frame_source, expr in framed:
+        dim_expr = {dim.name: e for dim, e in dim_specs}
+        grain_of = {dim.name: grain for dim, grain, _ in dim_entries}
+        time_dim = {dim.name for dim, _ in dim_specs if dim.type == "time"}
+    for name, frame_source, emits, expr in framed:
+        emitted = [d for d in dim_names if d in emits]
+        carried = [d for d in dim_names if d not in emits]
+        base = lf.with_columns([dim_expr[d] for d in carried]) if carried else lf
         try:
-            derived = compile_frame(frame_source, base, dim_names, f"measure '{name}'")
+            derived = compile_frame(frame_source, base, carried, f"measure '{name}'")
         except ModelError as exc:
             raise QueryError(str(exc)) from exc
         try:
@@ -406,13 +419,21 @@ def run_query(model: Model, query: dict) -> dict:
         if missing:
             raise QueryError(
                 f"measure '{name}': the intermediary frame lost dimension column(s) {missing} — "
-                "carry the query's dimensions through with `dims` (e.g. group_by([*keys, *dims]))"
+                "carry the query's dimensions through with `dims` (e.g. group_by([*keys, *dims])), "
+                "or list a dimension in the measure's frame_emits and output it from the frame"
             )
+        trunc = [pl.col(d).dt.truncate(grain_of[d]).alias(d)
+                 for d in emitted if d in time_dim and grain_of.get(d)]
+        if trunc:
+            derived = derived.with_columns(trunc)
         part = derived.group_by(dim_names).agg(expr) if dim_names else derived.select(expr)
         if out is None:
             out = part
         elif dim_names:
-            out = out.join(part, on=dim_names, how="left", nulls_equal=True)
+            # full join: a group present on either side keeps its row — carried
+            # dims make the framed side a subset (same as a left join), but an
+            # emitted dimension can surface groups the raw rows never form
+            out = out.join(part, on=dim_names, how="full", coalesce=True, nulls_equal=True)
         else:
             out = out.join(part, how="cross")
     lf = out
