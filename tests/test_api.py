@@ -92,7 +92,7 @@ def test_dimension_bundle_yaml_roundtrip(client):
 
 
 def test_dimension_bundle_reload(client):
-    assert client.post("/api/dimensions/reload").json()["loaded"] == ["geography"]
+    assert client.post("/api/dimensions/reload").json()["loaded"] == ["clinical_ops", "geography"]
 
 
 def test_unknown_dimension_bundle_is_404(client):
