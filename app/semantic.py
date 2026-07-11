@@ -18,6 +18,17 @@ import yaml
 
 _EVAL_GLOBALS = {"__builtins__": {}, "pl": pl}
 
+# frame snippets are multi-statement python where basics like list()/dict()/
+# len() are legitimately useful; expose a small utility subset (the empty
+# __builtins__ above is hygiene, not a sandbox — models are trusted
+# configuration either way)
+_FRAME_BUILTINS = {
+    f.__name__: f for f in (
+        abs, dict, enumerate, float, int, len, list, max, min,
+        range, round, set, sorted, str, sum, tuple, zip,
+    )
+}
+
 TIME_GRAINS = {"1d": "Day", "1w": "Week", "1mo": "Month", "1q": "Quarter", "1y": "Year"}
 SOURCE_FORMATS = ("parquet", "csv", "delta")
 JOIN_KINDS = ("left", "inner")
@@ -36,6 +47,49 @@ def compile_expr(source: str, owner: str = "expression") -> pl.Expr:
     if not isinstance(expr, pl.Expr):
         raise ModelError(f"{owner}: expression is not a polars Expr")
     return expr
+
+
+def validate_frame(source: str, owner: str) -> None:
+    """Load-time syntax check for a measure's intermediary-frame snippet — it
+    cannot be fully evaluated until query time, when a live scan exists."""
+    try:
+        compile(source, f"<{owner}>", "exec")
+    except SyntaxError as exc:
+        raise ModelError(f"{owner}: invalid frame syntax: {exc}") from exc
+
+
+def compile_frame(source: str, lf: pl.LazyFrame, dims: list[str], owner: str) -> pl.LazyFrame:
+    """Evaluate a measure's intermediary-frame snippet (trusted config, like
+    compile_expr). The snippet sees `lf` (the filtered scan, with the query's
+    dimension columns already materialized under their semantic names),
+    `dims` (the list of those column names) and `pl`. It is either a single
+    expression, or statements that assign the result to a variable named
+    `frame`; either way it must produce a LazyFrame that still carries the
+    `dims` columns so the engine can aggregate it at the query's grain."""
+    ns: dict = {"__builtins__": _FRAME_BUILTINS, "pl": pl, "lf": lf, "dims": list(dims)}
+    try:
+        try:
+            code = compile(source, f"<{owner}>", "eval")
+        except SyntaxError:
+            code = None
+        if code is not None:
+            result = eval(code, ns)  # noqa: S307 - see module docstring
+        else:
+            exec(compile(source, f"<{owner}>", "exec"), ns)  # noqa: S102
+            if "frame" not in ns:
+                raise ModelError(
+                    f"{owner}: frame snippet must assign its result to a variable named 'frame'"
+                )
+            result = ns["frame"]
+    except ModelError:
+        raise
+    except Exception as exc:
+        raise ModelError(f"{owner}: cannot evaluate frame: {exc}") from exc
+    if isinstance(result, pl.DataFrame):
+        result = result.lazy()
+    if not isinstance(result, pl.LazyFrame):
+        raise ModelError(f"{owner}: frame did not produce a polars LazyFrame")
+    return result
 
 
 @dataclass
@@ -98,6 +152,9 @@ class Measure:
     expr_source: str
     format: str = "number"  # number | currency | percent
     description: str = ""
+    # optional intermediary step: a python snippet building a derived LazyFrame
+    # (business logic) that expr_source then aggregates over — see compile_frame
+    frame_source: Optional[str] = None
 
     def expr(self) -> pl.Expr:
         return compile_expr(self.expr_source, f"measure '{self.name}'").alias(self.name)
@@ -200,7 +257,8 @@ class Model:
             ],
             "measures": [
                 {"name": m.name, "label": m.label, "format": m.format,
-                 "description": m.description, "expr": m.expr_source}
+                 "description": m.description, "expr": m.expr_source,
+                 "frame": m.frame_source}
                 for m in self.measures.values()
             ],
         }
@@ -289,7 +347,10 @@ def _parse_model(raw: dict, origin: Path) -> Model:
                 expr_source=m["expr"],
                 format=m.get("format", "number"),
                 description=m.get("description", ""),
+                frame_source=m.get("frame"),
             )
+            if meas.frame_source:
+                validate_frame(meas.frame_source, f"measure '{meas.name}'")
             meas.expr()  # validate at load time
             model.measures[meas.name] = meas
         for imp in raw.get("dimension_imports", []):
@@ -299,11 +360,24 @@ def _parse_model(raw: dict, origin: Path) -> Model:
     return model
 
 
+class _BlockStrDumper(yaml.SafeDumper):
+    """SafeDumper that renders multi-line strings (frame snippets) as literal
+    `|` blocks instead of quoted strings full of \\n escapes."""
+
+
+def _repr_str(dumper: yaml.SafeDumper, data: str):
+    style = "|" if "\n" in data else None
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data, style=style)
+
+
+_BlockStrDumper.add_representer(str, _repr_str)
+
+
 def append_measure_yaml(text: str, measure: dict) -> str:
     """Insert a measure at the end of the `measures:` block of a model's yaml,
     preserving the rest of the file byte-for-byte (comments included). yaml
     handles the quoting of the new block itself."""
-    block = yaml.safe_dump([measure], default_flow_style=False, sort_keys=False, width=1000)
+    block = yaml.dump([measure], Dumper=_BlockStrDumper, default_flow_style=False, sort_keys=False, width=1000)
     block = "".join("  " + line + "\n" for line in block.rstrip("\n").split("\n"))
 
     lines = text.split("\n")
@@ -517,7 +591,8 @@ def model_to_spec(model: Model) -> dict:
         "dimensions": [_dimension_to_spec(d) for d in model.dimensions.values()],
         "measures": [
             {"name": m.name, "label": m.label, "expr": m.expr_source,
-             "format": m.format, "description": m.description}
+             "format": m.format, "description": m.description,
+             "frame": m.frame_source}
             for m in model.measures.values()
         ],
     }
@@ -617,6 +692,8 @@ def spec_to_yaml(spec: dict) -> str:
             entry["format"] = m["format"]
         if m.get("description"):
             entry["description"] = m["description"]
+        if m.get("frame"):
+            entry["frame"] = m["frame"]
         entry["expr"] = m["expr"]
         measures.append(entry)
     doc["measures"] = measures
@@ -625,7 +702,7 @@ def spec_to_yaml(spec: dict) -> str:
 
 
 def _dump_generated(doc: dict) -> str:
-    text = yaml.safe_dump(doc, sort_keys=False, default_flow_style=False, width=1000, allow_unicode=True)
+    text = yaml.dump(doc, Dumper=_BlockStrDumper, sort_keys=False, default_flow_style=False, width=1000, allow_unicode=True)
     # yaml 1.1 quotes the boolean-ish `on` key; hand-written models use it bare
     # (the parser accepts both — see _parse_join_keys)
     text = re.sub(r"^(\s*(?:- )?)'on':", r"\1on:", text, flags=re.MULTILINE)

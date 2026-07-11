@@ -1,7 +1,7 @@
 """Query engine against the seeded emulator bucket: aggregation, filters,
 joins, time grains, spine semantics, delta sources."""
 import io
-from datetime import date
+from datetime import date, timedelta
 
 import polars as pl
 import pytest
@@ -251,3 +251,120 @@ def test_import_inner_join_drops_unmatched_anchor_rows(import_edge_cases):
     model = import_edge_cases(how="inner")
     r = engine.run_query(model, {"dimensions": [], "measures": ["total"]})
     assert r["rows"][0]["total"] == 30  # only "A" (10) + "B" (20); unmatched "Z" is dropped
+
+
+# --- Framed measures: expr aggregates over an intermediary derived frame ---
+# Synthetic event log with hand-computable answers: per study, the "days to
+# reach 75% of that study's events" is the date of the ceil(0.75 * n)-th
+# event minus the first event's date.
+#   S1 (cohort X): events on days 0/10/20/30 -> 3rd of 4  -> 20
+#   S2 (cohort X): events on days 0/100      -> 2nd of 2  -> 100
+#   S3 (cohort Y): events on days 0/5/8      -> 3rd of 3  -> 8
+
+@pytest.fixture(scope="module")
+def framed_model(seeded):
+    days = {"S1": [0, 10, 20, 30], "S2": [0, 100], "S3": [0, 5, 8]}
+    cohort = {"S1": "X", "S2": "X", "S3": "Y"}
+    rows = [
+        {"study_id": sid, "cohort": cohort[sid], "event_date": date(2025, 1, 1) + timedelta(days=d)}
+        for sid, offsets in days.items() for d in offsets
+    ]
+    buf = io.BytesIO()
+    pl.DataFrame(rows).write_parquet(buf)
+    s3.client().put_object(Bucket=config.BUCKET, Key="test/framed_events.parquet", Body=buf.getvalue())
+
+    return semantic.parse_model_text(f"""
+name: test_framed
+source: {{format: parquet, path: s3://{config.BUCKET}/test/framed_events.parquet}}
+dimensions:
+  - name: cohort
+  - name: event_date
+    type: time
+measures:
+  - name: events
+    expr: pl.len()
+  - name: median_days_to_75
+    frame: |
+      keys = list(dict.fromkeys(["study_id", *dims]))
+      ordered = lf.sort("event_date").with_columns(
+          (pl.int_range(1, pl.len() + 1).over(keys) / pl.len().over(keys)).alias("cume"),
+          pl.col("event_date").min().over(keys).alias("first_event"),
+      )
+      frame = (
+          ordered.filter(pl.col("cume") >= 0.75)
+          .group_by(keys)
+          .agg(pl.col("first_event").first(), pl.col("event_date").min().alias("date_75"))
+          .with_columns((pl.col("date_75") - pl.col("first_event")).dt.total_days().alias("days_to_75"))
+      )
+    expr: pl.col("days_to_75").median()
+""")
+
+
+def test_framed_measure_grand_total(framed_model):
+    r = engine.run_query(framed_model, {"dimensions": [], "measures": ["median_days_to_75"]})
+    assert r["row_count"] == 1
+    assert r["rows"][0]["median_days_to_75"] == 20.0  # median of {20, 100, 8}
+
+
+def test_framed_measure_grouped_by_dimension(framed_model):
+    r = engine.run_query(framed_model, {"dimensions": ["cohort"], "measures": ["median_days_to_75"]})
+    values = {row["cohort"]: row["median_days_to_75"] for row in r["rows"]}
+    assert values == {"X": 60.0, "Y": 8.0}  # X: median(20, 100); Y: median(8)
+
+
+def test_framed_and_plain_measures_mix(framed_model):
+    r = engine.run_query(framed_model, {"dimensions": ["cohort"], "measures": ["events", "median_days_to_75"]})
+    values = {row["cohort"]: (row["events"], row["median_days_to_75"]) for row in r["rows"]}
+    assert values == {"X": (6, 60.0), "Y": (3, 8.0)}
+
+
+def test_framed_measure_respects_filters(framed_model):
+    r = engine.run_query(framed_model, {
+        "dimensions": [], "measures": ["median_days_to_75"],
+        "filters": [{"field": "cohort", "op": "eq", "value": "X"}],
+    })
+    assert r["rows"][0]["median_days_to_75"] == 60.0
+
+
+def test_inline_framed_measure(framed_model):
+    r = engine.run_query(framed_model, {
+        "dimensions": ["cohort"], "measures": ["n_studies"],
+        "inline_measures": [{
+            "name": "n_studies",
+            "frame": 'lf.group_by(["study_id", *dims]).agg(pl.len())',
+            "expr": "pl.len()",
+        }],
+    })
+    values = {row["cohort"]: row["n_studies"] for row in r["rows"]}
+    assert values == {"X": 2, "Y": 1}
+
+
+def test_frame_that_drops_dimensions_rejected(framed_model):
+    with pytest.raises(engine.QueryError, match="lost dimension"):
+        engine.run_query(framed_model, {
+            "dimensions": ["cohort"], "measures": ["bad"],
+            "inline_measures": [{
+                "name": "bad",
+                "frame": 'lf.group_by("study_id").agg(pl.len())',  # ignores `dims`
+                "expr": "pl.len()",
+            }],
+        })
+
+
+def test_clinical_framed_measure_end_to_end(models):
+    # the shipped demo measure: median months from first actual randomisation
+    # to the month cumulative randomisations crossed 75% of the study total
+    r = run(models, "clinical_ops_recruitment",
+            dimensions=[], measures=["median_months_to_75pct_randomised"])
+    assert r["row_count"] == 1
+    v = r["rows"][0]["median_months_to_75pct_randomised"]
+    assert v is not None and 0 < v < 40
+
+
+def test_clinical_framed_measure_grouped_with_plain(models):
+    r = run(models, "clinical_ops_recruitment", dimensions=["therapeutic_area"],
+            measures=["randomised_actual", "median_months_to_75pct_randomised"])
+    assert r["row_count"] >= 3
+    with_events = [row for row in r["rows"] if row["randomised_actual"] > 0]
+    assert with_events and all(
+        row["median_months_to_75pct_randomised"] > 0 for row in with_events)

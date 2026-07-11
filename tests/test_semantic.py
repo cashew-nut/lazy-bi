@@ -1,4 +1,5 @@
 """Semantic layer: yaml parsing and validation."""
+import polars as pl
 import pytest
 
 from app import semantic
@@ -79,6 +80,73 @@ def test_bundled_models_load(models):
     assert sales.joins and sales.joins[0].source.format == "csv"
     assert models["subscriptions"].dimensions["active_at"].spine is not None
     assert models["marketing"].dimensions["region"].geo is not None
+
+
+# --- Framed measures (aggregations over an intermediary derived frame) -----
+
+FRAMED = """
+name: t
+source: {format: parquet, path: s3://b/x/*.parquet}
+dimensions:
+  - name: cohort
+measures:
+  - name: median_days
+    frame: |
+      per_study = lf.group_by(["study_id", *dims]).agg(pl.col("days").min())
+      frame = per_study
+    expr: pl.col("days").median()
+"""
+
+
+def test_framed_measure_parses():
+    m = semantic.parse_model_text(FRAMED)
+    meas = m.measures["median_days"]
+    assert "per_study" in meas.frame_source
+    assert meas.expr() is not None
+
+
+def test_framed_measure_bad_syntax_rejected():
+    bad = FRAMED.replace("frame = per_study", "frame = = per_study")
+    with pytest.raises(semantic.ModelError, match="frame syntax"):
+        semantic.parse_model_text(bad)
+
+
+def test_compile_frame_single_expression_form():
+    lf = pl.LazyFrame({"study_id": ["a", "a", "b"], "days": [1, 3, 5]})
+    out = semantic.compile_frame(
+        'lf.group_by(["study_id", *dims]).agg(pl.col("days").min())', lf, [], "measure 'm'"
+    )
+    assert isinstance(out, pl.LazyFrame)
+
+
+def test_compile_frame_statements_must_assign_frame():
+    lf = pl.LazyFrame({"a": [1]})
+    with pytest.raises(semantic.ModelError, match="named 'frame'"):
+        semantic.compile_frame("x = lf", lf, [], "measure 'm'")
+
+
+def test_compile_frame_must_produce_lazyframe():
+    lf = pl.LazyFrame({"a": [1]})
+    with pytest.raises(semantic.ModelError, match="LazyFrame"):
+        semantic.compile_frame("frame = 42", lf, [], "measure 'm'")
+
+
+def test_framed_measure_survives_spec_yaml_roundtrip():
+    model = semantic.parse_model_text(FRAMED)
+    text = semantic.spec_to_yaml(semantic.model_to_spec(model))
+    assert "frame: |" in text  # literal block, not an escaped one-liner
+    again = semantic.parse_model_text(text)
+    assert again.measures["median_days"].frame_source.strip() == \
+        model.measures["median_days"].frame_source.strip()
+
+
+def test_append_measure_yaml_renders_frame_as_block():
+    text = semantic.append_measure_yaml(VALID, {
+        "name": "m2", "frame": "step = lf.filter(pl.col('x') > 0)\nframe = step",
+        "expr": "pl.col('x').median()",
+    })
+    model = semantic.parse_model_text(text)
+    assert model.measures["m2"].frame_source.strip().endswith("frame = step")
 
 
 # --- Dimension bundles (common dimensional models) -------------------------

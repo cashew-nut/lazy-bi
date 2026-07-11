@@ -76,3 +76,45 @@ measures:
     expr: >
       pl.col("event_count").filter((pl.col("event_type") == "randomised") & (pl.col("scenario") == "actual")).sum()
       / pl.col("event_count").filter((pl.col("event_type") == "randomised") & (pl.col("scenario") == "baseline")).sum()
+  # A measure defined over an intermediary step: `frame` builds a derived lazy
+  # frame (one row per study: months from first actual randomisation to the
+  # month cumulative randomisations crossed 75% of the study's total), and
+  # `expr` aggregates that frame. `dims` carries whatever the query groups by
+  # (phase, sponsor, ...) through each step so the engine can re-aggregate at
+  # the query's grain.
+  - name: median_months_to_75pct_randomised
+    label: Median Months to 75% Randomised
+    description: >
+      Median across studies of the months between a study's first actual
+      randomisation and the month its cumulative randomisations reached
+      75% of its total.
+    frame: |
+      keys = list(dict.fromkeys(["study_id", *dims]))
+      monthly = (
+          lf.filter(
+              (pl.col("event_type") == "randomised")
+              & (pl.col("scenario") == "actual")
+              & (pl.col("event_count") > 0)
+          )
+          .group_by(list(dict.fromkeys([*keys, "event_month"])))
+          .agg(pl.col("event_count").sum())
+          .sort("event_month")
+      )
+      frame = (
+          monthly.with_columns(
+              (pl.col("event_count").cum_sum().over(keys)
+               / pl.col("event_count").sum().over(keys)).alias("cume_share"),
+              pl.col("event_month").min().over(keys).alias("first_month"),
+          )
+          .filter(pl.col("cume_share") >= 0.75)
+          .group_by(keys)
+          .agg(
+              pl.col("first_month").first(),
+              pl.col("event_month").min().alias("month_75"),
+          )
+          .with_columns(
+              ((pl.col("month_75") - pl.col("first_month")).dt.total_days() / 30.44)
+              .alias("months_to_75")
+          )
+      )
+    expr: pl.col("months_to_75").median()
