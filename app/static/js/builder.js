@@ -2,11 +2,14 @@
 "use strict";
 
 import { decideChart, renderViz, vizMessage } from "./charts/index.js";
-import { GRAINS, fetchDimValues } from "./charts/common.js";
+import { GRAINS } from "./charts/common.js";
 import { renderTableInto } from "./charts/table.js";
-import { FILTER_OPS, filterReady, timeValueControl, toApiFilter } from "./filters.js";
+import {
+  filterReady, filterValueControl, normalizeCategoricalOp,
+  opsForDim, resetFilterForField, toApiFilter,
+} from "./filters.js";
 import { $, api, el } from "./lib.js";
-import { hooks, modelByName, showView, state, valueCache } from "./state.js";
+import { hooks, modelByName, showView, state } from "./state.js";
 
 export const dimByName = (name) => state.model.dimensions.find((d) => d.name === name);
 export const measureByName = (name) =>
@@ -165,46 +168,22 @@ export function renderFilters() {
   box.innerHTML = "";
   state.filters.forEach((flt, idx) => {
     const row = el("div", { class: "filter-row" });
-    const dimSel = el("select", { onchange: (e) => { flt.field = e.target.value; flt.value = ""; flt.values = []; renderFilters(); scheduleRun(); } });
+    const dimSel = el("select", {
+      onchange: (e) => { flt.field = e.target.value; resetFilterForField(flt, dimByName(flt.field)); renderFilters(); scheduleRun(); },
+    });
     for (const d of state.model.dimensions) dimSel.append(el("option", { value: d.name }, d.label));
     dimSel.value = flt.field;
+
+    const dim = dimByName(flt.field);
+    normalizeCategoricalOp(flt, dim);
     const opSel = el("select", { class: "op", onchange: (e) => { flt.op = e.target.value; flt.value = ""; flt.values = []; renderFilters(); scheduleRun(); } });
-    for (const [op, label] of FILTER_OPS) opSel.append(el("option", { value: op }, label));
+    for (const [op, label] of opsForDim(dim)) opSel.append(el("option", { value: op }, label));
     opSel.value = flt.op;
     const rm = el("button", { class: "rm", onclick: () => { state.filters.splice(idx, 1); renderFilters(); scheduleRun(); } }, "✕");
     row.append(el("div", { class: "top" }, dimSel, opSel, rm));
 
-    const dim = dimByName(flt.field);
-    const multi = flt.op === "in" || flt.op === "not_in";
-    const distinct = valueCache[state.model.name + ":" + flt.field];
-    const haveList = Array.isArray(distinct) && distinct.length;
-    const onValues = () => { renderFilters(); };
-    if (multi) {
-      if (!haveList) fetchDimValues(state.model.name, flt.field, onValues);
-      const sel = el("select", { multiple: "multiple", onchange: (e) => { flt.values = [...e.target.selectedOptions].map((o) => o.value); scheduleRun(); } });
-      for (const v of (haveList ? distinct : flt.values)) {
-        const opt = el("option", { value: String(v) }, String(v));
-        if (flt.values.includes(String(v))) opt.selected = true;
-        sel.append(opt);
-      }
-      row.append(sel);
-    } else if ((flt.op === "eq" || flt.op === "ne") && dim && dim.type !== "time") {
-      if (!haveList) fetchDimValues(state.model.name, flt.field, onValues);
-      const sel = el("select", { onchange: (e) => { flt.value = e.target.value; scheduleRun(); } });
-      sel.append(el("option", { value: "" }, "— pick —"));
-      for (const v of (haveList ? distinct : [])) sel.append(el("option", { value: String(v) }, String(v)));
-      sel.value = flt.value || "";
-      row.append(sel);
-    } else if (dim && dim.type === "time" && flt.op !== "contains") {
-      row.append(timeValueControl(flt, scheduleRun));
-    } else {
-      const input = el("input", {
-        type: "text",
-        value: flt.value || "", placeholder: "value…",
-        onchange: (e) => { flt.value = e.target.value; scheduleRun(); },
-      });
-      row.append(input);
-    }
+    const srcModel = dim && !dim.spine ? state.model.name : null;
+    row.append(filterValueControl(flt, dim, srcModel, scheduleRun, renderFilters));
     box.append(row);
   });
 }
