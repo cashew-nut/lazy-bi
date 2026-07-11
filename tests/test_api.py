@@ -153,3 +153,49 @@ def test_editor_create_and_delete_model(client, tmp_path):
     assert client.post("/api/models", json={"yaml": yaml_text}).status_code == 409
     assert client.delete("/api/models/temp_probe").status_code == 204
     assert "temp_probe" not in client.get("/api/health").json()["models"]
+
+
+# ── 007-modelling-workspace ──────────────────────────────────
+
+def test_guided_import_roundtrip(client):
+    """A model whose yaml carries a dimension_imports block (what the guided
+    import affordance produces) gains the bundle's shared dimensions on load."""
+    yaml_text = (
+        "name: t_import_probe\n"
+        "source: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
+        "dimension_imports:\n"
+        "  - bundle: geography\n"
+        "    anchor_dataset: regions\n"
+        "    on: region\n"
+        "measures:\n  - name: rows\n    expr: pl.len()\n"
+    )
+    # validation surfaces the imported dims before any save
+    ok = client.post("/api/models/validate", json={"yaml": yaml_text}).json()
+    assert ok["ok"], ok
+    created = client.post("/api/models", json={"yaml": yaml_text})
+    assert created.status_code == 201
+    try:
+        model = next(m for m in client.get("/api/models").json() if m["name"] == "t_import_probe")
+        dims = {d["name"] for d in model["dimensions"]}
+        assert "region" in dims and "territory" in dims  # imported from geography
+    finally:
+        client.delete("/api/models/t_import_probe")
+
+
+def test_raw_yaml_parity_and_invalid_not_persisted(client):
+    """Raw-YAML editing keeps full parity: a valid PUT persists + reloads; an
+    invalid PUT is rejected (400) and does not change the stored yaml."""
+    base = ("name: t_parity\nsource: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
+            "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: pl.len()\n")
+    assert client.post("/api/models", json={"yaml": base}).status_code == 201
+    try:
+        good = base.replace("label: ", "") + "\n# a valid trailing comment\n"
+        assert client.put("/api/models/t_parity/yaml", json={"yaml": good}).status_code == 200
+        assert "valid trailing comment" in client.get("/api/models/t_parity/yaml").json()["yaml"]
+
+        # invalid yaml (measure expr that cannot compile) must be refused + not stored
+        bad = base.replace("expr: pl.len()", "expr: pl.col(")
+        assert client.put("/api/models/t_parity/yaml", json={"yaml": bad}).status_code == 400
+        assert "valid trailing comment" in client.get("/api/models/t_parity/yaml").json()["yaml"]
+    finally:
+        client.delete("/api/models/t_parity")

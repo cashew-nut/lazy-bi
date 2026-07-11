@@ -471,6 +471,108 @@ def load_dimension_bundles(dimensions_dir: Path) -> dict[str, DimensionBundle]:
     return bundles
 
 
+# ---------------------------------------------------------------------------
+# Dataset discovery: group raw bucket objects into pickable "datasets" for the
+# modelling workspace's source picker. Pure helpers (no S3 access) so they are
+# unit-testable; app/api/datasets.py layers the bucket walk + model-mapping on top.
+# ---------------------------------------------------------------------------
+
+_EXT_FORMAT = {".parquet": "parquet", ".csv": "csv"}
+_DELTA_MARKER = "/_delta_log/"
+
+
+def infer_format(keys: list[str]) -> tuple[Optional[str], bool]:
+    """Infer a source format for a group of object keys from their extensions.
+    Returns (format, ambiguous): format is None when no key has a recognized data
+    extension; ambiguous is True when recognized extensions disagree (the picker
+    warns but still lets the caller select, using the dominant format)."""
+    counts: dict[str, int] = {}
+    for key in keys:
+        for ext, fmt in _EXT_FORMAT.items():
+            if key.lower().endswith(ext):
+                counts[fmt] = counts.get(fmt, 0) + 1
+                break
+    if not counts:
+        return None, False
+    dominant = max(counts, key=lambda f: counts[f])
+    return dominant, len(counts) > 1
+
+
+def _dirname(key: str) -> str:
+    return key.rsplit("/", 1)[0] if "/" in key else ""
+
+
+def _object_format(key: str) -> Optional[str]:
+    for ext, fmt in _EXT_FORMAT.items():
+        if key.lower().endswith(ext):
+            return fmt
+    return None
+
+
+def group_objects(objects: list[dict], bucket: str) -> list[dict]:
+    """Group bucket objects (each ``{"key", "size"}``) into pickable datasets.
+
+    A Delta table (any object under a ``_delta_log/`` marker) collapses into a
+    single ``delta`` dataset rooted at the table directory; every other object
+    groups by its directory prefix into a format-inferred glob source. Prefixes
+    whose objects carry no recognized data extension are dropped (they cannot
+    back a valid source). Pure — no S3 access; ``bucket`` only builds paths."""
+    delta_roots: list[str] = []
+    for obj in objects:
+        if _DELTA_MARKER in obj["key"]:
+            root = obj["key"].split(_DELTA_MARKER, 1)[0]
+            if root not in delta_roots:
+                delta_roots.append(root)
+
+    def delta_root_of(key: str) -> Optional[str]:
+        for root in delta_roots:
+            if key == root or key.startswith(root + "/"):
+                return root
+        return None
+
+    datasets: list[dict] = []
+
+    for root in delta_roots:
+        members = [o for o in objects if delta_root_of(o["key"]) == root]
+        datasets.append({
+            "key": root,
+            "path": f"s3://{bucket}/{root}",
+            "format": "delta",
+            "format_ambiguous": False,
+            "object_count": len(members),
+            "bytes": sum(o.get("size", 0) for o in members),
+            "objects": [{"key": o["key"], "size": o.get("size", 0), "format": "delta"} for o in members],
+        })
+
+    groups: dict[str, list[dict]] = {}
+    for obj in objects:
+        if delta_root_of(obj["key"]):
+            continue
+        groups.setdefault(_dirname(obj["key"]), []).append(obj)
+
+    for prefix, members in groups.items():
+        fmt, ambiguous = infer_format([o["key"] for o in members])
+        if fmt is None:
+            continue
+        ext = next(e for e, f in _EXT_FORMAT.items() if f == fmt)
+        glob = f"s3://{bucket}/{prefix + '/' if prefix else ''}*{ext}"
+        datasets.append({
+            "key": prefix,
+            "path": glob,
+            "format": fmt,
+            "format_ambiguous": ambiguous,
+            "object_count": len(members),
+            "bytes": sum(o.get("size", 0) for o in members),
+            "objects": [
+                {"key": o["key"], "size": o.get("size", 0), "format": _object_format(o["key"]) or fmt}
+                for o in members
+            ],
+        })
+
+    datasets.sort(key=lambda d: d["key"])
+    return datasets
+
+
 def _bfs_reachable(bundle: DimensionBundle, start: str, allowed: set[str]) -> list[str]:
     """Datasets reachable from `start` walking only through `allowed` nodes —
     excluding a dataset also prunes anything reachable only through it."""

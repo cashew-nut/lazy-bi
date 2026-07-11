@@ -1,31 +1,14 @@
 /* Common dimensional models in the UI:
-     renderBundleList()  → sidebar list of bundles (click to author/edit)
      renderImportPanel() → panel in the fact-model editor that inserts a
                            dimension_imports block for a chosen bundle+dataset
    Bundles come from /api/dimensions and are deliberately kept out of the
-   builder's model <select> — they are dimension providers, not queryable. */
+   builder's model <select> — they are dimension providers, not queryable.
+   The sidebar bundle list now lives in the Modelling workspace (modelling.js). */
 "use strict";
 
-import { openEditor, insertAtCursor } from "./editor.js";
+import { insertAtCursor } from "./editor.js";
 import { $, api, el } from "./lib.js";
 import { state } from "./state.js";
-
-export async function renderBundleList() {
-  state.bundles = await api("/api/dimensions");
-  const box = $("#bundle-list");
-  box.innerHTML = "";
-  if (!state.bundles.length) {
-    box.append(el("div", { class: "empty-note" }, "none yet — shared dimensions across models"));
-    return;
-  }
-  for (const b of state.bundles) {
-    const item = el("div", { class: "saved-item", title: "edit this common model" },
-      el("span", { class: "nm" }, b.label),
-      el("span", { class: "tag" }, `${b.datasets.length} set${b.datasets.length === 1 ? "" : "s"}`));
-    item.addEventListener("click", () => openEditor("bundle", b.name));
-    box.append(item);
-  }
-}
 
 // build a dimension_imports entry; if the model already has the block, add
 // just the list item, otherwise emit the header too

@@ -5,30 +5,12 @@
 "use strict";
 
 import { buildQuery, refreshModels, renderBuilderViz, renderMeasures, scheduleRun, syncSortOptions } from "./builder.js";
+import { makeCompleter, polarsContext, polarsItems } from "./completion.js";
 import { $, api, el, fmtMeasure } from "./lib.js";
 import { hooks, state } from "./state.js";
 
 const lab = { open: false, editingName: null, schema: [], schemaModel: null };
-
-// completion candidates: [insert, hint, caretOffset]
-const TOP_FNS = [
-  ['col("")', "reference a column", -2],
-  ["len()", "row count", 0],
-  ["lit()", "literal value", -1],
-  ["when().then().otherwise()", "conditional", -20],
-];
-const METHODS = [
-  ["sum()", "total", 0], ["mean()", "average", 0], ["median()", "median", 0],
-  ["min()", "minimum", 0], ["max()", "maximum", 0],
-  ["n_unique()", "distinct count", 0], ["count()", "non-null count", 0],
-  ["std()", "std deviation", 0], ["quantile(0.5)", "quantile", -1],
-  ["first()", "first value", 0], ["last()", "last value", 0],
-  ["abs()", "absolute", 0], ["round(2)", "round", -1],
-  ["cast(pl.Float64)", "change type", -1], ["fill_null(0)", "replace nulls", -1],
-  ["is_null()", "null test", 0], ["is_not_null()", "non-null test", 0],
-  ["filter()", "aggregate matching rows only", -1],
-  ["dt.year()", "extract year", 0], ["str.contains()", "text match", -1],
-];
+let completer = null;
 
 function setStatus(html, isError = false) {
   const box = $("#lab-status");
@@ -63,7 +45,7 @@ export function closeLab(rerun = true) {
   lab.open = false;
   lab.editingName = null;
   $("#measure-lab").hidden = true;
-  hideSuggest();
+  if (completer) completer.hide();
   if (rerun) scheduleRun();   // drop any live preview from the chart
 }
 hooks.closeLab = closeLab;
@@ -163,93 +145,13 @@ async function saveToModel() {
   }
 }
 
-// ── completion ───────────────────────────────────────────────
+// ── completion (shared engine, polars-expression context) ────
 
-const suggest = { items: [], index: 0, start: 0 };
-
-function suggestContext() {
-  const ta = $("#lab-expr");
-  const upto = ta.value.slice(0, ta.selectionStart);
-  let m;
-  if ((m = upto.match(/pl\.col\(\s*["']([A-Za-z0-9_ ]*)$/))) {
-    return { kind: "col", prefix: m[1], start: ta.selectionStart - m[1].length };
-  }
-  if ((m = upto.match(/(?:^|[^A-Za-z0-9_.])pl\.([a-z_]*)$/))) {
-    return { kind: "top", prefix: m[1], start: ta.selectionStart - m[1].length };
-  }
-  if ((m = upto.match(/[)\]"'A-Za-z0-9_]\.([a-z_]*)$/))) {
-    return { kind: "method", prefix: m[1], start: ta.selectionStart - m[1].length };
-  }
-  return null;
-}
-
-function updateSuggest() {
-  const ctxInfo = suggestContext();
-  if (!ctxInfo) return hideSuggest();
-  let items;
-  if (ctxInfo.kind === "col") {
-    const ta = $("#lab-expr");
-    // don't double the closer if the quote is already there after the caret
-    const closer = ta.value.slice(ta.selectionStart).startsWith('"') ? "" : '")';
-    const skip = closer ? 0 : 2;  // hop over the existing `")` instead
-    items = lab.schema
-      .filter((c) => c.name.toLowerCase().startsWith(ctxInfo.prefix.toLowerCase()))
-      .map((c) => ({ text: c.name, hint: c.dtype, insert: c.name + closer, caretOffset: skip }));
-  } else {
-    const source = ctxInfo.kind === "top" ? TOP_FNS : METHODS;
-    items = source
-      .filter(([t]) => t.startsWith(ctxInfo.prefix))
-      .map(([t, hint, off]) => ({ text: t, hint, insert: t, caretOffset: off }));
-  }
-  if (!items.length) return hideSuggest();
-  suggest.items = items.slice(0, 8);
-  suggest.index = 0;
-  suggest.start = ctxInfo.start;
-  renderSuggest();
-}
-
-function renderSuggest() {
-  const box = $("#lab-suggest");
-  box.innerHTML = "";
-  suggest.items.forEach((item, i) => {
-    const row = el("div", { class: "sug" + (i === suggest.index ? " sel" : "") },
-      el("span", {}, item.text), el("span", { class: "hint" }, item.hint));
-    row.addEventListener("mousedown", (e) => { e.preventDefault(); applySuggest(item); });
-    box.append(row);
-  });
-  box.hidden = false;
-}
-
-function hideSuggest() {
-  $("#lab-suggest").hidden = true;
-  suggest.items = [];
-}
-
-function applySuggest(item) {
-  const ta = $("#lab-expr");
-  const end = ta.selectionStart;
-  ta.value = ta.value.slice(0, suggest.start) + item.insert + ta.value.slice(end);
-  const caret = suggest.start + item.insert.length + item.caretOffset;
-  ta.selectionStart = ta.selectionEnd = caret;
-  ta.focus();
-  hideSuggest();
-  updateSuggest();      // e.g. col("") completion immediately offers columns
-  scheduleResolve();
-}
-
-function onExprKeydown(e) {
-  if ($("#lab-suggest").hidden) return;
-  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-    e.preventDefault();
-    const n = suggest.items.length;
-    suggest.index = (suggest.index + (e.key === "ArrowDown" ? 1 : n - 1)) % n;
-    renderSuggest();
-  } else if (e.key === "Enter" || e.key === "Tab") {
-    e.preventDefault();
-    applySuggest(suggest.items[suggest.index]);
-  } else if (e.key === "Escape") {
-    hideSuggest();
-  }
+// resolve the measure-lab textarea against the model's source columns
+function labResolve(upto, after, caret) {
+  const ctx = polarsContext(upto, caret);
+  if (!ctx) return null;
+  return { items: polarsItems(ctx, lab.schema, after), start: ctx.start };
 }
 
 // ── wiring ───────────────────────────────────────────────────
@@ -260,9 +162,10 @@ export function initMeasureLab() {
   $("#lab-save-visual").addEventListener("click", saveToVisual);
   $("#lab-save-model").addEventListener("click", saveToModel);
   const expr = $("#lab-expr");
-  expr.addEventListener("input", () => { updateSuggest(); scheduleResolve(); });
-  expr.addEventListener("keydown", onExprKeydown);
-  expr.addEventListener("blur", () => setTimeout(hideSuggest, 150));
+  completer = makeCompleter(expr, $("#lab-suggest"), labResolve, scheduleResolve);
+  expr.addEventListener("input", () => { completer.update(); scheduleResolve(); });
+  expr.addEventListener("keydown", (e) => completer.onKeydown(e));
+  expr.addEventListener("blur", () => setTimeout(() => completer.hide(), 150));
   for (const id of ["lab-name", "lab-label", "lab-format"]) {
     $("#" + id).addEventListener("input", scheduleResolve);
   }
