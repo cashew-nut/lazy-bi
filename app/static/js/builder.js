@@ -4,7 +4,7 @@
 import { decideChart, renderViz, vizMessage } from "./charts/index.js";
 import { GRAINS, fetchDimValues } from "./charts/common.js";
 import { renderTableInto } from "./charts/table.js";
-import { FILTER_OPS, filterReady, toApiFilter } from "./filters.js";
+import { FILTER_OPS, filterReady, timeValueControl, toApiFilter } from "./filters.js";
 import { $, api, el } from "./lib.js";
 import { hooks, modelByName, showView, state, valueCache } from "./state.js";
 
@@ -195,9 +195,11 @@ export function renderFilters() {
       for (const v of (haveList ? distinct : [])) sel.append(el("option", { value: String(v) }, String(v)));
       sel.value = flt.value || "";
       row.append(sel);
+    } else if (dim && dim.type === "time" && flt.op !== "contains") {
+      row.append(timeValueControl(flt, scheduleRun));
     } else {
       const input = el("input", {
-        type: dim && dim.type === "time" && flt.op !== "contains" ? "date" : "text",
+        type: "text",
         value: flt.value || "", placeholder: "value…",
         onchange: (e) => { flt.value = e.target.value; scheduleRun(); },
       });
