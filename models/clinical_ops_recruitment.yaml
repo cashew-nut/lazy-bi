@@ -1,0 +1,78 @@
+# Semantic model: patient recruitment events by site, month, scenario and
+# event type. `scenario` carries the enrollment plan (baseline) alongside
+# what actually happened (actual); `event_type` is the screening funnel
+# (screened -> randomised, with screen_fail the difference). Every measure
+# below is the same event_count column summed under a different
+# scenario/event_type filter, so metrics like "randomised actual" or
+# "screened baseline" are plain filtered sums, not separate columns.
+name: clinical_ops_recruitment
+label: Recruitment Events
+description: Baseline vs actual patient recruitment (screened / randomised / screen fail) by study, country and site.
+source:
+  format: parquet
+  path: s3://cash-intel/recruitment/*.parquet
+
+# study / study country / study site come from the clinical_ops common
+# dimensional model (see dimensions/clinical_ops.yaml) — shared with any
+# other clinical-ops fact model that anchors on site_id
+dimension_imports:
+  - bundle: clinical_ops
+    anchor_dataset: study_sites
+    on: site_id
+
+dimensions:
+  - name: event_date
+    column: event_month
+    label: Event Date
+    type: time
+  - name: scenario
+    label: Scenario
+    description: baseline (planned) or actual (observed).
+  - name: event_type
+    label: Event Type
+    description: screened, randomised, or screen_fail.
+
+measures:
+  - name: screened_actual
+    label: Screened (Actual)
+    description: Patients actually screened.
+    expr: pl.col("event_count").filter((pl.col("event_type") == "screened") & (pl.col("scenario") == "actual")).sum()
+  - name: screened_baseline
+    label: Screened (Baseline)
+    description: Patients planned to be screened.
+    expr: pl.col("event_count").filter((pl.col("event_type") == "screened") & (pl.col("scenario") == "baseline")).sum()
+  - name: randomised_actual
+    label: Randomised (Actual)
+    description: Patients actually randomised.
+    expr: pl.col("event_count").filter((pl.col("event_type") == "randomised") & (pl.col("scenario") == "actual")).sum()
+  - name: randomised_baseline
+    label: Randomised (Baseline)
+    description: Patients planned to be randomised.
+    expr: pl.col("event_count").filter((pl.col("event_type") == "randomised") & (pl.col("scenario") == "baseline")).sum()
+  - name: screen_fails_actual
+    label: Screen Fails (Actual)
+    expr: pl.col("event_count").filter((pl.col("event_type") == "screen_fail") & (pl.col("scenario") == "actual")).sum()
+  - name: screen_fails_baseline
+    label: Screen Fails (Baseline)
+    expr: pl.col("event_count").filter((pl.col("event_type") == "screen_fail") & (pl.col("scenario") == "baseline")).sum()
+  - name: screen_failure_rate
+    label: Screen Failure Rate
+    format: percent
+    description: Share of actual screened patients who failed screening.
+    expr: >
+      pl.col("event_count").filter((pl.col("event_type") == "screen_fail") & (pl.col("scenario") == "actual")).sum()
+      / pl.col("event_count").filter((pl.col("event_type") == "screened") & (pl.col("scenario") == "actual")).sum()
+  - name: randomisation_rate
+    label: Randomisation Rate
+    format: percent
+    description: Share of actual screened patients who were randomised.
+    expr: >
+      pl.col("event_count").filter((pl.col("event_type") == "randomised") & (pl.col("scenario") == "actual")).sum()
+      / pl.col("event_count").filter((pl.col("event_type") == "screened") & (pl.col("scenario") == "actual")).sum()
+  - name: recruitment_vs_plan
+    label: Recruitment vs Plan
+    format: percent
+    description: Actual randomisations as a share of planned (baseline) randomisations.
+    expr: >
+      pl.col("event_count").filter((pl.col("event_type") == "randomised") & (pl.col("scenario") == "actual")).sum()
+      / pl.col("event_count").filter((pl.col("event_type") == "randomised") & (pl.col("scenario") == "baseline")).sum()

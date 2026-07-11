@@ -1,0 +1,72 @@
+# Common dimensional model: clinical operations reference data.
+# studies -> study_countries -> study_sites, the standard clinical-ops
+# hierarchy. Any fact model with a site_id-shaped column (recruitment,
+# monitoring visits, drug supply, queries...) can import this bundle to gain
+# the full study/country/site rollup without hand-copying reference data.
+name: clinical_ops
+label: Clinical Operations
+description: Shared study, study country, and study site reference data, imported by clinical-ops fact models.
+
+datasets:
+  - name: studies
+    source:
+      format: csv
+      path: s3://cash-intel/ref/studies.csv
+    dimensions:
+      - name: study
+        column: study_name
+        label: Study
+      - name: study_code
+        column: study_id
+        label: Study ID
+      - name: phase
+        label: Phase
+      - name: therapeutic_area
+        label: Therapeutic Area
+      - name: sponsor
+        label: Sponsor
+      - name: study_status
+        column: status
+        label: Study Status
+      - name: planned_start_date
+        label: Planned Start Date
+        type: time
+
+  - name: study_countries
+    source:
+      format: csv
+      path: s3://cash-intel/ref/study_countries.csv
+    dimensions:
+      - name: country
+        label: Country
+      - name: region
+        label: Region
+      - name: country_status
+        label: Country Status
+      - name: country_activation_date
+        label: Country Activation Date
+        type: time
+    joins:
+      - to: studies
+        on: study_id
+
+  - name: study_sites
+    source:
+      format: csv
+      path: s3://cash-intel/ref/study_sites.csv
+    dimensions:
+      - name: site
+        column: site_name
+        label: Site
+      - name: city
+        label: City
+      - name: investigator
+        label: Investigator
+      - name: site_status
+        label: Site Status
+      - name: site_activation_date
+        label: Site Activation Date
+        type: time
+    joins:
+      - to: study_countries
+        on: study_country_id
