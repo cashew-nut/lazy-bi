@@ -81,7 +81,10 @@ measures:
   # month cumulative randomisations crossed 75% of the study's total), and
   # `expr` aggregates that frame. `dims` carries whatever the query groups by
   # (phase, sponsor, ...) through each step so the engine can re-aggregate at
-  # the query's grain.
+  # the query's grain. `event_date` is in frame_emits: on a timeline the
+  # derived rows are bucketed by each study's own 75% crossing month (the
+  # frame's `event_date` output column) *after* the step, instead of the raw
+  # event months splitting each study's partition before the cume is computed.
   - name: median_months_to_75pct_randomised
     label: Median Months to 75% Randomised
     description: >
@@ -114,7 +117,9 @@ measures:
           )
           .with_columns(
               ((pl.col("month_75") - pl.col("first_month")).dt.total_days() / 30.44)
-              .alias("months_to_75")
+              .alias("months_to_75"),
+              pl.col("month_75").alias("event_date"),
           )
       )
+    frame_emits: [event_date]
     expr: pl.col("months_to_75").median()

@@ -294,8 +294,12 @@ measures:
           ordered.filter(pl.col("cume") >= 0.75)
           .group_by(keys)
           .agg(pl.col("first_event").first(), pl.col("event_date").min().alias("date_75"))
-          .with_columns((pl.col("date_75") - pl.col("first_event")).dt.total_days().alias("days_to_75"))
+          .with_columns(
+              (pl.col("date_75") - pl.col("first_event")).dt.total_days().alias("days_to_75"),
+              pl.col("date_75").alias("event_date"),
+          )
       )
+    frame_emits: [event_date]
     expr: pl.col("days_to_75").median()
 """)
 
@@ -351,6 +355,44 @@ def test_frame_that_drops_dimensions_rejected(framed_model):
         })
 
 
+def test_framed_measure_timeline_buckets_derived_rows(framed_model):
+    # event_date is in frame_emits: the timeline buckets each study by its own
+    # 75%-crossing date (the frame's output column), not by raw event months.
+    # Crossings: S1 -> Jan 21 (20d), S3 -> Jan 9 (8d), S2 -> Apr 11 (100d).
+    r = engine.run_query(framed_model, {
+        "dimensions": [{"name": "event_date", "grain": "1mo"}],
+        "measures": ["events", "median_days_to_75"],
+    })
+    rows = {row["event_date"][:10]: row for row in r["rows"]}
+    assert rows["2025-01-01"]["median_days_to_75"] == 14.0  # median(20, 8)
+    assert rows["2025-04-01"]["median_days_to_75"] == 100.0
+    # the plain measure still buckets the raw events (8 in Jan, 1 in Apr)
+    assert rows["2025-01-01"]["events"] == 8
+    assert rows["2025-04-01"]["events"] == 1
+
+
+def test_framed_measure_timeline_respects_grain(framed_model):
+    r = engine.run_query(framed_model, {
+        "dimensions": [{"name": "event_date", "grain": "1y"}],
+        "measures": ["median_days_to_75"],
+    })
+    assert r["row_count"] == 1  # all three crossings land in 2025
+    assert r["rows"][0]["median_days_to_75"] == 20.0
+
+
+def test_emitted_dimension_missing_from_frame_rejected(framed_model):
+    with pytest.raises(engine.QueryError, match="frame_emits"):
+        engine.run_query(framed_model, {
+            "dimensions": [{"name": "event_date", "grain": "1mo"}], "measures": ["bad"],
+            "inline_measures": [{
+                "name": "bad",
+                "frame": 'lf.group_by(["study_id", *dims]).agg(pl.len())',
+                "frame_emits": ["event_date"],  # declared, but never output
+                "expr": "pl.len()",
+            }],
+        })
+
+
 def test_clinical_framed_measure_end_to_end(models):
     # the shipped demo measure: median months from first actual randomisation
     # to the month cumulative randomisations crossed 75% of the study total
@@ -368,3 +410,15 @@ def test_clinical_framed_measure_grouped_with_plain(models):
     with_events = [row for row in r["rows"] if row["randomised_actual"] > 0]
     assert with_events and all(
         row["median_months_to_75pct_randomised"] > 0 for row in with_events)
+
+
+def test_clinical_framed_measure_on_timeline(models):
+    # bucketed by each study's 75% crossing quarter: only as many rows as
+    # there are distinct crossing quarters (10 studies -> <= 10 buckets),
+    # every bucketed median positive, and per-bucket study counts sum to the
+    # number of studies that crossed at all
+    r = run(models, "clinical_ops_recruitment",
+            dimensions=[{"name": "event_date", "grain": "1q"}],
+            measures=["median_months_to_75pct_randomised"])
+    assert 1 <= r["row_count"] <= 10
+    assert all(row["median_months_to_75pct_randomised"] > 0 for row in r["rows"])

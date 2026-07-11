@@ -105,6 +105,15 @@ def test_framed_measure_parses():
     assert meas.expr() is not None
 
 
+def test_frame_emits_parses_and_requires_frame():
+    withemits = FRAMED.replace("    expr:", "    frame_emits: [event_date]\n    expr:")
+    m = semantic.parse_model_text(withemits)
+    assert m.measures["median_days"].frame_emits == ["event_date"]
+    no_frame = VALID.replace("    expr: pl.len()", "    frame_emits: [event_date]\n    expr: pl.len()")
+    with pytest.raises(semantic.ModelError, match="frame_emits"):
+        semantic.parse_model_text(no_frame)
+
+
 def test_framed_measure_bad_syntax_rejected():
     bad = FRAMED.replace("frame = per_study", "frame = = per_study")
     with pytest.raises(semantic.ModelError, match="frame syntax"):

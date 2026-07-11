@@ -166,10 +166,34 @@ whatever grouping the query asks for; the engine groups the derived frame by
 framed and plain measures mix freely in one query. Groups the derived frame
 has no rows for come back null. Everything stays lazy end to end.
 
+**Timelines and `frame_emits`.** Grouping a framed measure by a time dimension
+raises a question the model author has to answer: should the time bucket
+partition the *raw events* before the intermediary step (splitting each
+entity's history per bucket), or should it bucket the *derived rows* after it?
+For per-entity milestone metrics like the example above, it's the latter — so
+declare the dimension in `frame_emits` and output a column of that name from
+the frame:
+
+```yaml
+    frame: |
+      ...
+          .with_columns(pl.col("date_75").alias("event_date"))   # the frame's own date
+    frame_emits: [event_date]
+    expr: pl.col("days_to_75").median()
+```
+
+An emitted dimension is withheld from `dims` during the step (the intermediary
+partitions stay whole) and applied to the frame's output afterwards — the
+engine truncates it at the query's grain and groups the derived rows by it. On
+a timeline each entity then lands in the bucket of its own milestone date, and
+buckets only exist where some entity crossed. Dimensions *not* listed in
+`frame_emits` behave as before: carried through the step via `dims`.
+
 See `median_months_to_75pct_randomised` in `models/clinical_ops_recruitment.yaml`
 for a live example (median months for a study's cumulative randomisations to
-cross 75% of its total). Inline (visual-scoped) measures may pass a `frame`
-alongside `expr` in the query API too.
+cross 75% of its total, bucketed on timelines by each study's crossing month).
+Inline (visual-scoped) measures may pass `frame` / `frame_emits` alongside
+`expr` in the query API too.
 
 ### Time-spine (point-in-time) measures
 
