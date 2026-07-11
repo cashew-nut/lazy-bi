@@ -6,8 +6,10 @@
 "use strict";
 
 import { selectModel } from "./builder.js";
+import { openBundleForm } from "./bundleform.js";
 import { openEditor } from "./editor.js";
 import { $, api, el, fmtBytes } from "./lib.js";
+import { openModelForm } from "./modelform.js";
 import { hooks, showView, state } from "./state.js";
 
 const openInBuilder = (name) => { showView("builder"); selectModel(name); };
@@ -42,26 +44,29 @@ function renderSide(models, bundles, data) {
       el("div", { class: "path" }, m.path),
       el("div", { class: "mk-sub" }, `${st.files} file${st.files === 1 ? "" : "s"} · ${fmtBytes(st.bytes)} · ${m.dimensions.length} dims · ${m.measures.length} measures`),
       el("div", { class: "mk-actions" },
-        el("button", { class: "mini-btn", onclick: () => openEditor("model", m.name) }, "✎ edit yaml"),
+        el("button", { class: "mini-btn", onclick: () => openModelForm(m.name) }, "✎ edit"),
+        el("button", { class: "mini-btn", title: "edit the raw yaml", onclick: () => openEditor("model", m.name) }, "{ } yaml"),
         el("button", { class: "mini-btn go", onclick: () => openInBuilder(m.name) }, "build ►")));
     box.append(card);
   }
-  box.append(el("button", { class: "ghost mk-new", onclick: () => openEditor("model", null) }, "+ new model"));
+  box.append(el("button", { class: "ghost mk-new", onclick: () => openModelForm(null) }, "+ new model"));
 
   box.append(el("div", { class: "sec-title", style: "margin-top:16px" }, "Common Models"));
   if (!bundles.length) {
     box.append(el("div", { class: "empty-note" }, "none yet — shared dimensions across models"));
   }
   for (const b of bundles) {
-    const card = el("div", { class: "mk-card clickable", title: "edit this common model" },
+    const card = el("div", { class: "mk-card" },
       el("div", { class: "mk-top" },
         el("span", { class: "nm" }, b.label),
         el("span", { class: "fmt" }, `${b.datasets.length} set${b.datasets.length === 1 ? "" : "s"}`)),
-      el("div", { class: "path" }, b.datasets.map((d) => d.name).join(", ") || "—"));
-    card.addEventListener("click", () => openEditor("bundle", b.name));
+      el("div", { class: "path" }, b.datasets.map((d) => d.name).join(", ") || "—"),
+      el("div", { class: "mk-actions" },
+        el("button", { class: "mini-btn", onclick: () => openBundleForm(b.name) }, "✎ edit"),
+        el("button", { class: "mini-btn", title: "edit the raw yaml", onclick: () => openEditor("bundle", b.name) }, "{ } yaml")));
     box.append(card);
   }
-  box.append(el("button", { class: "ghost mk-new", onclick: () => openEditor("bundle", null) }, "+ new common model"));
+  box.append(el("button", { class: "ghost mk-new", onclick: () => openBundleForm(null) }, "+ new common model"));
 }
 
 // datasets↔models overview (carried over verbatim from the old explorer)

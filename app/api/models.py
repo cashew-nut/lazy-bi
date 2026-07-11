@@ -19,6 +19,71 @@ class YamlIn(BaseModel):
     yaml: str
 
 
+class SpineSpec(BaseModel):
+    start: str
+    end: str
+
+
+class GeoSpec(BaseModel):
+    lat: str
+    lon: str
+
+
+class SourceSpec(BaseModel):
+    path: str
+    format: str = "parquet"
+
+
+class DimensionSpec(BaseModel):
+    name: str
+    column: str | None = None
+    label: str = ""
+    type: str = "categorical"
+    description: str = ""
+    spine: SpineSpec | None = None
+    geo: GeoSpec | None = None
+
+
+class MeasureSpec(BaseModel):
+    name: str
+    expr: str
+    label: str = ""
+    format: str = "number"
+    description: str = ""
+
+
+class JoinSpec(BaseModel):
+    name: str
+    path: str
+    format: str = "parquet"
+    left_on: list[str] = []
+    right_on: list[str] = []
+    how: str = "left"
+
+
+class ImportSpec(BaseModel):
+    bundle: str
+    anchor_dataset: str
+    left_on: list[str] = []
+    right_on: list[str] = []
+    how: str = "left"
+    datasets: list[str] | None = None
+
+
+class ModelSpec(BaseModel):
+    """Structured form of a model — what the guided modelling form edits.
+    POST /models/generate renders it to YAML; GET /models/{name}/spec is the
+    inverse for opening an existing file in the form."""
+    name: str
+    label: str = ""
+    description: str = ""
+    source: SourceSpec
+    joins: list[JoinSpec] = []
+    dimension_imports: list[ImportSpec] = []
+    dimensions: list[DimensionSpec] = []
+    measures: list[MeasureSpec] = []
+
+
 class MeasureIn(BaseModel):
     name: str
     expr: str
@@ -75,6 +140,43 @@ def validate_model(body: YamlIn):
         out["columns"] = None
         out["schema_error"] = f"source not reachable: {exc}"
     return out
+
+
+@router.post("/models/generate")
+def generate_model_yaml(spec: ModelSpec):
+    """Render the guided form's structured spec to canonical YAML, then run the
+    same parse + schema introspection as /models/validate so the form gets the
+    document and its verdict (with post-join columns) in one call."""
+    text = semantic.spec_to_yaml(spec.model_dump())
+    try:
+        parsed = semantic.parse_model_text(text)
+        semantic.resolve_imports(parsed, registry.dimension_bundles)
+    except semantic.ModelError as exc:
+        return {"ok": False, "error": str(exc), "yaml": text, "columns": None}
+    out = {
+        "ok": True, "error": None, "yaml": text,
+        "model": {"name": parsed.name, "label": parsed.label,
+                  "dimensions": len(parsed.dimensions), "measures": len(parsed.measures)},
+    }
+    try:
+        schema = engine.scan(parsed).collect_schema()
+        out["columns"] = [{"name": n, "dtype": str(t)} for n, t in schema.items()]
+    except Exception as exc:
+        out["columns"] = None
+        out["schema_error"] = f"source not reachable: {exc}"
+    return out
+
+
+@router.get("/models/{name}/spec")
+def get_model_spec(name: str):
+    """The model's yaml re-parsed (unresolved — native dimensions only) into
+    the structured spec the guided form edits."""
+    model = get_model(name)
+    try:
+        parsed = semantic.parse_model_text(model.origin.read_text())
+    except semantic.ModelError as exc:  # file edited into a bad state on disk
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"name": name, "file": model.origin.name, "spec": semantic.model_to_spec(parsed)}
 
 
 @router.post("/models", status_code=201)

@@ -12,9 +12,11 @@ import {
   publishCurrent, refreshDashList, renderDashboard, renderDashFilters,
   renderFocusFilters, saveDash,
 } from "./dashboard.js";
-import { attachEditor, confirmLeaveEditor, deleteEditorItem, openEditor, saveEditor } from "./editor.js";
+import { attachBundleForm, confirmLeaveBundleForm, openBundleForm } from "./bundleform.js";
+import { attachEditor, confirmLeaveEditor, deleteEditorItem, saveEditor } from "./editor.js";
 import { $, api } from "./lib.js";
 import { initMeasureLab } from "./measurelab.js";
+import { attachModelForm, confirmLeaveModelForm, openModelForm } from "./modelform.js";
 import { loadModelling } from "./modelling.js";
 import { loadPortal, renderPortal } from "./portal.js";
 import { refreshPubs, showView, state } from "./state.js";
@@ -53,10 +55,12 @@ async function init() {
       renderBuilderViz();
     });
 
-    // ── semantic editor (opened from the Modelling workspace) ──
+    // ── semantic editor + guided forms (opened from Modelling) ──
     attachEditor();   // input/keydown/completion/dataset-picker/revert/beforeunload
-    $("#mk-new-model").addEventListener("click", () => openEditor("model", null));
-    $("#mk-new-bundle").addEventListener("click", () => openEditor("bundle", null));
+    attachModelForm();
+    attachBundleForm();
+    $("#mk-new-model").addEventListener("click", () => openModelForm(null));
+    $("#mk-new-bundle").addEventListener("click", () => openBundleForm(null));
     $("#editor-save").addEventListener("click", saveEditor);
     $("#editor-delete").addEventListener("click", deleteEditorItem);
     $("#editor-back").addEventListener("click", () => {
@@ -161,8 +165,9 @@ async function init() {
     // mode nav: studio / modelling / portal
     for (const btn of document.querySelectorAll("#mode-nav button")) {
       btn.addEventListener("click", () => {
-        // guard: leaving the editor with unsaved edits must warn (FR-021)
+        // guard: leaving the editor/forms with unsaved edits must warn (FR-021)
         if (state.view === "editor" && !confirmLeaveEditor()) return;
+        if (!confirmLeaveModelForm() || !confirmLeaveBundleForm()) return;
         const m = btn.dataset.mode;
         if (m === "studio") showView("builder");
         else if (m === "modelling") { showView("modelling"); loadModelling(); }
