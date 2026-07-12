@@ -236,34 +236,81 @@ def _spine_prepare(lf: pl.LazyFrame, dims: list, schema: pl.Schema) -> pl.LazyFr
     return lf
 
 
+# Visual parameter types (specs/010-parameter-type-generalization). An
+# absent "type" field on a declaration always means "int" — the type spec
+# 009 shipped exclusively — so every visual/dashboard saved before this
+# feature existed keeps working unchanged (FR-004).
+PARAM_TYPES = {"int", "float", "string"}
+
+
+def param_type_ok(value: object, type_name: str) -> bool:
+    """Is `value` (a JSON-decoded Python object) a legitimate member of
+    declared type `type_name`? "float" deliberately also accepts a genuine
+    Python int: JSON (and JavaScript, which has one numeric type) cannot
+    distinguish a whole float from an int syntactically, so a float
+    parameter's declared values/default routinely arrive as JSON integers
+    from a well-behaved frontend — see specs/010-parameter-type-
+    generalization/research.md §5. "int" does NOT accept a float in the
+    other direction: declared type governs eligibility, not incidental
+    JSON shape."""
+    if type_name == "int":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if type_name == "float":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if type_name == "string":
+        return isinstance(value, str)
+    raise QueryError(f"unsupported parameter type '{type_name}' (expected one of {sorted(PARAM_TYPES)})")
+
+
+def coerce_param_value(value: object, type_name: str):
+    """Canonicalize a value already known to pass param_type_ok(value,
+    type_name) into type_name's one true Python representation — in
+    particular, a "float" parameter's value is always a genuine Python
+    float afterward, never an int that merely happens to be whole. Every
+    value handed to measure_dsl.compile_measure's parameter_values, and
+    every value compared for dashboard definition-equality, passes through
+    this first, so a lag() periods check (which requires a real int) is
+    never fooled by an int-shaped JSON float."""
+    return float(value) if type_name == "float" else value
+
+
 def resolve_parameter_values(parameters: list, parameter_values: dict) -> dict:
     """Validate a query's declared parameters and the caller's selected
-    values, returning {name: int} with every declared parameter present —
-    the caller's pick where given and in-list, else that parameter's
-    declared default. This is the only allowlist-membership check a
-    parameter value ever passes through; the result is the only thing
-    measure_dsl.compile_measure ever sees (see its parameter_values arg)."""
+    values, returning {name: value} with every declared parameter present
+    — the caller's pick where given and in-list, else that parameter's
+    declared default, each coerced to its declared (or implicit int) type.
+    This is the only allowlist-membership check a parameter value ever
+    passes through; the result is the only thing measure_dsl.compile_
+    measure ever sees (see its parameter_values arg)."""
     declared: dict[str, dict] = {}
     for p in parameters or []:
         name = p.get("name")
         values = p.get("values") or []
         default = p.get("default")
+        type_name = p.get("type") or "int"
         if not name:
             raise QueryError("parameter needs a name")
         if name in declared:
             raise QueryError(f"duplicate parameter '{name}'")
+        if type_name not in PARAM_TYPES:
+            raise QueryError(f"parameter '{name}' has unsupported type '{type_name}' (expected one of {sorted(PARAM_TYPES)})")
         if not values:
             raise QueryError(f"parameter '{name}' needs a non-empty list of values")
-        if default not in values:
+        bad = [v for v in values if not param_type_ok(v, type_name)]
+        if bad:
+            raise QueryError(f"parameter '{name}': value {bad[0]!r} does not match declared type '{type_name}'")
+        coerced_values = {coerce_param_value(v, type_name) for v in values}
+        if not param_type_ok(default, type_name) or coerce_param_value(default, type_name) not in coerced_values:
             raise QueryError(f"parameter '{name}' default {default!r} is not one of its declared values")
-        declared[name] = {"values": set(values), "default": default}
+        declared[name] = {"type": type_name, "values": coerced_values, "default": coerce_param_value(default, type_name)}
     resolved = {name: decl["default"] for name, decl in declared.items()}
     for name, value in (parameter_values or {}).items():
         if name not in declared:
             raise QueryError(f"unknown parameter '{name}'")
-        if value not in declared[name]["values"]:
+        decl = declared[name]
+        if not param_type_ok(value, decl["type"]) or coerce_param_value(value, decl["type"]) not in decl["values"]:
             raise QueryError(f"value {value!r} is not a declared value of parameter '{name}'")
-        resolved[name] = value
+        resolved[name] = coerce_param_value(value, decl["type"])
     return resolved
 
 
@@ -423,7 +470,7 @@ def run_query(model: Model, query: dict) -> dict:
                 window_specs.append((nm, text))
                 return
             try:
-                add_plain(nm, measure_dsl.compile_measure(text, schema, alias=nm))
+                add_plain(nm, measure_dsl.compile_measure(text, schema, alias=nm, parameter_values=resolved_params))
             except measure_dsl.MeasureCompileError as exc:
                 raise QueryError(f"measure '{nm}': {exc}") from exc
             return
