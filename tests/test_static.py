@@ -71,3 +71,39 @@ def test_completer_apply_dispatches_input_event(client):
     apply() dispatches one itself."""
     completion = client.get("/static/js/completion.js").text
     assert 'dispatchEvent(new Event("input"' in completion
+
+
+# ── 009-visual-parameters: intellisense sees sibling measures + parameters ──
+
+def test_completion_engine_recognizes_param_context(client):
+    """The shared completion engine must classify a param(' trigger distinctly
+    from col(' so callers can offer declared parameter names, not columns."""
+    completion = client.get("/static/js/completion.js").text
+    assert 'kind: "param"' in completion
+    assert "param\\(" in completion  # the trigger regex
+
+
+def test_param_suggestion_gated_on_caller_supplying_parameters(client):
+    """param('') must not be suggested to callers that never have parameters
+    to offer (the model yaml editor, the guided model form) — those measures
+    can never reference one (FR-007), so suggesting it would just set up a
+    rejected save. Gating happens in dslItems, not per-caller vocabulary."""
+    completion = client.get("/static/js/completion.js").text
+    assert "parameters && parameters.length" in completion
+    editor = client.get("/static/js/editor.js").text
+    modelform = client.get("/static/js/modelform.js").text
+    # neither passes a 4th (parameters) argument to dslItems
+    assert "dslItems(ctx, editor.columns, after)" in editor or "dslItems(pctx, editor.columns, after)" in editor
+    assert "dslItems(ctx, exprColumns(), after)" in modelform
+
+
+def test_measure_lab_completion_offers_sibling_measures_and_parameters(client):
+    """The measure lab's completion pool must include sibling measure names
+    (for window-mode bare identifiers) and pass the visual's declared
+    parameters through to the shared engine — previously it only ever
+    offered source columns, which is wrong the moment running_total()/lag()
+    is used, and never surfaced param() completions at all."""
+    lab = client.get("/static/js/measurelab.js").text
+    assert "state.model.measures.map" in lab
+    assert "state.inlineMeasures.map" in lab
+    assert "dslItems(ctx, exprPool(), after, state.parameters)" in lab

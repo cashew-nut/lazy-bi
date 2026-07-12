@@ -236,6 +236,37 @@ def _spine_prepare(lf: pl.LazyFrame, dims: list, schema: pl.Schema) -> pl.LazyFr
     return lf
 
 
+def resolve_parameter_values(parameters: list, parameter_values: dict) -> dict:
+    """Validate a query's declared parameters and the caller's selected
+    values, returning {name: int} with every declared parameter present —
+    the caller's pick where given and in-list, else that parameter's
+    declared default. This is the only allowlist-membership check a
+    parameter value ever passes through; the result is the only thing
+    measure_dsl.compile_measure ever sees (see its parameter_values arg)."""
+    declared: dict[str, dict] = {}
+    for p in parameters or []:
+        name = p.get("name")
+        values = p.get("values") or []
+        default = p.get("default")
+        if not name:
+            raise QueryError("parameter needs a name")
+        if name in declared:
+            raise QueryError(f"duplicate parameter '{name}'")
+        if not values:
+            raise QueryError(f"parameter '{name}' needs a non-empty list of values")
+        if default not in values:
+            raise QueryError(f"parameter '{name}' default {default!r} is not one of its declared values")
+        declared[name] = {"values": set(values), "default": default}
+    resolved = {name: decl["default"] for name, decl in declared.items()}
+    for name, value in (parameter_values or {}).items():
+        if name not in declared:
+            raise QueryError(f"unknown parameter '{name}'")
+        if value not in declared[name]["values"]:
+            raise QueryError(f"value {value!r} is not a declared value of parameter '{name}'")
+        resolved[name] = value
+    return resolved
+
+
 def run_query(model: Model, query: dict) -> dict:
     """Execute a semantic query.
 
@@ -252,6 +283,7 @@ def run_query(model: Model, query: dict) -> dict:
     start/end columns, so each row counts in every bucket it was active for.
     """
     started = time.perf_counter()
+    resolved_params = resolve_parameter_values(query.get("parameters") or [], query.get("parameter_values") or {})
     lf = scan(model)
     schema = lf.collect_schema()
 
@@ -475,6 +507,7 @@ def run_query(model: Model, query: dict) -> dict:
             try:
                 win_exprs.append(measure_dsl.compile_measure(
                     text, out_schema, alias=name, partition_by=partition_cols, order_by=order_dim,
+                    parameter_values=resolved_params,
                 ))
             except measure_dsl.MeasureCompileError as exc:
                 raise QueryError(f"measure '{name}': {exc}") from exc

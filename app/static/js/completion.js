@@ -32,12 +32,23 @@ export const DSL_FUNCTIONS = [
   ["lag()", "value from n periods back: lag(measure[, periods=1])", -1],
 ];
 
+// param('') as a bare-name suggestion (offered alongside DSL_FUNCTIONS) —
+// kept out of the static list above and synthesized only when the caller
+// actually has parameters to offer (dslItems' `parameters` arg is
+// non-empty). The model yaml editor and guided model form never pass
+// parameters (model measures can't reference one — FR-007), so they never
+// see this suggested, rather than offering something that would be
+// rejected on save.
+const PARAM_FN = ["param('')", "reference a declared parameter — only legal as lag()'s periods argument", -2];
+
 // Classify a measure-DSL trigger in the text before the caret.
-// Returns { kind: "col"|"name", prefix, start } or null.
+// Returns { kind: "col"|"param"|"name", prefix, start } or null.
 export function dslContext(upto, caret) {
   let m;
   if ((m = upto.match(/col\(\s*["']([A-Za-z0-9_ ]*)$/)))
     return { kind: "col", prefix: m[1], start: caret - m[1].length };
+  if ((m = upto.match(/param\(\s*["']([A-Za-z0-9_]*)$/)))
+    return { kind: "param", prefix: m[1], start: caret - m[1].length };
   // a bare identifier right after a natural expression boundary (start of
   // value, an operator, a comma/paren, or `and`/`or`/`not`/`where(`) — either
   // a function name or a column reference are valid there
@@ -46,8 +57,24 @@ export function dslContext(upto, caret) {
   return null;
 }
 
-// Build completion items for a DSL context from a schema column list.
-export function dslItems(ctx, columns, after) {
+// Build completion items for a DSL context from a schema column list
+// (columns and/or sibling measure names — the caller decides the mix, see
+// e.g. measurelab.js's exprPool()/modelform.js's exprColumns()) and,
+// separately, a list of declared parameters ({name, values, default}) for
+// the "param(" context — omit/pass [] where parameters don't apply.
+export function dslItems(ctx, columns, after, parameters) {
+  if (ctx.kind === "param") {
+    // don't double the closer if a quote already follows the caret
+    const quoted = after.startsWith('"') || after.startsWith("'");
+    const closer = quoted ? "" : "')";
+    const skip = quoted ? 0 : 2;  // hop over the existing closing quote+paren instead
+    return (parameters || [])
+      .filter((p) => p.name.toLowerCase().startsWith(ctx.prefix.toLowerCase()))
+      .map((p) => ({
+        text: p.name, hint: `values: ${p.values.join(", ")} (default ${p.default})`,
+        insert: p.name + closer, caretOffset: skip,
+      }));
+  }
   const cols = (columns || [])
     .filter((c) => c.name.toLowerCase().startsWith(ctx.prefix.toLowerCase()));
   if (ctx.kind === "col") {
@@ -56,7 +83,8 @@ export function dslItems(ctx, columns, after) {
     const skip = closer ? 0 : 2;  // hop over the existing `")` instead
     return cols.map((c) => ({ text: c.name, hint: c.dtype, insert: c.name + closer, caretOffset: skip }));
   }
-  const fns = DSL_FUNCTIONS
+  const fnList = parameters && parameters.length ? [...DSL_FUNCTIONS, PARAM_FN] : DSL_FUNCTIONS;
+  const fns = fnList
     .filter(([t]) => t.startsWith(ctx.prefix))
     .map(([t, hint, off]) => ({ text: t, hint, insert: t, caretOffset: off }));
   return [...fns, ...cols.map((c) => ({ text: c.name, hint: c.dtype + " (column)", insert: c.name, caretOffset: 0 }))];

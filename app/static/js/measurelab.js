@@ -27,6 +27,27 @@ async function loadSchema() {
   } catch { /* completion just won't offer columns */ }
 }
 
+// param()'s one legal position is lag()'s periods argument — this is a
+// client-side heuristic for UX only (disabling "save to model" early); the
+// server's measure_dsl.referenced_parameter_names guard is authoritative.
+const PARAM_REF = /\bparam\s*\(/;
+
+function refreshParamInsertOptions() {
+  const sel = $("#lab-param-insert");
+  sel.innerHTML = "";
+  sel.append(el("option", { value: "" }, "+ param"));
+  for (const p of state.parameters) sel.append(el("option", { value: p.name }, p.name));
+}
+
+function updateSaveModelGuard(def) {
+  const referencesParam = PARAM_REF.test(def.expr);
+  const btn = $("#lab-save-model");
+  btn.disabled = referencesParam;
+  btn.title = referencesParam
+    ? "parameterized measures can only be saved to a visual, not to the shared model"
+    : "";
+}
+
 export function openLab(def = null) {
   lab.open = true;
   lab.editingName = def ? def.name : null;
@@ -37,6 +58,8 @@ export function openLab(def = null) {
   $("#lab-expr").value = (def && def.expr) || "";
   setStatus('type an expression — e.g. <b>sum(revenue)</b>; <b>col("</b> triggers column suggestions');
   loadSchema();
+  refreshParamInsertOptions();
+  updateSaveModelGuard(labDef());
   $("#lab-expr").focus();
 }
 hooks.openLab = openLab;
@@ -89,6 +112,7 @@ export function scheduleResolve() {
 async function tryResolve() {
   if (!lab.open) return;
   const def = labDef();
+  updateSaveModelGuard(def);
   if (!def.name && !def.expr) return;
   if (!def.name) return setStatus("give the measure a snake_case name", true);
   if (!def.expr) return setStatus("…waiting for an expression");
@@ -145,6 +169,9 @@ function measureCredentials() {
 async function saveToModel() {
   const def = labDef();
   if (!def.name || !def.expr) return setStatus("needs a name and an expression", true);
+  if (PARAM_REF.test(def.expr)) {
+    return setStatus("✗ parameterized measures can only be saved to a visual", true);
+  }
   const { key, author } = measureCredentials();
   if (!key || !author) return setStatus("✗ saving to the model needs an API key and your name", true);
   setStatus("saving to model…");
@@ -171,11 +198,28 @@ async function saveToModel() {
 
 // ── completion (shared engine, polars-expression context) ────
 
-// resolve the measure-lab textarea against the model's source columns
+// combined completion pool for a bare identifier: source columns plus
+// sibling measure names (model measures + this visual's other inline
+// measures) — a bare name is one or the other depending on whether the
+// expr turns out to be a window measure (running_total()/lag()), which
+// isn't known until it's parsed, so both are offered together (mirrors
+// modelform.js's exprColumns()). The measure currently being edited is
+// excluded so it's never suggested as its own sibling.
+function exprPool() {
+  const names = new Set(lab.schema.map((c) => c.name));
+  const measureNames = [
+    ...state.model.measures.map((m) => m.name),
+    ...state.inlineMeasures.map((m) => m.name),
+  ].filter((n, i, arr) => n && n !== lab.editingName && !names.has(n) && arr.indexOf(n) === i);
+  return [...lab.schema, ...measureNames.map((n) => ({ name: n, dtype: "measure" }))];
+}
+
+// resolve the measure-lab textarea against source columns, sibling
+// measures, and this visual's declared parameters (for param('name'))
 function labResolve(upto, after, caret) {
   const ctx = dslContext(upto, caret);
   if (!ctx) return null;
-  return { items: dslItems(ctx, lab.schema, after), start: ctx.start };
+  return { items: dslItems(ctx, exprPool(), after, state.parameters), start: ctx.start };
 }
 
 // ── wiring ───────────────────────────────────────────────────
@@ -185,6 +229,19 @@ export function initMeasureLab() {
   $("#lab-cancel").addEventListener("click", () => closeLab());
   $("#lab-save-visual").addEventListener("click", saveToVisual);
   $("#lab-save-model").addEventListener("click", saveToModel);
+  $("#lab-param-insert").addEventListener("change", (e) => {
+    const name = e.target.value;
+    e.target.value = "";
+    if (!name) return;
+    const box = $("#lab-expr");
+    const insert = `param('${name}')`;
+    const start = box.selectionStart ?? box.value.length;
+    const end = box.selectionEnd ?? box.value.length;
+    box.value = box.value.slice(0, start) + insert + box.value.slice(end);
+    box.focus();
+    box.setSelectionRange(start + insert.length, start + insert.length);
+    scheduleResolve();
+  });
   const expr = $("#lab-expr");
   completer = makeCompleter(expr, $("#lab-suggest"), labResolve, scheduleResolve);
   expr.addEventListener("input", () => { completer.update(); scheduleResolve(); });

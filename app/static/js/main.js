@@ -2,14 +2,14 @@
 "use strict";
 
 import {
-  refreshSaved, renderBuilderViz, renderChartSeg, renderFilters, saveVisual,
+  addParameter, refreshSaved, renderBuilderViz, renderChartSeg, renderFilters, saveVisual,
   scheduleRun, selectModel,
 } from "./builder.js";
 import { PALETTE } from "./charts/common.js";
 import { renderViz, vizMessage } from "./charts/index.js";
 import {
   activeView, closeFocus, dashDimUnion, focus, openDashboard,
-  publishCurrent, refreshDashList, renderDashboard, renderDashFilters,
+  paramConflictMessage, publishCurrent, refreshDashList, renderDashboard, renderDashFilters,
   renderFocusFilters, saveDash,
 } from "./dashboard.js";
 import { attachBundleForm, confirmLeaveBundleForm, openBundleForm } from "./bundleform.js";
@@ -35,6 +35,7 @@ async function init() {
       state.filters.push({ field: state.model.dimensions[0].name, op: "eq", value: "", values: [] });
       renderFilters();
     });
+    $("#add-param").addEventListener("click", () => addParameter());
     $("#chart-seg").addEventListener("click", (e) => {
       const btn = e.target.closest("button");
       if (!btn) return;
@@ -87,6 +88,10 @@ async function init() {
     $("#dash-add").addEventListener("click", async () => {
       const id = +$("#dash-add-select").value;
       if (!id || !state.dash) return;
+      const visuals = await api("/api/visuals");
+      const candidate = visuals.find((v) => v.id === id);
+      const conflict = candidate && paramConflictMessage(candidate);
+      if (conflict) { alert("Can't add this visual: " + conflict); return; }
       state.dash.items.push({ visual_id: id, w: 1 });
       await saveDash();
       const av = state.dash.active_view;

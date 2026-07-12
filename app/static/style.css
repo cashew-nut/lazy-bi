@@ -182,6 +182,8 @@ main { flex: 1; min-width: 0; padding: 16px 20px; display: flex; flex-direction:
 .btn.plain { border-color: var(--line); color: var(--ink-2); }
 .btn.plain:hover { color: var(--ink); box-shadow: none; }
 .btn.on { background: var(--neon); color: var(--bg); font-weight: 700; }
+.btn:disabled { opacity: 0.35; cursor: not-allowed; box-shadow: none; }
+.btn:disabled:hover { background: transparent; box-shadow: none; }
 
 #meta {
   padding: 6px 16px; color: var(--ink-3); font-size: 11px; letter-spacing: 0.5px;
@@ -190,6 +192,14 @@ main { flex: 1; min-width: 0; padding: 16px 20px; display: flex; flex-direction:
 }
 #meta .path { color: var(--ink-2); }
 #meta .ms { color: var(--neon); }
+
+#param-toggle-bar {
+  padding: 8px 16px; border-bottom: 1px solid var(--line);
+  display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
+}
+#param-toggle-bar:empty, #param-toggle-bar[hidden] { display: none; }
+.param-seg { display: flex; align-items: center; gap: 6px; }
+.param-seg .lbl { color: var(--ink-3); font-size: 11px; letter-spacing: 0.5px; }
 
 .legend-box { display: flex; gap: 16px; flex-wrap: wrap; padding: 10px 16px 0; }
 .legend-box:empty { display: none; }
@@ -312,6 +322,7 @@ table.data tr:hover td { background: rgba(0, 229, 255, 0.04); }
 #dash-view-select { width: 170px; flex: none; }
 .dash-views-bar .btn { padding: 4px 10px; font-size: 10px; }
 #dash-filters { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+#dash-params { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .dash-filter {
   display: flex; align-items: center; gap: 4px;
   border: 1px solid var(--line); border-radius: 3px; padding: 3px 5px;

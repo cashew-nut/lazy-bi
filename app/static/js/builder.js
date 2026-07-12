@@ -28,6 +28,13 @@ function builderCtx() {
   };
 }
 
+// every declared parameter resolved to its current pick (state.parameterValues)
+// or, absent one, its own declared default — always fully resolved so the
+// server never has to guess which parameters a request "meant" to leave unset
+export function currentParameterValues() {
+  return Object.fromEntries(state.parameters.map((p) => [p.name, state.parameterValues[p.name] ?? p.default]));
+}
+
 export function buildQuery() {
   return {
     model: state.model.name,
@@ -37,6 +44,8 @@ export function buildQuery() {
     filters: state.filters.filter((f) => f.field && filterReady(f)).map(toApiFilter),
     sort: state.sort.by ? { by: state.sort.by, desc: state.sort.desc } : null,
     limit: state.limit,
+    parameters: state.parameters,
+    parameter_values: currentParameterValues(),
   };
 }
 
@@ -188,6 +197,90 @@ export function renderFilters() {
   });
 }
 
+// ── visual parameters ────────────────────────────────────────
+// Declared here (name, values, default) and referenced from a measure via
+// param('name') in the Measure Lab. The declaration editor below doubles as
+// the "standalone visual" viewer control (renderParamToggleBar) — this app
+// has no separate read-only single-visual view, so previewing a value here
+// is the closest analog to a viewer toggling it (dashboards get their own
+// tile-level control in dashboard.js).
+
+export function renderParameters() {
+  const box = $("#param-list");
+  box.innerHTML = "";
+  state.parameters.forEach((p, idx) => {
+    const row = el("div", { class: "filter-row" });
+    const nameInput = el("input", {
+      value: p.name, placeholder: "period_list", spellcheck: "false",
+      onchange: (e) => {
+        const old = p.name;
+        p.name = e.target.value.trim();
+        if (old in state.parameterValues) {
+          state.parameterValues[p.name] = state.parameterValues[old];
+          delete state.parameterValues[old];
+        }
+        renderParamToggleBar(); scheduleRun();
+      },
+    });
+    const rm = el("button", {
+      class: "rm", title: "remove parameter",
+      onclick: () => {
+        delete state.parameterValues[p.name];
+        state.parameters.splice(idx, 1);
+        renderParameters(); renderParamToggleBar(); scheduleRun();
+      },
+    }, "✕");
+    const valuesInput = el("input", {
+      value: p.values.join(","), placeholder: "1,2,3,4",
+      onchange: (e) => {
+        p.values = [...new Set(
+          e.target.value.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !Number.isNaN(n)),
+        )];
+        if (!p.values.includes(p.default)) p.default = p.values[0];
+        if (!p.values.includes(state.parameterValues[p.name])) state.parameterValues[p.name] = p.default;
+        renderParameters(); renderParamToggleBar(); scheduleRun();
+      },
+    });
+    const defaultSel = el("select", {
+      onchange: (e) => { p.default = parseInt(e.target.value, 10); renderParamToggleBar(); scheduleRun(); },
+    });
+    for (const v of p.values) defaultSel.append(el("option", { value: v }, String(v)));
+    defaultSel.value = String(p.default);
+    row.append(el("div", { class: "top" }, nameInput, rm));
+    row.append(el("div", { class: "row2" },
+      el("div", {}, el("div", { class: "field-label" }, "VALUES"), valuesInput),
+      el("div", {}, el("div", { class: "field-label" }, "DEFAULT"), defaultSel)));
+    box.append(row);
+  });
+}
+
+export function addParameter() {
+  const n = state.parameters.length + 1;
+  const p = { name: `param_${n}`, values: [1, 2, 3, 4], default: 1 };
+  state.parameters.push(p);
+  state.parameterValues[p.name] = p.default;
+  renderParameters(); renderParamToggleBar(); scheduleRun();
+}
+
+export function renderParamToggleBar() {
+  const bar = $("#param-toggle-bar");
+  bar.innerHTML = "";
+  bar.hidden = !state.parameters.length;
+  if (!state.parameters.length) return;
+  for (const p of state.parameters) {
+    const seg = el("div", { class: "seg param-seg" }, el("span", { class: "lbl" }, p.name));
+    const current = state.parameterValues[p.name] ?? p.default;
+    for (const v of p.values) {
+      const btn = el("button", {
+        class: v === current ? "on" : "",
+        onclick: () => { state.parameterValues[p.name] = v; renderParamToggleBar(); scheduleRun(); },
+      }, String(v));
+      seg.append(btn);
+    }
+    bar.append(seg);
+  }
+}
+
 export function syncSortOptions() {
   const sel = $("#sort-by");
   const current = state.sort.by;
@@ -255,6 +348,8 @@ export function loadVisual(v) {
   state.dims = (q.dimensions || []).map((d) => (typeof d === "string" ? { name: d } : { name: d.name, grain: d.grain }));
   state.measures = q.measures || [];
   state.inlineMeasures = q.inline_measures || [];
+  state.parameters = q.parameters || [];
+  state.parameterValues = { ...(q.parameter_values || {}) };
   state.filters = (q.filters || []).map((f) => ({ field: f.field, op: f.op, value: f.value ?? "", values: f.values || [] }));
   state.sort = q.sort ? { by: q.sort.by, desc: !!q.sort.desc } : { by: "", desc: true };
   state.limit = q.limit || 1000;
@@ -272,6 +367,8 @@ export function syncBuilderUI() {
   renderDims();
   renderMeasures();
   renderFilters();
+  renderParameters();
+  renderParamToggleBar();
   renderChartSeg();
   syncSortOptions();
   $("#sort-dir").value = state.sort.desc ? "desc" : "asc";
@@ -285,6 +382,8 @@ export function selectModel(name) {
   state.dims = [];
   state.measures = [];
   state.inlineMeasures = [];
+  state.parameters = [];
+  state.parameterValues = {};
   if (hooks.closeLab) hooks.closeLab(false);
   state.filters = [];
   state.sort = { by: "", desc: true };

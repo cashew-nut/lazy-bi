@@ -20,6 +20,8 @@ class QueryRequest(BaseModel):
     filters: list[dict] = []
     sort: Optional[dict] = None
     limit: Optional[int] = None
+    parameters: list[dict] = []          # visual-declared: [{name, values, default}]
+    parameter_values: dict[str, int] = {}  # caller's current picks; missing name -> default
 
 
 @router.post("/query")

@@ -228,6 +228,87 @@ def test_lag_requires_positive_integer_periods(agg_schema):
         compile_measure("lag(revenue, 1.5)", agg_schema, alias="bad", partition_by=[], order_by="quarter")
 
 
+# --- param(): visual-declared parameters referenced from lag() -------------
+
+def test_lag_param_resolves_to_same_result_as_equivalent_literal(agg_df, agg_schema):
+    text_literal = "lag(revenue, 2)"
+    text_param = "lag(revenue, param('period_list'))"
+    e1 = compile_measure(text_literal, agg_schema, alias="l", partition_by=["region"], order_by="quarter")
+    e2 = compile_measure(
+        text_param, agg_schema, alias="l", partition_by=["region"], order_by="quarter",
+        parameter_values={"period_list": 2},
+    )
+    out1 = agg_df.sort("region", "quarter").select(e1)["l"].to_list()
+    out2 = agg_df.sort("region", "quarter").select(e2)["l"].to_list()
+    assert out1 == out2
+
+
+def test_lag_param_unknown_name_rejected(agg_schema):
+    with pytest.raises(MeasureCompileError) as exc:
+        compile_measure(
+            "lag(revenue, param('nope'))", agg_schema, alias="bad",
+            partition_by=["region"], order_by="quarter", parameter_values={"period_list": 2},
+        )
+    assert exc.value.kind == "unknown_parameter"
+
+
+def test_lag_param_with_no_parameter_values_rejected(agg_schema):
+    # structural-only validation (parameter_values=None) fails closed, same
+    # posture as partition_by/order_by=None for the window .over() step
+    with pytest.raises(MeasureCompileError) as exc:
+        compile_measure("lag(revenue, param('period_list'))", agg_schema, alias="bad")
+    assert exc.value.kind == "unknown_parameter"
+
+
+def test_lag_param_resolved_value_must_still_be_positive(agg_schema):
+    with pytest.raises(MeasureCompileError):
+        compile_measure(
+            "lag(revenue, param('period_list'))", agg_schema, alias="bad",
+            partition_by=["region"], order_by="quarter", parameter_values={"period_list": 0},
+        )
+
+
+def test_param_wrong_arity_or_type_rejected(agg_schema):
+    with pytest.raises(MeasureCompileError) as exc:
+        compile_measure(
+            "lag(revenue, param(1))", agg_schema, alias="bad",
+            partition_by=["region"], order_by="quarter", parameter_values={"period_list": 2},
+        )
+    assert exc.value.kind == "disallowed"
+    with pytest.raises(MeasureCompileError) as exc:
+        compile_measure(
+            "lag(revenue, param('a', 'b'))", agg_schema, alias="bad",
+            partition_by=["region"], order_by="quarter", parameter_values={"period_list": 2},
+        )
+    assert exc.value.kind == "disallowed"
+
+
+@pytest.mark.parametrize("text", [
+    "param('period_list') > 0",
+    "running_total(param('period_list'))",
+    "if_(param('period_list') > 1, revenue, 0)",
+])
+def test_param_outside_lag_periods_rejected(agg_schema, text):
+    # param() is not in any function table — it's recognized only while
+    # parsing lag()'s second argument, so anywhere else it hits the
+    # pre-existing generic "unknown function" rejection
+    with pytest.raises(MeasureCompileError) as exc:
+        compile_measure(
+            text, agg_schema, alias="bad",
+            partition_by=["region"], order_by="quarter", parameter_values={"period_list": 2},
+        )
+    assert exc.value.kind == "unknown_function"
+
+
+def test_referenced_parameter_names():
+    from app.measure_dsl import referenced_parameter_names
+    assert referenced_parameter_names("lag(revenue, param('period_list'))") == {"period_list"}
+    assert referenced_parameter_names("sum(revenue)") == set()
+    assert referenced_parameter_names(
+        "lag(a, param('p1')) + lag(b, param('p2'))"
+    ) == {"p1", "p2"}
+
+
 # --- Red-team suite: every payload must raise, and must never execute ------
 
 RED_TEAM_PAYLOADS = [
