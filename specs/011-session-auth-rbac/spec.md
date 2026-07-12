@@ -31,6 +31,26 @@ shared secret" (frame saves) and "anyone" (raw YAML) to "accounts an admin
 has explicitly granted the admin role." The constitution should be amended
 alongside implementation to describe the role-based gate.
 
+## Clarifications
+
+### Session 2026-07-12
+
+- Q: Under the new auth, can anyone view a published dashboard without
+  signing in? → A: No — sign-in always. Published dashboards are visible to
+  any signed-in user (viewer and up); public/link-based sharing stays out of
+  scope as a possible future feature.
+- Q: What credentials should the seeded bootstrap admin have? → A: Username
+  `admin` with a password randomly generated at seed time and printed
+  prominently in the startup log, once. No fixed well-known default; no
+  required environment variable.
+- Q: Can admins hard-delete accounts, or only deactivate them? → A:
+  Deactivate only. Accounts are never deleted, so provenance and audit
+  history remain fully attributable forever.
+- Q: How reviewable must the audit log be in this feature? → A: Durably
+  stored only, with a documented shape; admins inspect it directly in the
+  persistent store. An admin API/UI for browsing events is a possible
+  future addition, not part of this feature.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Sign in once, then use the app under your role (Priority: P1)
@@ -159,8 +179,9 @@ non-admin cannot reach any user-management capability.
    sign-in is refused and any live sessions or tokens for that account stop
    working promptly.
 4. **Given** the system has exactly one active admin, **When** an attempt is
-   made to delete, deactivate, or demote that account, **Then** the system
-   refuses — the system can never be left with no active admin.
+   made to deactivate or demote that account, **Then** the system refuses —
+   the system can never be left with no active admin. (Accounts are never
+   hard-deleted; see Clarifications.)
 5. **Given** a signed-in author or viewer, **When** they attempt any
    user-management action, **Then** the server refuses it.
 
@@ -205,8 +226,8 @@ a viewer's token cannot mutate anything.
   unsaved work in the measure lab or model editor: the next save is refused
   with a clear re-authentication message, and re-signing-in must not
   destroy the in-browser draft.
-- The last active admin cannot be deleted, deactivated, or demoted (US3
-  scenario 4); the bootstrap admin counts as an admin for this rule.
+- The last active admin cannot be deactivated or demoted (US3 scenario 4);
+  the bootstrap admin counts as an admin for this rule.
 - The bootstrap admin is only created when zero accounts exist — it must
   never be re-created (or its password reset) on later restarts, otherwise
   a leaked well-known credential reappears in production.
@@ -267,12 +288,16 @@ a viewer's token cannot mutate anything.
   distinguishable from verified rows.
 - **FR-010**: Admins MUST be able to create accounts (username, display
   name, role, initial password), change roles, deactivate/reactivate
-  accounts, and reset passwords. There is no self-service registration.
+  accounts, and reset passwords. There is no self-service registration and
+  no hard deletion — accounts are only ever deactivated, so provenance and
+  audit history remain attributable.
 - **FR-011**: The system MUST refuse any operation that would leave zero
   active admin accounts.
 - **FR-012**: On startup with zero accounts, the system MUST create a
-  bootstrap admin and print its credentials with a prominent warning; it
-  MUST NOT recreate or reset this account when any account already exists.
+  bootstrap admin (username `admin`) with a randomly generated password,
+  printed once in the startup log with a prominent warning; there is no
+  fixed default password. It MUST NOT recreate or reset this account when
+  any account already exists.
 - **FR-013**: Users MUST be able to create named personal access tokens,
   see the secret exactly once, list their tokens (name, created, last used),
   and revoke them individually. Tokens are stored only in unrecoverable
@@ -282,8 +307,10 @@ a viewer's token cannot mutate anything.
   rate-limited or temporarily locked out, and failed attempts MUST NOT
   reveal whether the username exists.
 - **FR-015**: Sign-ins, sign-outs, failed sign-in attempts, account
-  management actions, and token creation/revocation MUST be recorded in a
-  reviewable audit log.
+  management actions, and token creation/revocation MUST be durably
+  recorded as audit events with a documented shape (actor, action, target,
+  timestamp) in the app's persistent store. No audit-browsing API or UI
+  ships in this feature — admins review events directly in the store.
 - **FR-016**: Existing databases MUST upgrade in place with all existing
   visuals, dashboards, publications, and provenance intact, and the
   upgraded system fails safe (all access requires sign-in) immediately.
@@ -297,8 +324,8 @@ a viewer's token cannot mutate anything.
 
 - **User account**: a person's identity — username, display name, role
   (viewer/author/admin), active/deactivated flag, password (unrecoverable
-  form). Created and governed by admins; one special bootstrap admin is
-  system-created on first run.
+  form). Created and governed by admins; never hard-deleted, only
+  deactivated; one special bootstrap admin is system-created on first run.
 - **Session**: a server-tracked sign-in — owning user, created/last-seen
   timestamps, expiry. Ends by sign-out, expiry, deactivation, or password
   change. The browser holds only an opaque reference.
@@ -344,10 +371,10 @@ a viewer's token cannot mutate anything.
   no self-service sign-up, email verification, or password-recovery flow
   (admins reset passwords). Reasonable for a BI tool deployed to a known
   team; consumer-style account lifecycle is out of scope.
-- **No anonymous access at all in this feature**: published dashboards are
-  visible to any *signed-in* user (viewer and up), not to the public.
-  Anonymous/link-based public sharing is a possible future feature and is
-  explicitly out of scope here.
+- **No anonymous access at all in this feature** *(confirmed in
+  clarification)*: published dashboards are visible to any *signed-in* user
+  (viewer and up), not to the public. Anonymous/link-based public sharing is
+  a possible future feature and is explicitly out of scope here.
 - **Single sign-on is out of scope but designed-for**: this feature ships
   local username/password only; FR-017 requires the seam that makes an
   OIDC/SSO backend a later additive change.
