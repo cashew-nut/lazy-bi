@@ -143,10 +143,10 @@ Single project, existing repository layout (see `plan.md`'s Project Structure) �
 
 **Purpose**: Final documentation, regression, and sign-off — required by Constitution Principles III/IV before this feature is reported done.
 
-- [ ] T031 [P] Update `README.md` to document parameter types (`int`/`float`/`string`) and the generalized `param()` DSL positions (comparisons, `if_()`, `coalesce()`, `where()`, `cast()`'s value argument), alongside the existing spec-009 parameter documentation
-- [ ] T032 Run the full regression suite (`pytest -v`) and confirm every pre-existing test (including all of spec 009's parameter tests) still passes unchanged — quickstart.md §6
-- [ ] T033 Full end-to-end browser pass of quickstart.md §5 (all four sub-steps in one continuous session) as final sign-off, distinct from the per-story spot checks in T017/T020/T023/T027/T030
-- [ ] T034 [P] Re-review the Constitution Check table in plan.md against what was actually built, confirming no drift (in particular Principle VI: `param()`'s wider reach is still zero new eval-based surface; and that the JSON/JS numeric-type accommodation in `coerce_param_value` didn't introduce any silent cross-type coercion beyond what research.md §5 documents)
+- [X] T031 [P] Update `README.md` to document parameter types (`int`/`float`/`string`) and the generalized `param()` DSL positions (comparisons, `if_()`, `coalesce()`, `where()`, `cast()`'s value argument), alongside the existing spec-009 parameter documentation
+- [X] T032 Run the full regression suite (`pytest -v`) and confirm every pre-existing test (including all of spec 009's parameter tests) still passes unchanged — quickstart.md §6
+- [X] T033 Full end-to-end browser pass of quickstart.md §5 (all four sub-steps in one continuous session) as final sign-off, distinct from the per-story spot checks in T017/T020/T023/T027/T030
+- [X] T034 [P] Re-review the Constitution Check table in plan.md against what was actually built, confirming no drift (in particular Principle VI: `param()`'s wider reach is still zero new eval-based surface; and that the JSON/JS numeric-type accommodation in `coerce_param_value` didn't introduce any silent cross-type coercion beyond what research.md §5 documents)
 
 ---
 
