@@ -26,6 +26,12 @@ DB_PATH = Path(os.environ.get("CI_DB_PATH", PROJECT_ROOT / "cash_intel.db"))
 # Hard cap on rows returned to the browser
 MAX_ROWS = 10_000
 
+# Shared secret gating mutating model-measure endpoints (create/update/delete).
+# Empty/unset means unconfigured: those endpoints fail closed (401) until an
+# operator explicitly sets this. Minimal placeholder for a real identity
+# system later — see specs/008-safe-measure-compilation/spec.md.
+API_KEY = os.environ.get("CI_API_KEY", "")
+
 
 def storage_options() -> dict:
     """storage_options passed to polars scan_* for the S3 object store."""

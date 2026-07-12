@@ -29,6 +29,18 @@ CREATE TABLE IF NOT EXISTS publications (
     published_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS measure_provenance (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    model TEXT NOT NULL,
+    measure TEXT NOT NULL,
+    action TEXT NOT NULL,
+    expr TEXT,
+    frame TEXT,
+    frame_emits TEXT,
+    author TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -173,6 +185,58 @@ class VisualStore:
         with self._conn() as conn:
             cur = conn.execute("DELETE FROM publications WHERE dashboard_id = ?", (dashboard_id,))
         return cur.rowcount > 0
+
+    # ── measure provenance: append-only audit log for saved model measures ──
+    # The model yaml file remains the sole executable source of truth for a
+    # measure's DSL text; this table only records who changed what and when.
+
+    @staticmethod
+    def _provenance_to_dict(row: sqlite3.Row) -> dict:
+        return {
+            "id": row["id"],
+            "model": row["model"],
+            "measure": row["measure"],
+            "action": row["action"],
+            "expr": row["expr"],
+            "frame": row["frame"],
+            "frame_emits": json.loads(row["frame_emits"]) if row["frame_emits"] else None,
+            "author": row["author"],
+            "version": row["version"],
+            "created_at": row["created_at"],
+        }
+
+    def record_measure_provenance(
+        self, model: str, measure: str, action: str, author: str,
+        expr: Optional[str] = None, frame: Optional[str] = None,
+        frame_emits: Optional[list] = None,
+    ) -> dict:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._conn() as conn:
+            prev = conn.execute(
+                "SELECT MAX(version) AS v FROM measure_provenance WHERE model = ? AND measure = ?",
+                (model, measure),
+            ).fetchone()
+            version = (prev["v"] or 0) + 1
+            cur = conn.execute(
+                "INSERT INTO measure_provenance "
+                "(model, measure, action, expr, frame, frame_emits, author, version, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (model, measure, action, expr, frame,
+                 json.dumps(frame_emits) if frame_emits else None, author, version, now),
+            )
+            row = conn.execute(
+                "SELECT * FROM measure_provenance WHERE id = ?", (cur.lastrowid,)
+            ).fetchone()
+        return self._provenance_to_dict(row)
+
+    def measure_history(self, model: str, measure: str) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM measure_provenance WHERE model = ? AND measure = ? "
+                "ORDER BY version DESC",
+                (model, measure),
+            ).fetchall()
+        return [self._provenance_to_dict(r) for r in rows]
 
     def list_publications(self) -> list[dict]:
         with self._conn() as conn:

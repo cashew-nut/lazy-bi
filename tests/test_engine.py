@@ -301,6 +301,15 @@ measures:
       )
     frame_emits: [event_date]
     expr: pl.col("days_to_75").median()
+  - name: bad_frame_drops_dims
+    frame: 'lf.group_by("study_id").agg(pl.len())'
+    expr: pl.len()
+  - name: bad_frame_emits_declared_not_output
+    frame: |
+      keys = list(dict.fromkeys(["study_id", *dims]))
+      frame = lf.group_by(keys).agg(pl.len())
+    frame_emits: [event_date]
+    expr: pl.len()
 """)
 
 
@@ -330,26 +339,41 @@ def test_framed_measure_respects_filters(framed_model):
     assert r["rows"][0]["median_days_to_75"] == 60.0
 
 
-def test_inline_framed_measure(framed_model):
-    r = engine.run_query(framed_model, {
-        "dimensions": ["cohort"], "measures": ["n_studies"],
-        "inline_measures": [{
-            "name": "n_studies",
-            "frame": 'lf.group_by(["study_id", *dims]).agg(pl.len())',
-            "expr": "pl.len()",
-        }],
-    })
-    values = {row["cohort"]: row["n_studies"] for row in r["rows"]}
-    assert values == {"X": 2, "Y": 1}
-
-
-def test_frame_that_drops_dimensions_rejected(framed_model):
+def test_model_frame_that_drops_dimensions_rejected(framed_model):
     with pytest.raises(engine.QueryError, match="lost dimension"):
+        engine.run_query(framed_model, {"dimensions": ["cohort"], "measures": ["bad_frame_drops_dims"]})
+
+
+def test_model_emitted_dimension_missing_from_frame_rejected(framed_model):
+    with pytest.raises(engine.QueryError, match="frame_emits"):
+        engine.run_query(framed_model, {
+            "dimensions": [{"name": "event_date", "grain": "1mo"}],
+            "measures": ["bad_frame_emits_declared_not_output"],
+        })
+
+
+def test_inline_frame_measure_rejected(framed_model):
+    # frame-based measures are a model-measure-only, authenticated-path
+    # construct (see specs/008-safe-measure-compilation) — inline/query-time
+    # measures must never be able to run one, regardless of shape.
+    with pytest.raises(engine.QueryError, match="authenticated model-measure save"):
+        engine.run_query(framed_model, {
+            "dimensions": ["cohort"], "measures": ["n_studies"],
+            "inline_measures": [{
+                "name": "n_studies",
+                "frame": 'lf.group_by(["study_id", *dims]).agg(pl.len())',
+                "expr": "pl.len()",
+            }],
+        })
+
+
+def test_inline_frame_emits_rejected_even_without_frame(framed_model):
+    with pytest.raises(engine.QueryError, match="authenticated model-measure save"):
         engine.run_query(framed_model, {
             "dimensions": ["cohort"], "measures": ["bad"],
             "inline_measures": [{
                 "name": "bad",
-                "frame": 'lf.group_by("study_id").agg(pl.len())',  # ignores `dims`
+                "frame_emits": ["event_date"],
                 "expr": "pl.len()",
             }],
         })
@@ -380,17 +404,6 @@ def test_framed_measure_timeline_respects_grain(framed_model):
     assert r["rows"][0]["median_days_to_75"] == 20.0
 
 
-def test_emitted_dimension_missing_from_frame_rejected(framed_model):
-    with pytest.raises(engine.QueryError, match="frame_emits"):
-        engine.run_query(framed_model, {
-            "dimensions": [{"name": "event_date", "grain": "1mo"}], "measures": ["bad"],
-            "inline_measures": [{
-                "name": "bad",
-                "frame": 'lf.group_by(["study_id", *dims]).agg(pl.len())',
-                "frame_emits": ["event_date"],  # declared, but never output
-                "expr": "pl.len()",
-            }],
-        })
 
 
 def test_clinical_framed_measure_end_to_end(models):

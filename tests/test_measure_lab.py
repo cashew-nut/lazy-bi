@@ -10,7 +10,7 @@ def test_inline_measure_resolves(models):
     r = engine.run_query(models["sales"], {
         "dimensions": ["region"],
         "measures": ["revenue", "avg_price_probe"],
-        "inline_measures": [{"name": "avg_price_probe", "expr": 'pl.col("unit_price").mean()',
+        "inline_measures": [{"name": "avg_price_probe", "expr": "mean(unit_price)",
                              "label": "Avg Price", "format": "currency"}],
     })
     meta = next(c for c in r["columns"] if c["name"] == "avg_price_probe")
@@ -22,13 +22,13 @@ def test_inline_measure_bad_expr_is_query_error(models):
     with pytest.raises(engine.QueryError, match="probe"):
         engine.run_query(models["sales"], {
             "dimensions": [], "measures": ["probe"],
-            "inline_measures": [{"name": "probe", "expr": 'pl.nope("x")'}]})
+            "inline_measures": [{"name": "probe", "expr": "nope(x)"}]})
 
 
 def test_inline_measure_shadows_model_measure(models):
     r = engine.run_query(models["sales"], {
         "dimensions": [], "measures": ["revenue"],
-        "inline_measures": [{"name": "revenue", "expr": "pl.len()"}]})
+        "inline_measures": [{"name": "revenue", "expr": "count()"}]})
     total_rows = engine.run_query(models["sales"], {"dimensions": [], "measures": ["orders"]})
     assert r["rows"][0]["revenue"] == 60_000  # row count, not currency
 
@@ -86,7 +86,7 @@ def test_schema_endpoint(client):
 def test_query_api_accepts_inline_measures(client):
     res = client.post("/api/query", json={
         "model": "sales", "dimensions": [], "measures": ["probe"],
-        "inline_measures": [{"name": "probe", "expr": "pl.len()"}]})
+        "inline_measures": [{"name": "probe", "expr": "count()"}]})
     assert res.status_code == 200
     assert res.json()["rows"][0]["probe"] == 60_000
 
