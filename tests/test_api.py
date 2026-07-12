@@ -222,6 +222,32 @@ def test_dashboard_allows_two_visuals_with_identical_parameter(client):
         client.delete(f"/api/visuals/{v2['id']}")
 
 
+def test_dashboard_absent_type_and_explicit_int_type_are_the_same_parameter(client):
+    # 010-parameter-type-generalization US2: an untyped (spec-009-era)
+    # parameter and an explicitly int-typed one must be treated as
+    # identical for sharing purposes — proves "absent type == int" holds
+    # all the way through dashboard definition-equality, not just
+    # declaration validation.
+    v1 = _make_param_visual(client, "v_untyped", [1, 2, 3, 4], 1)  # no "type" key at all
+    spec = _visual_spec_with_parameter(
+        parameters=[{"name": "period_list", "type": "int", "values": [1, 2, 3, 4], "default": 1}],
+        inline_measures=[{"name": "revenue_lag", "expr": "lag(revenue, param('period_list'))"}],
+    )
+    v2 = client.post("/api/visuals", json={"name": "v_explicit_int", "model": "sales", "spec": spec}).json()
+    try:
+        res = client.post("/api/dashboards", json={
+            "name": "d_untyped_vs_explicit_int",
+            "items": [{"visual_id": v1["id"], "w": 1}, {"visual_id": v2["id"], "w": 1}],
+            "views": [{"name": "default", "filters": [], "parameters": {"period_list": 3}}],
+            "active_view": 0,
+        })
+        assert res.status_code == 201
+        client.delete(f"/api/dashboards/{res.json()['id']}")
+    finally:
+        client.delete(f"/api/visuals/{v1['id']}")
+        client.delete(f"/api/visuals/{v2['id']}")
+
+
 def test_dashboard_rejects_two_visuals_with_conflicting_values(client):
     v1 = _make_param_visual(client, "v_conflict_a", [1, 2, 3, 4], 1)
     v2 = _make_param_visual(client, "v_conflict_b", [1, 2, 3], 1)

@@ -82,9 +82,9 @@ Single project, existing repository layout (see `plan.md`'s Project Structure) �
 
 ### Implementation for User Story 2
 
-- [ ] T018 Run `pytest tests/test_measure_dsl.py tests/test_engine.py tests/test_api.py -k "lag or param" -v` and confirm every spec-009 parameter/`lag()` test still passes unmodified — quickstart.md §4.2 (verification-only, no code change expected; if anything fails, that's a regression to fix before continuing)
-- [ ] T019 [P] Add a pytest case to `tests/test_api.py` explicitly saving a visual with a parameter that has **no** `type` field at all and confirming it is treated as `int` end-to-end: declaration validation accepts it, query resolution works, and it participates correctly in dashboard sharing/conflict checks (T024-T026) — data-model.md "absent `type` field ... always `int`"
-- [ ] T020 [US2] Browser walkthrough per quickstart.md §4.1: open a visual saved before this feature (untyped parameter, referenced only inside `lag()`) and confirm it loads, displays as an implicitly-`int` parameter, its toggle control works, and its measure resolves — zero code or data changes required, zero console errors
+- [X] T018 Run `pytest tests/test_measure_dsl.py tests/test_engine.py tests/test_api.py -k "lag or param" -v` and confirm every spec-009 parameter/`lag()` test still passes unmodified — quickstart.md §4.2 (verification-only, no code change expected; if anything fails, that's a regression to fix before continuing)
+- [X] T019 [P] Add a pytest case to `tests/test_api.py` explicitly saving a visual with a parameter that has **no** `type` field at all and confirming it is treated as `int` end-to-end: declaration validation accepts it, query resolution works, and it participates correctly in dashboard sharing/conflict checks (T024-T026) — data-model.md "absent `type` field ... always `int`"
+- [X] T020 [US2] Browser walkthrough per quickstart.md §4.1: open a visual saved before this feature (untyped parameter, referenced only inside `lag()`) and confirm it loads, displays as an implicitly-`int` parameter, its toggle control works, and its measure resolves — zero code or data changes required, zero console errors
 
 **Checkpoint**: User Stories 1 and 2 both verified — the new capability doesn't regress the one it extends.
 
