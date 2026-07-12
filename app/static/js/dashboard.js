@@ -49,6 +49,11 @@ export function renderDashList() {
 }
 hooks.renderDashList = renderDashList;
 
+// portal-mode parameter picks: session-local, never saved (mirrors how
+// portal-editable filter values and crossFilter/dashGrain stay ephemeral) —
+// keyed by parameter name, reset whenever a dashboard is (re)opened
+const portalParams = {};
+
 export async function openDashboard(id, portal = false) {
   const dash = await api(`/api/dashboards/${id}`);
   for (const view of dash.views) {
@@ -64,6 +69,7 @@ export async function openDashboard(id, portal = false) {
   showView("dashboard");
   state.dash = dash;
   state.crossFilter = null;  // ephemeral by design
+  for (const k of Object.keys(portalParams)) delete portalParams[k];
   $("#dash-name").value = dash.name;
   $("#dash-name").readOnly = portal;
   $("#dash-grain").value = state.dashGrain;
@@ -263,10 +269,12 @@ export function dashFiltersChanged() {
 // conflicting definitions renders as a warning, never a control — that
 // state should be unreachable (blocked at add/save time) but is handled
 // defensively rather than silently guessing which definition wins.
+// In portal mode the control stays live (matching portal-editable filters)
+// but writes only to the session-local portalParams, never the saved view —
+// setParamValue()/tileParameterValues() are what keep that split.
 export function renderDashParams() {
   const box = $("#dash-params");
   box.innerHTML = "";
-  if (state.portal) return;   // portal parity with filters: read-only for now, not yet a viewer-editable control
   const view = activeView();
   const { shared, conflicts } = classifyParams();
   for (const { name } of conflicts) {
@@ -274,12 +282,13 @@ export function renderDashParams() {
       `⚠ '${name}' has conflicting definitions across tiles — remove one to resolve`));
   }
   for (const [name, { def }] of shared) {
-    const current = view.parameters[name] ?? def.default;
+    const saved = view.parameters[name] ?? def.default;
+    const current = state.portal ? (portalParams[name] ?? saved) : saved;
     const seg = el("div", { class: "seg param-seg" }, el("span", { class: "lbl" }, name));
     for (const v of def.values) {
       const btn = el("button", {
         class: v === current ? "on" : "",
-        onclick: () => { view.parameters[name] = v; dashParamsChanged(); },
+        onclick: () => setParamValue(name, v),
       }, String(v));
       seg.append(btn);
     }
@@ -287,12 +296,18 @@ export function renderDashParams() {
   }
 }
 
+function setParamValue(name, value) {
+  if (state.portal) portalParams[name] = value;   // session-local, never saved
+  else activeView().parameters[name] = value;
+  dashParamsChanged();
+}
+
 let dashParamTimer = null;
 export function dashParamsChanged() {
   renderDashParams();   // instant visual feedback on the control itself
   clearTimeout(dashParamTimer);
   dashParamTimer = setTimeout(async () => {
-    await saveDash();       // parameter selection auto-saves into the active view
+    await saveDash();       // no-ops in portal mode, same as filters — see saveDash()
     renderDashboard();      // re-run every affected tile with the new value
   }, 250);
 }
@@ -375,16 +390,22 @@ export function tileFilters(visual, tileIdx) {
   return filters;
 }
 
-// this tile's parameter values, sourced entirely from the active dashboard
-// view (never from whatever was baked into the visual's own saved spec) —
-// a name with no saved view entry falls back to that parameter's own
-// declared default (FR-012's "view saved before the parameter existed"
-// edge case included, since a missing key behaves identically either way)
+// this tile's parameter values, sourced from the active dashboard view
+// (never from whatever was baked into the visual's own saved spec) — a name
+// with no saved view entry falls back to that parameter's own declared
+// default (FR-012's "view saved before the parameter existed" edge case
+// included, since a missing key behaves identically either way). In portal
+// mode, a session-local pick from portalParams takes precedence over the
+// saved view, matching how portal-editable filters override the creator's
+// saved value without writing back to it.
 export function tileParameterValues(visual) {
   const q = visual.spec.query || {};
   const view = activeView();
   const values = {};
-  for (const p of q.parameters || []) values[p.name] = view.parameters[p.name] ?? p.default;
+  for (const p of q.parameters || []) {
+    const saved = view.parameters[p.name] ?? p.default;
+    values[p.name] = state.portal && p.name in portalParams ? portalParams[p.name] : saved;
+  }
   return values;
 }
 

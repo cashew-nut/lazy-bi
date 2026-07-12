@@ -200,6 +200,38 @@ zero or more than one is rejected with a clear error. Window measures follow
 the same trust model as everything else here: inline/query-time and saved
 model measures compile through the identical allowlist, no distinction.
 
+#### Visual parameters: a viewer-toggleable `lag()` offset
+
+A visual can declare a named parameter — a fixed list of allowed integer
+values plus a default — and a `lag()` measure on that same visual can
+reference it instead of a literal period count:
+
+```
+period_list = [1, 2, 3, 4], default 1
+revenue_lag = lag(revenue, param('period_list'))
+```
+
+Whoever is viewing the visual gets a control listing `period_list`'s
+declared values; picking one re-runs the query with that shift amount,
+with no expression editing involved. `param('name')` is legal in exactly
+one place — `lag()`'s second argument — nothing else in the DSL accepts
+it, so this stays fully inside the same allowlisting compiler as every
+other measure (see "The safe measure DSL" above): the server only ever
+substitutes one of the parameter's own declared values, never an
+arbitrary one, the same way `partition_by`/`order_by` are threaded in from
+query context today. Because a parameter is visual-scoped context a
+shared model measure never has, a measure referencing one can only be
+**SAVE TO VISUAL**'d, never promoted to the model — see "The measure lab"
+below.
+
+On a dashboard, a parameter's current selection is saved per named view,
+alongside its filters. If two tiles' visuals declare a parameter with the
+same name *and* an identical definition (same values, same default), the
+dashboard shows one shared control that drives both; if the definitions
+differ, the dashboard refuses to let both visuals sit on it together
+(add-tile and every dashboard save both enforce this — see
+`specs/009-visual-parameters/`).
+
 ### Measures over an intermediary frame (authenticated model measures only)
 
 Some metrics can't be written in the safe DSL above — they need business
@@ -420,6 +452,13 @@ dimensions). Two save paths:
   (comment-preserving) and hot-reloads, promoting it to a shared model
   measure. This is an authoring action: the browser prompts once per tab for
   an API key and your name, which travel as `X-API-Key`/`X-Author` headers.
+  Disabled whenever the draft references a `param(...)` — see "Visual
+  parameters" above — since a shared model measure has no visual to be
+  scoped to.
+
+The **+ param** picker next to the format selector inserts `param('name')`
+for any parameter declared on the current visual (see the Parameters
+section in the sidebar) at the cursor.
 
 > Inline measures are compiled through an allowlisting AST compiler
 > (`app/measure_dsl.py`) that never calls `eval`/`exec`/`compile` — see "The
@@ -466,7 +505,7 @@ file remains the sole executable source of truth, the table is the audit log.
 | `GET /api/models/{m}/measures/{name}/history` | append-only provenance for a saved measure |
 | `POST /api/query` | run a semantic query, returns columns + rows + timing |
 | `GET/POST /api/visuals`, `PUT/DELETE /api/visuals/{id}` | saved visuals (SQLite: `cash_intel.db`) |
-| `GET/POST /api/dashboards`, `GET/PUT/DELETE /api/dashboards/{id}` | dashboards — ordered tiles `{visual_id, w:1\|2}`; GET by id resolves tile visuals |
+| `GET/POST /api/dashboards`, `GET/PUT/DELETE /api/dashboards/{id}` | dashboards — ordered tiles `{visual_id, w:1\|2}`; GET by id resolves tile visuals; create/update reject a tile set where two visuals declare a same-named, differently-defined parameter (see "Visual parameters" above) |
 
 Query shape:
 
@@ -477,11 +516,19 @@ Query shape:
   "measures": ["revenue", "margin_pct"],
   "filters": [{"field": "segment", "op": "in", "values": ["corpo", "solo"]}],
   "sort": {"by": "revenue", "desc": true},
-  "limit": 1000
+  "limit": 1000,
+  "parameters": [{"name": "period_list", "values": [1, 2, 3, 4], "default": 1}],
+  "parameter_values": {"period_list": 2}
 }
 ```
 
-Filter ops: `eq ne gt gte lt lte in not_in contains`.
+Filter ops: `eq ne gt gte lt lte in not_in contains`. `parameters` declares
+a visual's parameters (travels with the query the same way `inline_measures`
+does); `parameter_values` is the caller's current pick per parameter —
+missing a name falls back to that parameter's own default, and any value
+outside its declared list rejects the whole query before anything runs. A
+dashboard view's saved `parameters: {name: value}` map (alongside its
+`filters`) is what a dashboard tile's query pulls this from.
 
 ## Studio, Modelling, Portal
 

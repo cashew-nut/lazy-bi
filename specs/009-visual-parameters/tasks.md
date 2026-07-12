@@ -147,10 +147,10 @@ Single project, existing repository layout (see `plan.md`'s Project Structure) �
 
 **Purpose**: Final documentation, regression, and sign-off — required by Constitution Principles III/IV before this feature is reported done.
 
-- [ ] T035 [P] Update `README.md` to document visual parameters (declaration, `param()` in `lag()`, viewer toggling, dashboard view save/share/conflict behavior) — per constitution "Update README as part of the feature, not as a follow-up"
-- [ ] T036 Run the full regression suite (`pytest -v`) and confirm every pre-existing test (including non-parameter `lag()`/`running_total()` cases and all dashboard/view tests) still passes unchanged — quickstart.md §5
-- [ ] T037 Full end-to-end browser pass of quickstart.md §4 (all four sub-steps in one continuous session) as final sign-off, distinct from the per-story spot checks in T018/T021/T026/T030/T034
-- [ ] T038 [P] Re-review the Constitution Check table in plan.md against what was actually built, confirming no drift (in particular Principle VI: no eval-based construct was introduced; Principle II: no new full-table materialization)
+- [X] T035 [P] Update `README.md` to document visual parameters (declaration, `param()` in `lag()`, viewer toggling, dashboard view save/share/conflict behavior) — per constitution "Update README as part of the feature, not as a follow-up"
+- [X] T036 Run the full regression suite (`pytest -v`) and confirm every pre-existing test (including non-parameter `lag()`/`running_total()` cases and all dashboard/view tests) still passes unchanged — quickstart.md §5
+- [X] T037 Full end-to-end browser pass of quickstart.md §4 (all four sub-steps in one continuous session) as final sign-off, distinct from the per-story spot checks in T018/T021/T026/T030/T034
+- [X] T038 [P] Re-review the Constitution Check table in plan.md against what was actually built, confirming no drift (in particular Principle VI: no eval-based construct was introduced; Principle II: no new full-table materialization)
 
 ---
 
