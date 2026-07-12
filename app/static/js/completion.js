@@ -71,7 +71,7 @@ export function dslItems(ctx, columns, after, parameters) {
     return (parameters || [])
       .filter((p) => p.name.toLowerCase().startsWith(ctx.prefix.toLowerCase()))
       .map((p) => ({
-        text: p.name, hint: `values: ${p.values.join(", ")} (default ${p.default})`,
+        text: p.name, hint: `${p.type || "int"} · values: ${p.values.join(", ")} (default ${p.default})`,
         insert: p.name + closer, caretOffset: skip,
       }));
   }

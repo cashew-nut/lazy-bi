@@ -205,10 +205,30 @@ export function renderFilters() {
 // is the closest analog to a viewer toggling it (dashboards get their own
 // tile-level control in dashboard.js).
 
+// Parses the comma-separated "values" text input per the parameter's
+// declared type: int/float use numeric parsing (deduped, NaN dropped);
+// string keeps each trimmed entry as-is (deduped) — commas inside a string
+// value aren't supported by this simple editor (see specs/010-parameter-
+// type-generalization/spec.md Assumptions).
+const VALUES_PLACEHOLDER = { int: "1,2,3,4", float: "1.5,2,3.25", string: "east,west,north" };
+
+function parseValuesInput(text, type) {
+  const parts = text.split(",").map((s) => s.trim()).filter((s) => s !== "");
+  if (type === "string") return [...new Set(parts)];
+  const toNum = type === "float" ? parseFloat : (s) => parseInt(s, 10);
+  return [...new Set(parts.map(toNum).filter((n) => !Number.isNaN(n)))];
+}
+
+function parseDefaultInput(text, type) {
+  if (type === "string") return text;
+  return type === "float" ? parseFloat(text) : parseInt(text, 10);
+}
+
 export function renderParameters() {
   const box = $("#param-list");
   box.innerHTML = "";
   state.parameters.forEach((p, idx) => {
+    const type = p.type || "int";
     const row = el("div", { class: "filter-row" });
     const nameInput = el("input", {
       value: p.name, placeholder: "period_list", spellcheck: "false",
@@ -222,6 +242,21 @@ export function renderParameters() {
         renderParamToggleBar(); scheduleRun();
       },
     });
+    const typeSel = el("select", {
+      title: "parameter type",
+      onchange: (e) => {
+        p.type = e.target.value;
+        // a type switch invalidates whatever was parsed under the old type —
+        // clearing (rather than reinterpreting) avoids silently keeping
+        // now-mismatched-type data (research.md §7)
+        p.values = [];
+        p.default = undefined;
+        delete state.parameterValues[p.name];
+        renderParameters(); renderParamToggleBar(); scheduleRun();
+      },
+    });
+    for (const t of ["int", "float", "string"]) typeSel.append(el("option", { value: t }, t));
+    typeSel.value = type;
     const rm = el("button", {
       class: "rm", title: "remove parameter",
       onclick: () => {
@@ -231,22 +266,20 @@ export function renderParameters() {
       },
     }, "✕");
     const valuesInput = el("input", {
-      value: p.values.join(","), placeholder: "1,2,3,4",
+      value: p.values.join(","), placeholder: VALUES_PLACEHOLDER[type],
       onchange: (e) => {
-        p.values = [...new Set(
-          e.target.value.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !Number.isNaN(n)),
-        )];
+        p.values = parseValuesInput(e.target.value, type);
         if (!p.values.includes(p.default)) p.default = p.values[0];
         if (!p.values.includes(state.parameterValues[p.name])) state.parameterValues[p.name] = p.default;
         renderParameters(); renderParamToggleBar(); scheduleRun();
       },
     });
     const defaultSel = el("select", {
-      onchange: (e) => { p.default = parseInt(e.target.value, 10); renderParamToggleBar(); scheduleRun(); },
+      onchange: (e) => { p.default = parseDefaultInput(e.target.value, type); renderParamToggleBar(); scheduleRun(); },
     });
     for (const v of p.values) defaultSel.append(el("option", { value: v }, String(v)));
     defaultSel.value = String(p.default);
-    row.append(el("div", { class: "top" }, nameInput, rm));
+    row.append(el("div", { class: "top" }, nameInput, typeSel, rm));
     row.append(el("div", { class: "row2" },
       el("div", {}, el("div", { class: "field-label" }, "VALUES"), valuesInput),
       el("div", {}, el("div", { class: "field-label" }, "DEFAULT"), defaultSel)));
@@ -256,7 +289,7 @@ export function renderParameters() {
 
 export function addParameter() {
   const n = state.parameters.length + 1;
-  const p = { name: `param_${n}`, values: [1, 2, 3, 4], default: 1 };
+  const p = { name: `param_${n}`, type: "int", values: [1, 2, 3, 4], default: 1 };
   state.parameters.push(p);
   state.parameterValues[p.name] = p.default;
   renderParameters(); renderParamToggleBar(); scheduleRun();

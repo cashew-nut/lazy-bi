@@ -36,7 +36,7 @@ function refreshParamInsertOptions() {
   const sel = $("#lab-param-insert");
   sel.innerHTML = "";
   sel.append(el("option", { value: "" }, "+ param"));
-  for (const p of state.parameters) sel.append(el("option", { value: p.name }, p.name));
+  for (const p of state.parameters) sel.append(el("option", { value: p.name }, `${p.name} (${p.type || "int"})`));
 }
 
 function updateSaveModelGuard(def) {

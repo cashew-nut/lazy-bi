@@ -89,6 +89,66 @@ def test_visual_measure_referencing_undeclared_parameter_rejected(client):
     assert "undeclared parameter" in res.json()["detail"]
 
 
+# ── 010-parameter-type-generalization: type-aware visual save validation ───
+
+def test_visual_with_float_typed_parameter_saves(client):
+    spec = _visual_spec_with_parameter(
+        parameters=[{"name": "threshold", "type": "float", "values": [10, 50.5, 100], "default": 50.5}],
+        inline_measures=[{"name": "revenue_lag", "expr": "revenue > param('threshold')"}],
+    )
+    created = client.post("/api/visuals", json={"name": "t_float_param", "model": "sales", "spec": spec}).json()
+    assert created["spec"]["query"]["parameters"][0]["type"] == "float"
+    client.delete(f"/api/visuals/{created['id']}")
+
+
+def test_visual_with_string_typed_parameter_saves(client):
+    spec = _visual_spec_with_parameter(
+        parameters=[{"name": "region_pick", "type": "string", "values": ["east", "west"], "default": "east"}],
+        inline_measures=[{"name": "revenue_lag", "expr": "coalesce(revenue, 0)"}],
+    )
+    created = client.post("/api/visuals", json={"name": "t_string_param", "model": "sales", "spec": spec}).json()
+    assert created["spec"]["query"]["parameters"][0]["type"] == "string"
+    client.delete(f"/api/visuals/{created['id']}")
+
+
+def test_visual_rejects_unsupported_parameter_type(client):
+    spec = _visual_spec_with_parameter(
+        parameters=[{"name": "bad", "type": "date", "values": ["2026-01-01"], "default": "2026-01-01"}],
+        inline_measures=[{"name": "revenue_lag", "expr": "coalesce(revenue, 0)"}],
+    )
+    res = client.post("/api/visuals", json={"name": "t_bad_type", "model": "sales", "spec": spec})
+    assert res.status_code == 400
+    assert "unsupported type" in res.json()["detail"]
+
+
+def test_visual_rejects_wrong_typed_value_in_list(client):
+    spec = _visual_spec_with_parameter(
+        parameters=[{"name": "threshold", "type": "int", "values": [1, 2.5, 3], "default": 1}],
+        inline_measures=[{"name": "revenue_lag", "expr": "coalesce(revenue, 0)"}],
+    )
+    res = client.post("/api/visuals", json={"name": "t_wrong_value_type", "model": "sales", "spec": spec})
+    assert res.status_code == 400
+    assert "does not match declared type" in res.json()["detail"]
+
+
+def test_visual_rejects_wrong_typed_default(client):
+    spec = _visual_spec_with_parameter(
+        parameters=[{"name": "region_pick", "type": "string", "values": ["east", "west"], "default": 1}],
+        inline_measures=[{"name": "revenue_lag", "expr": "coalesce(revenue, 0)"}],
+    )
+    res = client.post("/api/visuals", json={"name": "t_wrong_default_type", "model": "sales", "spec": spec})
+    assert res.status_code == 400
+    assert "default is not one of its declared values" in res.json()["detail"]
+
+
+def test_visual_parameter_absent_type_defaults_to_int(client):
+    # exact spec-009 shape, no "type" key at all
+    spec = _visual_spec_with_parameter()
+    created = client.post("/api/visuals", json={"name": "t_absent_type", "model": "sales", "spec": spec}).json()
+    assert "type" not in created["spec"]["query"]["parameters"][0]
+    client.delete(f"/api/visuals/{created['id']}")
+
+
 def test_dashboard_publish_portal_flow(client):
     dash = client.post("/api/dashboards", json={
         "name": "flow", "items": [], "views": [{"name": "default", "filters": []}], "active_view": 0}).json()
@@ -630,6 +690,36 @@ def test_query_parameterized_measure_promotion_to_model_blocked(client, auth_hea
     assert "parameterized measures" in res.json()["detail"]
 
 
+# ── 010-parameter-type-generalization: /api/query with non-int parameter_values ──
+# Regression coverage for a real bug the pydantic layer alone can hide:
+# QueryRequest.parameter_values was still typed dict[str, int] from spec 009,
+# which pydantic rejects with a 422 for a float/string value before the
+# request body ever reaches engine.resolve_parameter_values — caught via
+# browser walkthrough, not by tests/test_engine.py (which calls
+# engine.run_query() directly, bypassing QueryRequest entirely).
+
+def test_query_endpoint_accepts_float_parameter_value(client):
+    res = client.post("/api/query", json={
+        "model": "sales", "dimensions": [], "measures": ["revenue", "flagged"],
+        "inline_measures": [{"name": "flagged", "expr": "sum(if_(unit_price > param('threshold'), unit_price, 0))"}],
+        "parameters": [{"name": "threshold", "type": "float", "values": [10, 50.5, 100], "default": 50.5}],
+        "parameter_values": {"threshold": 10},
+    })
+    assert res.status_code == 200
+    assert res.json()["rows"]
+
+
+def test_query_endpoint_accepts_string_parameter_value(client):
+    res = client.post("/api/query", json={
+        "model": "sales", "dimensions": [], "measures": ["revenue", "flagged"],
+        "inline_measures": [{"name": "flagged", "expr": "sum(where(unit_price, region == param('region_pick')))"}],
+        "parameters": [{"name": "region_pick", "type": "string", "values": ["EU", "US", "APAC"], "default": "EU"}],
+        "parameter_values": {"region_pick": "US"},
+    })
+    assert res.status_code == 200
+    assert res.json()["rows"]
+
+
 def test_measures_check_resolves_parameter_to_default(client):
     res = client.post("/api/measures/check", json={
         "expr": "lag(revenue, param('period_list'))",
@@ -652,3 +742,29 @@ def test_measures_check_rejects_undeclared_parameter(client):
     body = res.json()
     assert body["ok"] is False
     assert "nope" in body["error"]
+
+
+# ── 010-parameter-type-generalization: /api/measures/check across types ────
+# (verification-only — check_measure() already passed parameter_values
+# unconditionally, not gated on window mode, so it needed no code change)
+
+def test_measures_check_resolves_float_param_in_comparison(client):
+    res = client.post("/api/measures/check", json={
+        "expr": "revenue > param('threshold')",
+        "columns": ["revenue"],
+        "parameters": [{"name": "threshold", "type": "float", "values": [10, 50.5, 100], "default": 50.5}],
+    })
+    body = res.json()
+    assert body["ok"] is True
+    assert body["window"] is False
+
+
+def test_measures_check_resolves_string_param_in_coalesce(client):
+    res = client.post("/api/measures/check", json={
+        "expr": "coalesce(revenue, param('fallback'))",
+        "columns": ["revenue"],
+        "parameters": [{"name": "fallback", "type": "string", "values": ["n/a", "unknown"], "default": "n/a"}],
+    })
+    body = res.json()
+    assert body["ok"] is True
+    assert body["window"] is False
