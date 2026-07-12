@@ -322,6 +322,7 @@ table.data tr:hover td { background: rgba(0, 229, 255, 0.04); }
 #dash-view-select { width: 170px; flex: none; }
 .dash-views-bar .btn { padding: 4px 10px; font-size: 10px; }
 #dash-filters { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+#dash-params { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .dash-filter {
   display: flex; align-items: center; gap: 4px;
   border: 1px solid var(--line); border-radius: 3px; padding: 3px 5px;

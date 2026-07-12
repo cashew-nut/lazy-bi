@@ -83,9 +83,9 @@ Single project, existing repository layout (see `plan.md`'s Project Structure) �
 
 ### Implementation for User Story 2
 
-- [ ] T019 [P] [US2] Add a parameter control (dropdown) to the visual view in `app/static/js/builder.js`, rendered whenever `state.parameters` is non-empty, initialized to each parameter's default and updating `state.parameterValues` + re-running the query (via `buildQuery()`'s now-included `parameter_values`) on change
-- [ ] T020 [P] [US2] Add a pytest case to `tests/test_engine.py` explicitly asserting an out-of-declared-list `parameter_values` entry is rejected before any scan/query executes (spy/mock the scan and assert it's never called) — quickstart.md §2
-- [ ] T021 [US2] Browser walkthrough per quickstart.md §4.1's toggle behavior: confirm changing the control re-runs the query and the displayed values change to match the newly selected value. Zero console errors.
+- [X] T019 [P] [US2] Add a parameter control (dropdown) to the visual view in `app/static/js/builder.js`, rendered whenever `state.parameters` is non-empty, initialized to each parameter's default and updating `state.parameterValues` + re-running the query (via `buildQuery()`'s now-included `parameter_values`) on change
+- [X] T020 [P] [US2] Add a pytest case to `tests/test_engine.py` explicitly asserting an out-of-declared-list `parameter_values` entry is rejected before any scan/query executes (spy/mock the scan and assert it's never called) — quickstart.md §2
+- [X] T021 [US2] Browser walkthrough per quickstart.md §4.1's toggle behavior: confirm changing the control re-runs the query and the displayed values change to match the newly selected value. Zero console errors.
 
 **Checkpoint**: User Stories 1 and 2 both work independently.
 
@@ -99,11 +99,11 @@ Single project, existing repository layout (see `plan.md`'s Project Structure) �
 
 ### Implementation for User Story 3
 
-- [ ] T022 [P] [US3] Confirm/adjust `app/api/dashboards.py` accepts and round-trips a `parameters: {name: int}` map on each view (verify `_dash_to_dict`'s existing passthrough in `app/store.py` already carries it — no store.py change expected per data-model.md; add explicit handling only if the API layer strips unknown view keys)
-- [ ] T023 [US3] In `app/static/js/dashboard.js`, extend `tileQuery()` to merge the active view's saved `parameters` into that tile's `parameter_values` (falling back to the visual's own declared default for any parameter the view has no saved value for — the "view saved before parameter existed" edge case from spec.md)
-- [ ] T024 [US3] In `app/static/js/dashboard.js`, add a parameter control to the dashboard's filter/view bar (parallel to `renderDashFilters()`) that writes the selection into `activeView().parameters[name]` and triggers `saveDash()` + `renderDashboard()`, matching the existing `dashFiltersChanged()` debounce/save/rerun pattern
-- [ ] T025 [P] [US3] Add pytest cases to `tests/test_api.py` for saving/loading a dashboard view carrying `parameters`, including the fallback-to-default case when a view predates a visual's parameter
-- [ ] T026 [US3] Browser walkthrough per quickstart.md §4.2's save/reload portion (single parameterized visual + saved view, not yet the two-visual shared-control part). Zero console errors.
+- [X] T022 [P] [US3] Confirm/adjust `app/api/dashboards.py` accepts and round-trips a `parameters: {name: int}` map on each view (verify `_dash_to_dict`'s existing passthrough in `app/store.py` already carries it — no store.py change expected per data-model.md; add explicit handling only if the API layer strips unknown view keys)
+- [X] T023 [US3] In `app/static/js/dashboard.js`, extend `tileQuery()` to merge the active view's saved `parameters` into that tile's `parameter_values` (falling back to the visual's own declared default for any parameter the view has no saved value for — the "view saved before parameter existed" edge case from spec.md)
+- [X] T024 [US3] In `app/static/js/dashboard.js`, add a parameter control to the dashboard's filter/view bar (parallel to `renderDashFilters()`) that writes the selection into `activeView().parameters[name]` and triggers `saveDash()` + `renderDashboard()`, matching the existing `dashFiltersChanged()` debounce/save/rerun pattern
+- [X] T025 [P] [US3] Add pytest cases to `tests/test_api.py` for saving/loading a dashboard view carrying `parameters`, including the fallback-to-default case when a view predates a visual's parameter
+- [X] T026 [US3] Browser walkthrough per quickstart.md §4.2's save/reload portion (single parameterized visual + saved view, not yet the two-visual shared-control part). Zero console errors.
 
 **Checkpoint**: User Stories 1-3 independently functional.
 
@@ -117,10 +117,10 @@ Single project, existing repository layout (see `plan.md`'s Project Structure) �
 
 ### Implementation for User Story 4
 
-- [ ] T027 [US4] Implement `dashParamUnion()` in `app/static/js/dashboard.js` (parallel to the existing `dashDimUnion()`): scan every tile's visual's `spec.query.parameters`, group by `name`, and for each group of 2+ determine whether every declaration is identical (`values` as a set + `default`) per FR-014
-- [ ] T028 [US4] Implement `renderDashParams()` in `app/static/js/dashboard.js` (parallel to `renderDashFilters()`): render one control per identical-definition group from T027, writing the single selection into `activeView().parameters[name]` and applying it to every visual in that group via T023's `tileQuery()` merge; single-visual (non-shared) parameters from US3 keep their own independent control
-- [ ] T029 [P] [US4] Add pytest coverage to `tests/test_api.py` for the server-observable half of shared push-down: a saved view's single `parameters[name]` entry driving both tiles' resolved query values identically (the pure UI collapse-to-one-control behavior is verified only in the browser walkthrough, not pytest, per Constitution Principle IV)
-- [ ] T030 [US4] Browser walkthrough per quickstart.md §4.2 in full: two visuals with an identically-defined parameter show one shared control; changing it updates both tiles; saving and reloading the view restores the shared value to both. Zero console errors.
+- [X] T027 [US4] Implement `dashParamUnion()` in `app/static/js/dashboard.js` (parallel to the existing `dashDimUnion()`): scan every tile's visual's `spec.query.parameters`, group by `name`, and for each group of 2+ determine whether every declaration is identical (`values` as a set + `default`) per FR-014
+- [X] T028 [US4] Implement `renderDashParams()` in `app/static/js/dashboard.js` (parallel to `renderDashFilters()`): render one control per identical-definition group from T027, writing the single selection into `activeView().parameters[name]` and applying it to every visual in that group via T023's `tileQuery()` merge; single-visual (non-shared) parameters from US3 keep their own independent control
+- [X] T029 [P] [US4] Add pytest coverage to `tests/test_api.py` for the server-observable half of shared push-down: a saved view's single `parameters[name]` entry driving both tiles' resolved query values identically (the pure UI collapse-to-one-control behavior is verified only in the browser walkthrough, not pytest, per Constitution Principle IV)
+- [X] T030 [US4] Browser walkthrough per quickstart.md §4.2 in full: two visuals with an identically-defined parameter show one shared control; changing it updates both tiles; saving and reloading the view restores the shared value to both. Zero console errors.
 
 **Checkpoint**: User Stories 1-4 independently functional.
 
@@ -134,10 +134,10 @@ Single project, existing repository layout (see `plan.md`'s Project Structure) �
 
 ### Implementation for User Story 5
 
-- [ ] T031 [P] [US5] Add conflict validation to `app/api/dashboards.py`'s create/update handlers (FR-014/FR-015/FR-016): walk `items` → each visual's `spec.query.parameters`, group by name, and if any group's declarations aren't identical, reject the save with a 400 naming the conflicting parameter and both visuals (contracts/parameters-api.md "Changed: POST/PUT /api/dashboards[/{id}]")
-- [ ] T032 [P] [US5] Add the same conflict check to `app/static/js/dashboard.js`'s "add tile to dashboard" handler, reusing `dashParamUnion()` (T027) to block the add client-side with the same error the server would give, before the API call is even made
-- [ ] T033 [P] [US5] Add pytest cases to `tests/test_api.py` for: differing `values` conflict, differing `default`-only conflict, and the "rename one visual's parameter so names no longer match → both now allowed, independent controls" resolution case from spec.md's edge cases
-- [ ] T034 [US5] Browser walkthrough per quickstart.md §4.3: conflicting visuals blocked from coexisting with a clear message; renaming one parameter resolves the conflict and both visuals add successfully with independent controls; confirm no bad dashboard state is ever persisted. Zero console errors.
+- [X] T031 [P] [US5] Add conflict validation to `app/api/dashboards.py`'s create/update handlers (FR-014/FR-015/FR-016): walk `items` → each visual's `spec.query.parameters`, group by name, and if any group's declarations aren't identical, reject the save with a 400 naming the conflicting parameter and both visuals (contracts/parameters-api.md "Changed: POST/PUT /api/dashboards[/{id}]")
+- [X] T032 [P] [US5] Add the same conflict check to `app/static/js/dashboard.js`'s "add tile to dashboard" handler, reusing `dashParamUnion()` (T027) to block the add client-side with the same error the server would give, before the API call is even made
+- [X] T033 [P] [US5] Add pytest cases to `tests/test_api.py` for: differing `values` conflict, differing `default`-only conflict, and the "rename one visual's parameter so names no longer match → both now allowed, independent controls" resolution case from spec.md's edge cases
+- [X] T034 [US5] Browser walkthrough per quickstart.md §4.3: conflicting visuals blocked from coexisting with a clear message; renaming one parameter resolves the conflict and both visuals add successfully with independent controls; confirm no bad dashboard state is ever persisted. Zero console errors.
 
 **Checkpoint**: All five user stories independently functional — feature complete.
 

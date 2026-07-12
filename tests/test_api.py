@@ -99,6 +99,144 @@ def test_dashboard_publish_portal_flow(client):
     assert client.delete(f"/api/dashboards/{dash['id']}").status_code == 204
 
 
+# ── dashboards + visual parameters: save/load, sharing, conflicts ──────────
+
+def _make_param_visual(client, name, values, default, param_name="period_list"):
+    spec = _visual_spec_with_parameter(
+        parameters=[{"name": param_name, "values": values, "default": default}],
+        inline_measures=[{"name": "revenue_lag", "expr": f"lag(revenue, param('{param_name}'))"}],
+    )
+    return client.post("/api/visuals", json={"name": name, "model": "sales", "spec": spec}).json()
+
+
+def test_dashboard_view_saves_and_loads_parameter_selection(client):
+    v = _make_param_visual(client, "v_param_view", [1, 2, 3, 4], 1)
+    try:
+        dash = client.post("/api/dashboards", json={
+            "name": "d_param_view",
+            "items": [{"visual_id": v["id"], "w": 1}],
+            "views": [{"name": "default", "filters": [], "parameters": {"period_list": 3}}],
+            "active_view": 0,
+        }).json()
+        try:
+            fetched = client.get(f"/api/dashboards/{dash['id']}").json()
+            assert fetched["views"][0]["parameters"] == {"period_list": 3}
+        finally:
+            client.delete(f"/api/dashboards/{dash['id']}")
+    finally:
+        client.delete(f"/api/visuals/{v['id']}")
+
+
+def test_dashboard_view_predating_parameter_falls_back_to_default(client):
+    v = _make_param_visual(client, "v_param_predates", [1, 2, 3, 4], 1)
+    try:
+        dash = client.post("/api/dashboards", json={
+            "name": "d_predates",
+            "items": [{"visual_id": v["id"], "w": 1}],
+            "views": [{"name": "default", "filters": []}],  # no "parameters" key at all
+            "active_view": 0,
+        }).json()
+        try:
+            fetched = client.get(f"/api/dashboards/{dash['id']}").json()
+            assert fetched["views"][0]["filters"] == []
+        finally:
+            client.delete(f"/api/dashboards/{dash['id']}")
+    finally:
+        client.delete(f"/api/visuals/{v['id']}")
+
+
+def test_dashboard_allows_two_visuals_with_identical_parameter(client):
+    v1 = _make_param_visual(client, "v_shared_a", [1, 2, 3, 4], 1)
+    v2 = _make_param_visual(client, "v_shared_b", [1, 2, 3, 4], 1)
+    try:
+        res = client.post("/api/dashboards", json={
+            "name": "d_shared",
+            "items": [{"visual_id": v1["id"], "w": 1}, {"visual_id": v2["id"], "w": 1}],
+            "views": [{"name": "default", "filters": [], "parameters": {"period_list": 2}}],
+            "active_view": 0,
+        })
+        assert res.status_code == 201
+        client.delete(f"/api/dashboards/{res.json()['id']}")
+    finally:
+        client.delete(f"/api/visuals/{v1['id']}")
+        client.delete(f"/api/visuals/{v2['id']}")
+
+
+def test_dashboard_rejects_two_visuals_with_conflicting_values(client):
+    v1 = _make_param_visual(client, "v_conflict_a", [1, 2, 3, 4], 1)
+    v2 = _make_param_visual(client, "v_conflict_b", [1, 2, 3], 1)
+    try:
+        res = client.post("/api/dashboards", json={
+            "name": "d_conflict",
+            "items": [{"visual_id": v1["id"], "w": 1}, {"visual_id": v2["id"], "w": 1}],
+            "views": [{"name": "default", "filters": []}],
+            "active_view": 0,
+        })
+        assert res.status_code == 400
+        assert "period_list" in res.json()["detail"]
+        assert "v_conflict_a" in res.json()["detail"] and "v_conflict_b" in res.json()["detail"]
+    finally:
+        client.delete(f"/api/visuals/{v1['id']}")
+        client.delete(f"/api/visuals/{v2['id']}")
+
+
+def test_dashboard_rejects_two_visuals_with_conflicting_default(client):
+    v1 = _make_param_visual(client, "v_conflict_default_a", [1, 2, 3, 4], 1)
+    v2 = _make_param_visual(client, "v_conflict_default_b", [1, 2, 3, 4], 2)
+    try:
+        res = client.post("/api/dashboards", json={
+            "name": "d_conflict_default",
+            "items": [{"visual_id": v1["id"], "w": 1}, {"visual_id": v2["id"], "w": 1}],
+            "views": [{"name": "default", "filters": []}],
+            "active_view": 0,
+        })
+        assert res.status_code == 400
+        assert "period_list" in res.json()["detail"]
+    finally:
+        client.delete(f"/api/visuals/{v1['id']}")
+        client.delete(f"/api/visuals/{v2['id']}")
+
+
+def test_dashboard_conflict_resolved_by_renaming_parameter(client):
+    v1 = _make_param_visual(client, "v_rename_a", [1, 2, 3, 4], 1)
+    v2 = _make_param_visual(client, "v_rename_b", [1, 2, 3], 1, param_name="other_period_list")
+    try:
+        res = client.post("/api/dashboards", json={
+            "name": "d_renamed",
+            "items": [{"visual_id": v1["id"], "w": 1}, {"visual_id": v2["id"], "w": 1}],
+            "views": [{"name": "default", "filters": []}],
+            "active_view": 0,
+        })
+        assert res.status_code == 201
+        client.delete(f"/api/dashboards/{res.json()['id']}")
+    finally:
+        client.delete(f"/api/visuals/{v1['id']}")
+        client.delete(f"/api/visuals/{v2['id']}")
+
+
+def test_dashboard_update_also_enforces_conflict_check(client):
+    v1 = _make_param_visual(client, "v_update_conflict_a", [1, 2, 3, 4], 1)
+    v2 = _make_param_visual(client, "v_update_conflict_b", [9, 8], 9)
+    try:
+        dash = client.post("/api/dashboards", json={
+            "name": "d_update", "items": [{"visual_id": v1["id"], "w": 1}],
+            "views": [{"name": "default", "filters": []}], "active_view": 0,
+        }).json()
+        try:
+            res = client.put(f"/api/dashboards/{dash['id']}", json={
+                "name": "d_update",
+                "items": [{"visual_id": v1["id"], "w": 1}, {"visual_id": v2["id"], "w": 1}],
+                "views": [{"name": "default", "filters": []}],
+                "active_view": 0,
+            })
+            assert res.status_code == 400
+        finally:
+            client.delete(f"/api/dashboards/{dash['id']}")
+    finally:
+        client.delete(f"/api/visuals/{v1['id']}")
+        client.delete(f"/api/visuals/{v2['id']}")
+
+
 def test_explorer_maps_files_to_models(client):
     data = client.get("/api/explorer").json()
     by_key = {f["key"]: f for f in data["files"]}

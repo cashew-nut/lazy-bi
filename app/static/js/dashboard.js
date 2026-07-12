@@ -53,6 +53,7 @@ export async function openDashboard(id, portal = false) {
   const dash = await api(`/api/dashboards/${id}`);
   for (const view of dash.views) {
     view.filters = (view.filters || []).map((f) => ({ value: "", values: [], ...f }));
+    view.parameters = view.parameters || {};   // {name: value}; missing name -> that parameter's default
     // portal only: filters the creator left unset become the viewer's own
     // controls (see renderDashFilters) — decided once at load time, from
     // the as-saved value, so picking a value doesn't flip the control into
@@ -126,6 +127,72 @@ export function dashDimUnion() {
 const unionSrcModel = (dim, field) =>
   dim && dim.models.find((m) => !modelByName(m).dimensions.find((d) => d.name === field).spine);
 
+// two parameter declarations count as "the same" only if every field
+// matches exactly (name is compared by the caller) — values as a set
+// (order-independent, de-duped) plus an exact default match (FR-014)
+export function sameParamDef(a, b) {
+  const av = [...new Set(a.values)].sort((x, y) => x - y);
+  const bv = [...new Set(b.values)].sort((x, y) => x - y);
+  return a.default === b.default && av.length === bv.length && av.every((v, i) => v === bv[i]);
+}
+
+// union of declared parameters across this dashboard's tiles, grouped by
+// name -> [{visualId, visualName, def}] — the parameter-equivalent of
+// dashDimUnion(), and the basis for both sharing (US4) and conflict
+// detection (US5): a group of 1 is an ordinary independent parameter, a
+// group of 2+ with identical defs is shared, a group of 2+ with differing
+// defs is a conflict that must never be allowed to persist
+export function dashParamUnion() {
+  const byName = new Map();
+  for (const item of state.dash.items) {
+    const visual = state.dash.visuals[String(item.visual_id)];
+    const params = visual && ((visual.spec.query || {}).parameters || []);
+    for (const p of params || []) {
+      if (!byName.has(p.name)) byName.set(p.name, []);
+      byName.get(p.name).push({ visualId: item.visual_id, visualName: visual.name, def: p });
+    }
+  }
+  return byName;
+}
+
+// classify dashParamUnion() into controllable groups (one control per name,
+// applied to every visual in the group) and unresolved conflicts (name
+// collision, non-identical defs) — conflicts should never actually reach
+// here (blocked at add-tile/save time, see paramConflictMessage below), but
+// this stays defensive against direct API edits or legacy saved state
+export function classifyParams() {
+  const shared = new Map();   // name -> {def, entries}
+  const conflicts = [];       // [{name, entries}]
+  for (const [name, entries] of dashParamUnion()) {
+    const allSame = entries.every((e) => sameParamDef(e.def, entries[0].def));
+    if (allSame) shared.set(name, { def: entries[0].def, entries });
+    else conflicts.push({ name, entries });
+  }
+  return { shared, conflicts };
+}
+
+// would adding `candidate` to this dashboard create a parameter conflict
+// with any visual already on it? Returns a human-readable message, or null.
+// Checked before the tile is added (main.js) and re-checked authoritatively
+// by the server on save (FR-015/FR-016).
+export function paramConflictMessage(candidate) {
+  const candidateParams = (candidate.spec.query || {}).parameters || [];
+  if (!candidateParams.length) return null;
+  for (const item of state.dash.items) {
+    const existing = state.dash.visuals[String(item.visual_id)];
+    if (!existing || existing.id === candidate.id) continue;
+    const existingParams = (existing.spec.query || {}).parameters || [];
+    for (const cp of candidateParams) {
+      const ep = existingParams.find((p) => p.name === cp.name);
+      if (ep && !sameParamDef(cp, ep)) {
+        return `parameter '${cp.name}' conflicts between '${candidate.name}' and '${existing.name}' — `
+          + "their declared values/default don't match, so both can't be on this dashboard together";
+      }
+    }
+  }
+  return null;
+}
+
 export function renderDashFilters() {
   const box = $("#dash-filters");
   box.innerHTML = "";
@@ -189,6 +256,47 @@ export function dashFiltersChanged() {
   }, 250);
 }
 
+// one control per declared parameter name on this dashboard (US3: even a
+// single, non-shared visual's parameter gets a control here so its
+// selection can be saved to the view; US4: a name shared identically by
+// 2+ visuals collapses to one control applied to all of them). A name with
+// conflicting definitions renders as a warning, never a control — that
+// state should be unreachable (blocked at add/save time) but is handled
+// defensively rather than silently guessing which definition wins.
+export function renderDashParams() {
+  const box = $("#dash-params");
+  box.innerHTML = "";
+  if (state.portal) return;   // portal parity with filters: read-only for now, not yet a viewer-editable control
+  const view = activeView();
+  const { shared, conflicts } = classifyParams();
+  for (const { name } of conflicts) {
+    box.append(el("div", { class: "dash-filter readonly", style: "color:var(--bad)" },
+      `⚠ '${name}' has conflicting definitions across tiles — remove one to resolve`));
+  }
+  for (const [name, { def }] of shared) {
+    const current = view.parameters[name] ?? def.default;
+    const seg = el("div", { class: "seg param-seg" }, el("span", { class: "lbl" }, name));
+    for (const v of def.values) {
+      const btn = el("button", {
+        class: v === current ? "on" : "",
+        onclick: () => { view.parameters[name] = v; dashParamsChanged(); },
+      }, String(v));
+      seg.append(btn);
+    }
+    box.append(seg);
+  }
+}
+
+let dashParamTimer = null;
+export function dashParamsChanged() {
+  renderDashParams();   // instant visual feedback on the control itself
+  clearTimeout(dashParamTimer);
+  dashParamTimer = setTimeout(async () => {
+    await saveDash();       // parameter selection auto-saves into the active view
+    renderDashboard();      // re-run every affected tile with the new value
+  }, 250);
+}
+
 function renderDashAddSelect() {
   const sel = $("#dash-add-select");
   sel.innerHTML = "";
@@ -206,6 +314,7 @@ export function renderDashboard() {
   renderDashAddSelect();
   renderViewBar();
   renderDashFilters();
+  renderDashParams();
   renderCrossChip();
   if (!state.dash.items.length) {
     grid.append(el("div", { class: "msg", style: "grid-column: span 2" },
@@ -266,6 +375,19 @@ export function tileFilters(visual, tileIdx) {
   return filters;
 }
 
+// this tile's parameter values, sourced entirely from the active dashboard
+// view (never from whatever was baked into the visual's own saved spec) —
+// a name with no saved view entry falls back to that parameter's own
+// declared default (FR-012's "view saved before the parameter existed"
+// edge case included, since a missing key behaves identically either way)
+export function tileParameterValues(visual) {
+  const q = visual.spec.query || {};
+  const view = activeView();
+  const values = {};
+  for (const p of q.parameters || []) values[p.name] = view.parameters[p.name] ?? p.default;
+  return values;
+}
+
 // effective query for a tile: saved spec + pushdown filters + grain override
 export function tileQuery(visual, tileIdx) {
   const model = modelByName(visual.model);
@@ -283,6 +405,7 @@ export function tileQuery(visual, tileIdx) {
       ...q,
       dimensions: dims.map((d) => (d.grain ? { name: d.name, grain: d.grain } : d.name)),
       filters: [...(q.filters || []), ...pushdown],
+      parameter_values: tileParameterValues(visual),
     },
     dims,
   };

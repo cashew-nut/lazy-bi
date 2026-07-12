@@ -588,6 +588,16 @@ def test_parameter_value_outside_declared_list_rejected(models):
         _period_list_query(models, {"period_list": 99})
 
 
+def test_parameter_value_outside_declared_list_never_scans(models, monkeypatch):
+    # validation must reject before any scan work happens — no partial run
+    called = []
+    real_scan = engine.scan
+    monkeypatch.setattr(engine, "scan", lambda model: called.append(1) or real_scan(model))
+    with pytest.raises(engine.QueryError):
+        _period_list_query(models, {"period_list": 99})
+    assert called == []
+
+
 def test_parameter_undeclared_name_rejected(models):
     with pytest.raises(engine.QueryError, match="unknown parameter"):
         _period_list_query(models, {"nope": 1})
