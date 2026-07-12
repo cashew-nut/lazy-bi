@@ -381,6 +381,18 @@ a namespace jail (read-only root, private `/tmp`, `--die-with-parent`), keeping
 network up for the S3 scan; `CI_SANDBOX_BACKEND=auto` picks the strongest
 available and always falls back to the hardened bare subprocess.
 
+**Pre-warmed pool (keeps the import cost off the request path).** A cold worker
+spends ~250 ms importing polars, so by default (`CI_SANDBOX_POOL=on`) a small
+pool keeps workers that have *already imported* polars idle and ready; a query
+grabs one, hands it a single job, reads the reply, and that worker exits. Each
+worker still runs exactly **one** job — no reuse, no cross-query state, the same
+seccomp/rlimit hardening — but the import is paid in the background, so
+steady-state query latency drops from ~280 ms to **~30 ms over in-process**. A
+literal fork server (sharing the warm import via copy-on-write) would be faster
+still but is unsafe here: object_store's tokio runtime deadlocks across
+`fork()`, so each worker is a *spawned* process with a healthy runtime and only
+the import is amortized. Knobs: `CI_SANDBOX_POOL`, `CI_SANDBOX_POOL_SIZE` (default 2).
+
 **Operational notes.** The scan needs to read your data bucket, so give the
 sandbox **read-only, single-bucket** S3 credentials — a breach then reads data
 it could already query, nothing more. The network stays open for that scan, so
@@ -390,12 +402,14 @@ Linux-only; on other platforms the subprocess still isolates process state,
 secrets, and resources, but install `bwrap`/`nsjail` or run on Linux for the
 syscall filter.
 
-Cost: a spawned worker imports polars, adding **~250–350 ms per query** over
-in-process evaluation — the price of not eval'ing attacker-controlled Python in
-your API process. Set `CI_SANDBOX=off` **only** for a single-user, fully-trusted
+Cost: with the pre-warmed pool, sandboxing adds only **~30 ms per query** over
+in-process evaluation (the process hop + IPC; the polars import is amortized by
+the pool) — the price of not eval'ing attacker-controlled Python in your API
+process. Set `CI_SANDBOX=off` **only** for a single-user, fully-trusted
 deployment (it reverts to in-process `eval`). Knobs: `CI_SANDBOX`,
-`CI_SANDBOX_BACKEND`, `CI_SANDBOX_CPU_SECONDS`, `CI_SANDBOX_TIMEOUT_SECONDS`,
-`CI_SANDBOX_MEM_MB`, `CI_SANDBOX_FSIZE_MB`, `CI_SANDBOX_NPROC`.
+`CI_SANDBOX_BACKEND`, `CI_SANDBOX_POOL`, `CI_SANDBOX_POOL_SIZE`,
+`CI_SANDBOX_CPU_SECONDS`, `CI_SANDBOX_TIMEOUT_SECONDS`, `CI_SANDBOX_MEM_MB`,
+`CI_SANDBOX_FSIZE_MB`, `CI_SANDBOX_NPROC`.
 
 ## API
 

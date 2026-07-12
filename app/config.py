@@ -47,6 +47,11 @@ SANDBOX_MEM_MB = int(os.environ.get("CI_SANDBOX_MEM_MB", "0"))                  
 SANDBOX_FSIZE_MB = int(os.environ.get("CI_SANDBOX_FSIZE_MB", "256"))            # RLIMIT_FSIZE
 SANDBOX_NPROC = int(os.environ.get("CI_SANDBOX_NPROC", "64"))                   # RLIMIT_NPROC (fork-bomb cap)
 SANDBOX_NOFILE = int(os.environ.get("CI_SANDBOX_NOFILE", "1024"))              # RLIMIT_NOFILE (fd-exhaustion cap)
+# Pre-warmed one-shot worker pool: keeps the ~250ms polars import off the
+# request path (each worker still handles exactly one job, then exits).
+SANDBOX_POOL = _flag("CI_SANDBOX_POOL", True)
+SANDBOX_POOL_SIZE = int(os.environ.get("CI_SANDBOX_POOL_SIZE", "2"))
+SANDBOX_POOL_WARM_TIMEOUT = float(os.environ.get("CI_SANDBOX_POOL_WARM_TIMEOUT", "30"))
 
 
 def sandbox_child_env() -> dict:

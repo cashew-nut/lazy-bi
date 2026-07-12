@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import Response
 
-from . import config, emulator, seed
+from . import config, emulator, sandbox, seed
 from .api import api_router
 from .registry import registry
 
@@ -48,6 +48,8 @@ async def lifespan(app: FastAPI):
     registry.init()
     print(f"[cash-intel] loaded models: {', '.join(registry.models) or '(none)'}")
     yield
+    if config.SANDBOX_ENABLED and config.SANDBOX_POOL:
+        sandbox.shutdown_pool()
     emulator.stop()
 
 

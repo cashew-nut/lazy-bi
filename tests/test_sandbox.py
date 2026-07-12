@@ -20,9 +20,26 @@ pytestmark = pytest.mark.usefixtures("seeded")
 @pytest.fixture
 def sandbox_on(monkeypatch):
     """Force the sandbox on and use the always-available bare-subprocess backend
-    so the suite is deterministic regardless of whether bwrap/nsjail exist."""
+    so the suite is deterministic regardless of whether bwrap/nsjail exist. The
+    pool is pinned off here so these tests exercise the direct per-call spawn;
+    the pool has its own fixture below."""
     monkeypatch.setattr(config, "SANDBOX_ENABLED", True)
     monkeypatch.setattr(config, "SANDBOX_BACKEND", "subprocess")
+    monkeypatch.setattr(config, "SANDBOX_POOL", False)
+
+
+@pytest.fixture
+def pool_on(monkeypatch):
+    """Sandbox on via the pre-warmed pool. Small pool, and torn down after each
+    test so warm worker processes never leak across the suite."""
+    from app import sandbox_pool
+    monkeypatch.setattr(config, "SANDBOX_ENABLED", True)
+    monkeypatch.setattr(config, "SANDBOX_BACKEND", "subprocess")
+    monkeypatch.setattr(config, "SANDBOX_POOL", True)
+    monkeypatch.setattr(config, "SANDBOX_POOL_SIZE", 2)
+    sandbox_pool.shutdown()
+    yield
+    sandbox_pool.shutdown()
 
 
 SALES = "sales"
@@ -212,3 +229,68 @@ def test_unknown_backend_rejected(monkeypatch):
     monkeypatch.setattr(config, "SANDBOX_BACKEND", "nope")
     with pytest.raises(sandbox.SandboxError, match="unknown"):
         sandbox._resolve_backend()
+
+
+# ── pre-warmed one-shot worker pool ───────────────────────────────
+
+def test_pool_matches_in_process(models, pool_on):
+    query = _q(dimensions=["region"], measures=["revenue", "orders"])
+    pooled = engine.run_query(models[SALES], query)
+    inprocess = engine.run_query_local(models[SALES], query)
+    assert pooled["rows"] == inprocess["rows"]
+
+
+def test_pool_handles_large_result(models, pool_on):
+    # a many-row result frames a reply larger than the pipe buffer — exercises
+    # the write-all loop on both ends (a single os.write would truncate it)
+    q = _q(dimensions=[{"name": "order_date", "grain": "1d"}], measures=["revenue", "orders"], limit=1000)
+    pooled = engine.run_query(models[SALES], q)
+    inprocess = engine.run_query_local(models[SALES], q)
+    assert pooled["row_count"] == inprocess["row_count"] > 100
+    assert pooled["rows"] == inprocess["rows"]
+
+
+def test_pool_serves_multiple_queries(models, pool_on):
+    # several jobs in a row exercise take-a-warm-worker + background refill
+    for _ in range(4):
+        r = engine.run_query(models[SALES], _q(dimensions=[], measures=["orders"]))
+        assert r["rows"][0]["orders"] > 0
+
+
+def test_pool_worker_is_fresh_per_job_and_contains_escape(models, pool_on, tmp_path):
+    # the hardening runs identically in a pooled worker: a shell-out is still
+    # denied, and because each worker takes exactly one job there is no reuse
+    marker = tmp_path / "pooled_pwned"
+    _attempt(models, (
+        "[c for c in ().__class__.__bases__[0].__subclasses__() "
+        "if c.__name__ == 'Popen'][0]"
+        f"(['/bin/sh','-c','touch {marker}']) and pl.len()"
+    ))
+    assert not marker.exists()
+    # and the pool still works for a normal query afterward (no poisoned state)
+    r = engine.run_query(models[SALES], _q(dimensions=[], measures=["orders"]))
+    assert r["rows"][0]["orders"] > 0
+
+
+def test_pool_timeout_enforced(models, pool_on, monkeypatch):
+    monkeypatch.setattr(config, "SANDBOX_TIMEOUT_SECONDS", 4.0)
+    monkeypatch.setattr(config, "SANDBOX_CPU_SECONDS", 2)
+    spin = "while True:\n    pass\nframe = lf"
+    with pytest.raises(engine.QueryError, match="limit|terminated|died"):
+        engine.run_query(models[SALES], _q(
+            dimensions=[], measures=["x"],
+            inline_measures=[{"name": "x", "frame": spin, "expr": "pl.len()"}],
+        ))
+
+
+def test_pool_retries_a_dead_warm_worker(models, pool_on):
+    # a warm worker can die while idle in the pool; submit() must transparently
+    # spawn a fresh one rather than surfacing the stale worker's death
+    from app import sandbox_pool
+    pool = sandbox_pool.get_pool()
+    dead = pool._spawn_warm()
+    dead.proc.kill()
+    dead.proc.wait()
+    pool._ready.put(dead)  # poison the pool with a corpse at the front
+    r = engine.run_query(models[SALES], _q(dimensions=[], measures=["orders"]))
+    assert r["rows"][0]["orders"] > 0

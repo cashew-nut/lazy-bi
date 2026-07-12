@@ -94,20 +94,27 @@ def _wrap_argv(backend: str, inner: list[str]) -> list[str]:
     return inner
 
 
+def worker_argv(*extra: str) -> list[str]:
+    """Launch command for a worker, wrapped in the resolved isolation backend.
+    `extra` carries the per-mode flags (--payload FILE / --warm). -s/-B skip
+    user site-packages + bytecode; the minimal env's PYTHONPATH locates `app`
+    (so not -I/-E, which would drop it)."""
+    inner = [sys.executable, "-s", "-B", "-m", WORKER_MODULE, *extra]
+    return _wrap_argv(_resolve_backend(), inner)
+
+
 def _spawn(payload: dict) -> dict:
     """Run one worker job (execute | validate) and return its parsed result
-    dict, or raise. Payload — Model included — is pickled to a private temp
-    file the child reads by path; only JSON comes back out."""
+    dict, or raise — the per-call path (used for bwrap/nsjail and when the pool
+    is off). Payload — Model included — is pickled to a private temp file the
+    child reads by path; only JSON comes back out."""
     backend = _resolve_backend()
-    # -s: skip user site-packages, -B: no bytecode writes. (Not -I/-E: the
-    # worker needs PYTHONPATH from the minimal env to import `app`.)
-    inner = [sys.executable, "-s", "-B", "-m", WORKER_MODULE]
     fd, payload_path = tempfile.mkstemp(prefix="ci_sandbox_", suffix=".pkl")
     try:
         with os.fdopen(fd, "wb") as fh:
             pickle.dump(payload, fh, protocol=pickle.HIGHEST_PROTOCOL)
         os.chmod(payload_path, 0o600)
-        argv = _wrap_argv(backend, [*inner, "--payload", payload_path])
+        argv = worker_argv("--payload", payload_path)
         try:
             proc = subprocess.run(
                 argv,
@@ -160,13 +167,29 @@ def _relay(reply: dict):
     raise SandboxError(message)
 
 
+def _dispatch(payload: dict) -> dict:
+    """Route one job to a pre-warmed pool worker (fast path — import cost paid
+    off the request path) or, when the pool is disabled, a fresh per-call
+    spawn. Both run the identical worker code with identical hardening."""
+    if config.SANDBOX_POOL:
+        from . import sandbox_pool
+        return sandbox_pool.get_pool().submit(pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL))
+    return _spawn(payload)
+
+
 def execute(model: Model, query: dict) -> dict:
     """Run a semantic query with its measure code evaluated in the sandbox and
     return the same result dict engine.run_query would (columns/rows/…)."""
-    return _relay(_spawn({"job": "execute", "model": model, "query": query, "limits": _limits()}))
+    return _relay(_dispatch({"job": "execute", "model": model, "query": query, "limits": _limits()}))
 
 
 def validate_model(model: Model) -> None:
     """Compile every measure expr/frame of `model` in the sandbox; raise
     ModelError (as the in-process check would) if any is invalid."""
-    _relay(_spawn({"job": "validate", "model": model, "limits": _limits()}))
+    _relay(_dispatch({"job": "validate", "model": model, "limits": _limits()}))
+
+
+def shutdown_pool() -> None:
+    """Stop the warm-worker pool and reap its workers (app shutdown / atexit)."""
+    from . import sandbox_pool
+    sandbox_pool.shutdown()
