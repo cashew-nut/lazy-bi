@@ -1,4 +1,5 @@
 """API surface via TestClient (full lifespan: registry init against moto)."""
+import pytest
 
 
 def test_health(client):
@@ -329,3 +330,67 @@ def test_frame_emits_without_frame_rejected(client, auth_headers):
         assert "frame_emits" in res.json()["detail"]
     finally:
         client.delete("/api/models/auth_probe")
+
+
+# ── window measures: running_total()/lag() ──────────────────────────────────
+
+def _probe_model_with_time(client):
+    yaml_text = (
+        "name: window_probe\nsource: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
+        "dimensions:\n  - name: order_date\n    type: time\n  - name: region\n"
+        "measures:\n  - name: revenue\n    expr: sum(unit_price)\n"
+    )
+    assert client.post("/api/models", json={"yaml": yaml_text}).status_code == 201
+
+
+def test_window_measure_saves_without_touching_the_live_source(client, auth_headers):
+    """Unlike a plain measure, a window measure's validation never needs to
+    scan the source (it only checks sibling measure names) — a bogus source
+    path shouldn't block saving one."""
+    yaml_text = (
+        "name: window_probe_unreachable\nsource: {format: parquet, path: s3://nope/does/not/exist/*.parquet}\n"
+        "dimensions:\n  - name: order_date\n    type: time\n"
+        "measures:\n  - name: revenue\n    expr: sum(unit_price)\n"
+    )
+    assert client.post("/api/models", json={"yaml": yaml_text}).status_code == 201
+    try:
+        res = client.post("/api/models/window_probe_unreachable/measures", json={
+            "name": "revenue_running_total", "expr": "running_total(revenue)"}, headers=auth_headers)
+        assert res.status_code == 201
+    finally:
+        client.delete("/api/models/window_probe_unreachable")
+
+
+def test_window_measure_authoring_and_query_end_to_end(client, auth_headers):
+    _probe_model_with_time(client)
+    try:
+        create = client.post("/api/models/window_probe/measures", json={
+            "name": "revenue_running_total", "expr": "running_total(revenue)"}, headers=auth_headers)
+        assert create.status_code == 201
+        history = client.get("/api/models/window_probe/measures/revenue_running_total/history").json()
+        assert history[0]["expr"] == "running_total(revenue)"
+
+        q = client.post("/api/query", json={
+            "model": "window_probe",
+            "dimensions": [{"name": "order_date", "grain": "1q"}],
+            "measures": ["revenue", "revenue_running_total"],
+        })
+        assert q.status_code == 200
+        rows = sorted(q.json()["rows"], key=lambda r: r["order_date"])
+        running = 0.0
+        for row in rows:
+            running += row["revenue"]
+            assert row["revenue_running_total"] == pytest.approx(running)
+    finally:
+        client.delete("/api/models/window_probe")
+
+
+def test_window_measure_unknown_sibling_rejected_on_save(client, auth_headers):
+    _probe_model_with_time(client)
+    try:
+        res = client.post("/api/models/window_probe/measures", json={
+            "name": "bad", "expr": "running_total(does_not_exist)"}, headers=auth_headers)
+        assert res.status_code == 400
+        assert "does_not_exist" in res.json()["detail"]
+    finally:
+        client.delete("/api/models/window_probe")

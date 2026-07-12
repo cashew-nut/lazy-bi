@@ -9,6 +9,19 @@ compile through compile_measure(); Tier 1 auth grants governance over what
 gets saved, not extra language power. The one exception is the pre-existing
 "framed measure" construct (see app/semantic.py's compile_frame), which stays
 on its own, narrower, authenticated-only path — never reachable from here.
+
+Two compile modes share this one allowlist:
+  - aggregate (default): bare identifiers are raw source columns; the
+    expression must reduce every source row in a query group to one value
+    (sum/mean/count/... — the existing behavior, unchanged).
+  - window (auto-detected — see is_window_expr): triggered by the presence
+    of running_total()/lag() anywhere in the expression. Bare identifiers
+    here are *sibling measure names* (already-aggregated, one row per query
+    group) rather than raw columns, since running totals and period-over-
+    period math only make sense over an already-grouped result — there's
+    no window into "the previous quarter" until quarters have been
+    aggregated. The engine compiles these post-group-by, over(partition_by=
+    the query's other dimensions, order_by=its time dimension).
 """
 from __future__ import annotations
 
@@ -64,13 +77,29 @@ _COMPARE_OPS = {
 
 
 class _Compiler:
-    def __init__(self, schema: Optional["pl.Schema"]):
+    def __init__(
+        self,
+        schema: Optional["pl.Schema"],
+        *,
+        window: bool = False,
+        partition_by: Optional[list] = None,
+        order_by: Optional[str] = None,
+    ):
         # schema is None only for the model-yaml load-time structural check
         # (no live schema is fetched just to parse config, matching this
         # codebase's lazy/no-scan-to-load-yaml precedent) — column existence
         # is otherwise always checked wherever a real schema is available
         # (query time, and the API's validate/generate/measure-save routes).
+        # In window mode `schema` (when given) is the *aggregated* schema —
+        # dimensions + sibling measure names — not raw source columns.
         self.schema = schema
+        self.window = window
+        # partition_by/order_by are the query's actual grouping — only known
+        # once the engine has resolved the query's dimensions, so they're
+        # None during structural-only validation (load time, measure save);
+        # running_total()/lag() build the bare reduction then, without .over().
+        self.partition_by = partition_by
+        self.order_by = order_by
 
     def build(self, node: ast.AST, depth: int) -> pl.Expr:
         if depth > MAX_DEPTH:
@@ -97,7 +126,8 @@ class _Compiler:
         name = node.id
         _check_identifier(name)
         if self.schema is not None and name not in self.schema:
-            raise MeasureCompileError(f"unknown column '{name}'", kind="unknown_column")
+            what = "measure" if self.window else "column"
+            raise MeasureCompileError(f"unknown {what} '{name}'", kind="unknown_column")
         return pl.col(name)
 
     def _build_binop(self, node: ast.BinOp, depth: int) -> pl.Expr:
@@ -182,8 +212,15 @@ class _Compiler:
         if node.keywords:
             raise MeasureCompileError("keyword arguments are not supported", kind="disallowed")
         name = node.func.id
-        builder = _FUNCTIONS.get(name)
+        table = _WINDOW_FUNCTIONS if self.window else _FUNCTIONS
+        builder = table.get(name)
         if builder is None:
+            if self.window and name in _FUNCTIONS:
+                raise MeasureCompileError(
+                    f"'{name}()' reduces raw source rows and can't be used inside a window "
+                    "measure — reference the sibling measure by its bare name instead",
+                    kind="disallowed",
+                )
             raise MeasureCompileError(f"unknown function '{name}'", kind="unknown_function")
         return builder(self, node.args, depth)
 
@@ -284,11 +321,100 @@ _FUNCTIONS = {
 }
 
 
-def compile_measure(text: str, schema: Optional["pl.Schema"], *, alias: str) -> pl.Expr:
+def _int_literal(node: ast.AST, what: str) -> int:
+    if isinstance(node, ast.Constant) and isinstance(node.value, int) and not isinstance(node.value, bool):
+        return node.value
+    raise MeasureCompileError(f"{what} must be a literal integer", kind="disallowed")
+
+
+def _fn_running_total(compiler: "_Compiler", args: list, depth: int) -> pl.Expr:
+    if len(args) != 1:
+        raise MeasureCompileError("running_total() takes exactly 1 argument", kind="disallowed")
+    value = compiler.build(args[0], depth + 1)
+    expr = value.cum_sum()
+    if compiler.order_by is not None:
+        expr = expr.over(compiler.partition_by or None, order_by=compiler.order_by)
+    return expr
+
+
+def _fn_lag(compiler: "_Compiler", args: list, depth: int) -> pl.Expr:
+    if len(args) not in (1, 2):
+        raise MeasureCompileError("lag() takes 1 or 2 arguments: (measure[, periods])", kind="disallowed")
+    value = compiler.build(args[0], depth + 1)
+    periods = 1
+    if len(args) == 2:
+        periods = _int_literal(args[1], "lag()'s periods argument")
+        if periods < 1:
+            raise MeasureCompileError("lag()'s periods argument must be a positive integer", kind="disallowed")
+    expr = value.shift(periods)
+    if compiler.order_by is not None:
+        expr = expr.over(compiler.partition_by or None, order_by=compiler.order_by)
+    return expr
+
+
+# Functions legal inside a window measure. running_total/lag are the two
+# window primitives; if_/coalesce/cast carry over unchanged (pure scalar
+# transforms, no aggregation semantics) so e.g. a first-period null lag can
+# be coalesced to 0. Aggregate functions (sum/mean/...), col(), and where()
+# are deliberately absent — there are no raw source rows left to reduce or
+# filter once a measure has become a window calculation over sibling
+# measures' already-aggregated values.
+_WINDOW_ONLY_FUNCTIONS = {"running_total", "lag"}
+
+_WINDOW_FUNCTIONS = {
+    "running_total": _fn_running_total,
+    "lag": _fn_lag,
+    "if_": _fn_if_,
+    "coalesce": _fn_coalesce,
+    "cast": _fn_cast,
+}
+
+
+def is_window_expr(text: str) -> bool:
+    """True if `text` uses running_total()/lag() anywhere — the signal that
+    flips a measure from an aggregate reduction (raw columns -> one value per
+    query group) into a window calculation (sibling measures' already-
+    aggregated values -> a running total / lag within a query-time
+    partition). Never evaluates `text`; parses only."""
+    if len(text) > MAX_MEASURE_LEN:
+        raise MeasureCompileError(f"measure text exceeds {MAX_MEASURE_LEN} character limit", kind="limit_exceeded")
+    try:
+        tree = ast.parse(text, mode="eval")
+    except SyntaxError as exc:
+        raise MeasureCompileError(f"invalid syntax: {exc}", kind="disallowed") from exc
+    return any(
+        isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in _WINDOW_ONLY_FUNCTIONS
+        for n in ast.walk(tree)
+    )
+
+
+def referenced_names(text: str) -> set:
+    """Bare identifiers a window measure's expression reads (sibling measure
+    names), excluding function names — used by the engine to discover
+    dependencies the caller didn't explicitly request (e.g. running_total
+    (revenue) needs `revenue` computed even if only the running total was
+    asked for). Never evaluates `text`; parses only."""
+    tree = ast.parse(text, mode="eval")
+    call_funcs = {n.func.id for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    return {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} - call_funcs
+
+
+def compile_measure(
+    text: str,
+    schema: Optional["pl.Schema"],
+    *,
+    alias: str,
+    partition_by: Optional[list] = None,
+    order_by: Optional[str] = None,
+) -> pl.Expr:
     """Parse -> allowlist/validate -> build polars.Expr. Never evaluates `text`.
     Raises MeasureCompileError (fail closed) on anything outside the allowlist.
-    `schema=None` skips column-existence checks (used only for model-yaml
-    load-time structural validation, where no live schema is fetched)."""
+    `schema=None` skips column/measure-existence checks (used only for
+    model-yaml load-time structural validation, where no live schema is
+    fetched). `partition_by`/`order_by` are consulted only for window
+    measures (see is_window_expr) — the engine passes the query's actual
+    dimensions once it knows them; left None for structural-only validation,
+    which builds the bare running_total/lag reduction without `.over()`."""
     if len(text) > MAX_MEASURE_LEN:
         raise MeasureCompileError(f"measure text exceeds {MAX_MEASURE_LEN} character limit", kind="limit_exceeded")
     try:
@@ -298,6 +424,7 @@ def compile_measure(text: str, schema: Optional["pl.Schema"], *, alias: str) -> 
     node_count = sum(1 for _ in ast.walk(tree))
     if node_count > MAX_NODES:
         raise MeasureCompileError(f"expression exceeds {MAX_NODES} node limit", kind="limit_exceeded")
-    compiler = _Compiler(schema)
+    window = is_window_expr(text)
+    compiler = _Compiler(schema, window=window, partition_by=partition_by, order_by=order_by)
     expr = compiler.build(tree.body, depth=0)
     return expr.alias(alias)

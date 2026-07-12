@@ -163,6 +163,43 @@ along with unknown columns/functions and oversized or deeply-nested input.
 See `specs/008-safe-measure-compilation/contracts/compile_measure.md` for the
 full grammar and the node-by-node allowlist.
 
+#### Window measures: running totals and period-over-period change
+
+`running_total(x)` and `lag(x[, periods=1])` are a second kind of measure.
+Every function above reduces *raw source rows* down to one value per query
+group (that's what "aggregation" means); these two instead read a **sibling
+measure's already-aggregated value** and look sideways/backwards across the
+query's date axis — there's no such thing as "the previous quarter" until
+quarters have been grouped. Using either anywhere in an expression makes the
+whole measure a window measure: bare names inside it refer to other
+measures in the same query, not raw columns, and the aggregate functions
+(`sum`, `count`, ...) and `col()` aren't available inside it — there are no
+raw rows left to reduce. `if_`/`coalesce`/`cast` still are, since they're
+plain scalar transforms.
+
+```yaml
+measures:
+  - name: revenue
+    expr: sum(unit_price * quantity)
+  - name: revenue_running_total
+    expr: running_total(revenue)
+  - name: revenue_pct_change   # % change vs. the previous point on the date axis
+    expr: (revenue - lag(revenue, 1)) / lag(revenue, 1)
+```
+
+Querying `revenue_pct_change` grouped by `order_date` at quarter grain gives
+quarter-over-quarter change; at month grain, month-over-month — the DSL text
+doesn't hardcode a period, the query's own grain does. The engine applies
+these `.over(partition_by=the query's other dimensions, order_by=its time
+dimension)` right after the group-by, so add a breakout dimension (e.g.
+`channel`) and each gets its own independent running total / prior-period
+comparison. A window measure's referenced sibling is computed even if the
+query didn't ask for it directly (dropped from the response unless also
+requested), but a query needs **exactly one time dimension** to order by —
+zero or more than one is rejected with a clear error. Window measures follow
+the same trust model as everything else here: inline/query-time and saved
+model measures compile through the identical allowlist, no distinction.
+
 ### Measures over an intermediary frame (authenticated model measures only)
 
 Some metrics can't be written in the safe DSL above — they need business

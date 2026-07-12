@@ -105,6 +105,129 @@ def test_unknown_function_rejected(schema):
     assert exc.value.kind == "unknown_function"
 
 
+# --- Window measures: running_total() / lag() ------------------------------
+# These compile against the *aggregated* schema (dims + sibling measure
+# names), not raw columns — the engine passes partition_by/order_by once it
+# knows the query's dimensions (see app/engine.py). Here we exercise the
+# compiler directly against a stand-in "already aggregated" frame.
+
+@pytest.fixture()
+def agg_df():
+    return pl.DataFrame({
+        "region": ["east", "east", "east", "west", "west", "west"],
+        "quarter": ["2025-Q1", "2025-Q2", "2025-Q3", "2025-Q1", "2025-Q2", "2025-Q3"],
+        "revenue": [100.0, 150.0, 120.0, 200.0, 180.0, 220.0],
+    })
+
+
+@pytest.fixture()
+def agg_schema(agg_df):
+    return agg_df.lazy().collect_schema()
+
+
+def test_is_window_expr_detects_running_total_and_lag():
+    from app.measure_dsl import is_window_expr
+    assert is_window_expr("running_total(revenue)")
+    assert is_window_expr("(revenue - lag(revenue, 1)) / lag(revenue, 1)")
+    assert not is_window_expr("sum(revenue)")
+    assert not is_window_expr('if_(sum(revenue) > 0, 1, 0)')  # if_ alone isn't a window signal
+
+
+def test_referenced_names_excludes_function_names():
+    from app.measure_dsl import referenced_names
+    assert referenced_names("(revenue - lag(revenue, 1)) / lag(revenue, 1)") == {"revenue"}
+
+
+def test_running_total_over_partition(agg_df, agg_schema):
+    expr = compile_measure(
+        "running_total(revenue)", agg_schema, alias="rt", partition_by=["region"], order_by="quarter",
+    )
+    out = agg_df.sort("region", "quarter").select("region", "quarter", expr)
+    east = out.filter(pl.col("region") == "east")["rt"].to_list()
+    west = out.filter(pl.col("region") == "west")["rt"].to_list()
+    assert east == [100.0, 250.0, 370.0]
+    assert west == [200.0, 380.0, 600.0]
+
+
+def test_running_total_with_no_partition_is_global(agg_df, agg_schema):
+    # a query with only the time dimension (no breakout) -> partition_by=[]
+    expr = compile_measure(
+        "running_total(revenue)", agg_schema, alias="rt", partition_by=[], order_by="quarter",
+    )
+    out = agg_df.filter(pl.col("region") == "east").sort("quarter").select(expr)["rt"].to_list()
+    assert out == [100.0, 250.0, 370.0]
+
+
+def test_pct_change_from_previous_period(agg_df, agg_schema):
+    text = "(revenue - lag(revenue, 1)) / lag(revenue, 1)"
+    expr = compile_measure(text, agg_schema, alias="qoq", partition_by=["region"], order_by="quarter")
+    out = agg_df.sort("region", "quarter").select("region", "quarter", expr)
+    east = out.filter(pl.col("region") == "east")["qoq"].to_list()
+    assert east[0] is None  # no prior quarter
+    assert east[1] == pytest.approx(0.5)     # 150 vs 100
+    assert east[2] == pytest.approx(-0.2)    # 120 vs 150
+
+
+def test_lag_default_period_is_one(agg_df, agg_schema):
+    e1 = compile_measure("lag(revenue)", agg_schema, alias="l", partition_by=["region"], order_by="quarter")
+    e2 = compile_measure("lag(revenue, 1)", agg_schema, alias="l", partition_by=["region"], order_by="quarter")
+    out1 = agg_df.sort("region", "quarter").select(e1)["l"].to_list()
+    out2 = agg_df.sort("region", "quarter").select(e2)["l"].to_list()
+    assert out1 == out2
+
+
+def test_window_structural_validation_without_query_context():
+    """Model-yaml load time: no live partition_by/order_by yet — the bare
+    reduction must still compile (schema=None skips column checks, same
+    convention as aggregate measures at load time)."""
+    expr = compile_measure("running_total(revenue)", None, alias="rt")
+    assert expr is not None
+    expr2 = compile_measure("coalesce(lag(revenue, 1), 0)", None, alias="l")
+    assert expr2 is not None
+
+
+def test_window_measure_rejects_aggregate_functions(agg_schema):
+    with pytest.raises(MeasureCompileError) as exc:
+        compile_measure("running_total(sum(revenue))", agg_schema, alias="bad",
+                         partition_by=["region"], order_by="quarter")
+    assert exc.value.kind == "disallowed"
+
+
+def test_aggregate_measure_rejects_window_functions_leaking_in(schema):
+    # running_total/lag anywhere flips the whole expr to window mode, so an
+    # aggregate call inside it is then rejected as "aggregate-inside-window",
+    # not silently accepted
+    with pytest.raises(MeasureCompileError) as exc:
+        compile_measure("sum(running_total(revenue))", schema, alias="bad")
+    assert exc.value.kind == "disallowed"
+
+
+def test_window_measure_col_function_not_available(agg_schema):
+    # col() is a raw-source-column escape hatch; window measures only ever
+    # see sibling measures, so col() has nothing to point at
+    with pytest.raises(MeasureCompileError) as exc:
+        compile_measure('running_total(col("revenue"))', agg_schema, alias="bad",
+                         partition_by=["region"], order_by="quarter")
+    assert exc.value.kind == "disallowed"
+
+
+def test_window_measure_unknown_sibling_rejected(agg_schema):
+    with pytest.raises(MeasureCompileError) as exc:
+        compile_measure("running_total(doesnotexist)", agg_schema, alias="bad",
+                         partition_by=["region"], order_by="quarter")
+    assert exc.value.kind == "unknown_column"
+    assert "measure" in str(exc.value)
+
+
+def test_lag_requires_positive_integer_periods(agg_schema):
+    with pytest.raises(MeasureCompileError):
+        compile_measure("lag(revenue, 0)", agg_schema, alias="bad", partition_by=[], order_by="quarter")
+    with pytest.raises(MeasureCompileError):
+        compile_measure("lag(revenue, -1)", agg_schema, alias="bad", partition_by=[], order_by="quarter")
+    with pytest.raises(MeasureCompileError):
+        compile_measure("lag(revenue, 1.5)", agg_schema, alias="bad", partition_by=[], order_by="quarter")
+
+
 # --- Red-team suite: every payload must raise, and must never execute ------
 
 RED_TEAM_PAYLOADS = [
@@ -127,6 +250,10 @@ RED_TEAM_PAYLOADS = [
     "sum(revenue) if revenue > 0 else 0",  # IfExp — use if_() instead
     "(yield revenue)",
     "(x := revenue)",
+    # window mode must be exactly as closed as aggregate mode
+    "running_total(__import__('os').system('id'))",
+    "lag(revenue.__class__, 1)",
+    "running_total(getattr(revenue, '__globals__'))",
 ]
 
 

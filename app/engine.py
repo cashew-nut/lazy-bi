@@ -359,30 +359,72 @@ def run_query(model: Model, query: dict) -> dict:
                 "model-measure save; they are never available as inline/query-time measures"
             )
         inline[m["name"]] = m
-    # split measures into plain aggregations (applied in one group_by over the
-    # scan) and framed measures, whose expr aggregates over a derived
-    # intermediary frame instead (Measure.frame_source / inline "frame")
+    # split measures into three kinds:
+    #  - plain aggregations, applied in one group_by over the scan
+    #  - framed measures, whose expr aggregates over a derived intermediary
+    #    frame instead (Measure.frame_source / inline "frame")
+    #  - window measures (running_total()/lag() — see measure_dsl.is_window_
+    #    expr), computed *after* the group_by via .over(), since they read
+    #    sibling measures' already-aggregated values rather than raw columns
     plain_exprs: list[pl.Expr] = []
+    plain_names: set = set()  # names already added to plain_exprs (dedups deps)
     framed: list[tuple[str, str, set, pl.Expr]] = []  # (name, frame_source, frame_emits, agg expr)
+    window_specs: list[tuple[str, str]] = []  # (name, dsl text)
+
+    def add_plain(nm: str, expr: pl.Expr) -> None:
+        if nm not in plain_names:
+            plain_exprs.append(expr)
+            plain_names.add(nm)
+
+    def resolve_measure(nm: str, *, is_dependency: bool) -> None:
+        if nm in inline:
+            # inline measures are never framed (T004/T005 above already
+            # reject frame/frame_emits on the way in) and always compile
+            # through the safe DSL — never eval, regardless of caller.
+            text = inline[nm]["expr"]
+            if measure_dsl.is_window_expr(text):
+                if is_dependency:
+                    raise QueryError(
+                        f"measure '{nm}' is itself a window measure and can't be used as "
+                        "another window measure's dependency"
+                    )
+                window_specs.append((nm, text))
+                return
+            try:
+                add_plain(nm, measure_dsl.compile_measure(text, schema, alias=nm))
+            except measure_dsl.MeasureCompileError as exc:
+                raise QueryError(f"measure '{nm}': {exc}") from exc
+            return
+        meas = model.measure(nm)
+        if meas.frame_source:
+            if is_dependency:
+                raise QueryError(
+                    f"measure '{nm}' uses an intermediary frame and can't be used as another "
+                    "window measure's dependency"
+                )
+            framed.append((nm, meas.frame_source, set(meas.frame_emits), meas.expr(schema)))
+            return
+        if measure_dsl.is_window_expr(meas.expr_source):
+            if is_dependency:
+                raise QueryError(
+                    f"measure '{nm}' is itself a window measure and can't be used as another "
+                    "window measure's dependency"
+                )
+            window_specs.append((nm, meas.expr_source))
+            return
+        add_plain(nm, meas.expr(schema))
+
     try:
         for m in measure_names:
-            if m in inline:
-                # inline measures are never framed (T004/T005 above already
-                # reject frame/frame_emits on the way in) and always compile
-                # through the safe DSL — never eval, regardless of caller.
-                frame_source, emits = None, set()
-                try:
-                    expr = measure_dsl.compile_measure(inline[m]["expr"], schema, alias=m)
-                except measure_dsl.MeasureCompileError as exc:
-                    raise QueryError(f"measure '{m}': {exc}") from exc
-            else:
-                meas = model.measure(m)
-                frame_source, emits, expr = meas.frame_source, set(meas.frame_emits), meas.expr(schema)
-            if frame_source:
-                framed.append((m, frame_source, emits, expr))
-            else:
-                plain_exprs.append(expr)
-    except ModelError as exc:
+            resolve_measure(m, is_dependency=False)
+        # a window measure's sibling references (e.g. running_total(revenue))
+        # must be computed even if the caller didn't request them directly —
+        # they're trimmed from the final result below if so
+        for _, text in window_specs:
+            for dep in measure_dsl.referenced_names(text):
+                if dep not in plain_names:
+                    resolve_measure(dep, is_dependency=True)
+    except (ModelError, measure_dsl.MeasureCompileError) as exc:
         raise QueryError(str(exc)) from exc
 
     # geo dimensions carry their members' coordinates along as hidden columns
@@ -401,6 +443,42 @@ def run_query(model: Model, query: dict) -> dict:
         # all measures framed: the derived frames alone define which dimension
         # groups exist (an emitted timeline shouldn't inherit raw-row buckets)
         out = None
+
+    # window measures (running_total()/lag()) read sibling measures' already-
+    # aggregated values, partitioned by the query's other dimensions and
+    # ordered by its time dimension — "previous quarter" only means something
+    # once the data has been grouped down to one row per quarter. Applied via
+    # .over() right after the group_by, before the framed-measure joins below
+    # (window measures can only depend on plain measures, never framed ones).
+    if window_specs:
+        if out is None:
+            raise QueryError(
+                "window measures (running_total/lag) need at least one plain aggregate "
+                "measure in the query to compute over"
+            )
+        time_dims = [d.name for d, _ in dim_specs if d.type == "time"]
+        if not time_dims:
+            raise QueryError(
+                "window measures (running_total/lag) require a time dimension in the "
+                "query's dimensions to order by"
+            )
+        if len(time_dims) > 1:
+            raise QueryError(
+                "window measures (running_total/lag) support only one time dimension "
+                "per query — ambiguous ordering"
+            )
+        order_dim = time_dims[0]
+        partition_cols = [d for d in dim_names if d != order_dim]
+        out_schema = out.collect_schema()
+        win_exprs = []
+        for name, text in window_specs:
+            try:
+                win_exprs.append(measure_dsl.compile_measure(
+                    text, out_schema, alias=name, partition_by=partition_cols, order_by=order_dim,
+                ))
+            except measure_dsl.MeasureCompileError as exc:
+                raise QueryError(f"measure '{name}': {exc}") from exc
+        out = out.with_columns(win_exprs)
 
     # each framed measure runs its snippet against the filtered scan (with the
     # query's dimension columns materialized), then its expr aggregates the
@@ -446,6 +524,14 @@ def run_query(model: Model, query: dict) -> dict:
             out = out.join(part, on=dim_names, how="full", coalesce=True, nulls_equal=True)
         else:
             out = out.join(part, how="cross")
+
+    # drop any sibling measure only pulled in as a window measure's dependency
+    # (e.g. running_total(revenue) requested alone still needs revenue
+    # computed) — keep exactly what was asked for, plus the geo hidden columns
+    extra = plain_names - set(measure_names)
+    if extra:
+        geo_cols = [c for dim, _ in dim_specs if dim.geo for c in (f"__lat_{dim.name}", f"__lon_{dim.name}")]
+        out = out.select([*dim_names, *geo_cols, *measure_names])
     lf = out
 
     sort = query.get("sort") or {}

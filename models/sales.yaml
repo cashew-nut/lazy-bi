@@ -83,3 +83,20 @@ measures:
     label: Margin / Unit
     format: currency
     expr: sum((unit_price - unit_cost) * quantity) / sum(quantity)
+  # window measures: running_total()/lag() read sibling measures' already-
+  # aggregated values rather than raw columns, over(partition_by=the query's
+  # other dimensions, order_by=its time dimension) — query by order_date
+  # (any grain) to see these; add a breakout dimension (e.g. channel) and
+  # each gets its own running total / prior-period comparison.
+  - name: revenue_running_total
+    label: Revenue (Running Total)
+    format: currency
+    description: Cumulative revenue over the query's date axis.
+    expr: running_total(revenue)
+  - name: revenue_pct_change
+    label: Revenue % Change vs. Prior Period
+    format: percent
+    description: >-
+      Change vs. the previous point on the query's date axis (e.g. previous
+      quarter, if grouped by order_date at quarter grain).
+    expr: (revenue - lag(revenue, 1)) / lag(revenue, 1)

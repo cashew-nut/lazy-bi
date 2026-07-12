@@ -249,9 +249,18 @@ def _validate_measure_body(model: semantic.Model, m: MeasureIn) -> None:
         raise HTTPException(status_code=400, detail=f"measure '{m.name}': 'frame_emits' needs a 'frame'")
     else:
         try:
-            schema = engine.scan(model).collect_schema()
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"source not reachable: {exc}")
+            is_window = measure_dsl.is_window_expr(m.expr)
+        except measure_dsl.MeasureCompileError as exc:
+            raise HTTPException(status_code=400, detail=f"measure '{m.name}': {exc}")
+        if is_window:
+            # window measures (running_total()/lag()) read sibling *measures*,
+            # not raw source columns — no need to touch the live source at all
+            schema = set(model.measures)
+        else:
+            try:
+                schema = engine.scan(model).collect_schema()
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail=f"source not reachable: {exc}")
         try:
             measure_dsl.compile_measure(m.expr, schema, alias=m.name)
         except measure_dsl.MeasureCompileError as exc:
