@@ -53,9 +53,21 @@ def test_completion_engine_is_shared(client):
     guards against the pre-extraction duplicate implementations."""
     lab = client.get("/static/js/measurelab.js").text
     editor = client.get("/static/js/editor.js").text
+    modelform = client.get("/static/js/modelform.js").text
     assert 'from "./completion.js"' in lab
     assert 'from "./completion.js"' in editor
+    assert 'from "./completion.js"' in modelform  # the guided form's measure rows too
     # the vocabulary now lives only in the shared module, not duplicated in the lab
     assert client.get("/static/js/completion.js").status_code == 200
     assert "const DSL_FUNCTIONS" not in lab
     assert "const DSL_FUNCTIONS" in client.get("/static/js/completion.js").text
+
+
+def test_completer_apply_dispatches_input_event(client):
+    """Regression guard: makeCompleter.apply() sets textarea.value directly,
+    which fires no native 'input' event. Consumers that only mirror a field's
+    value inside an 'input' listener (e.g. modelform.js's measure rows) would
+    silently keep a stale value after the user accepts a suggestion unless
+    apply() dispatches one itself."""
+    completion = client.get("/static/js/completion.js").text
+    assert 'dispatchEvent(new Event("input"' in completion
