@@ -276,3 +276,56 @@ def test_reading_saved_measure_needs_no_auth(client, auth_headers):
         assert q.status_code == 200 and q.json()["rows"][0]["avg_price"] > 0
     finally:
         client.delete("/api/models/auth_probe")
+
+
+# ── 008-safe-measure-compilation: framed-measure carve-out (US3) ──────────
+
+def test_authenticated_frame_measure_saves_and_computes(client, auth_headers):
+    """A frame-bearing measure is an authenticated-model-measure-only
+    construct: it's accepted here (with provenance), but never inline
+    (see test_engine.py's inline-frame-rejected tests)."""
+    _probe_model(client)
+    try:
+        body = {
+            # a framed measure's `expr` still uses the pre-existing eval
+            # syntax (it aggregates the frame's own output column, which
+            # isn't part of the base schema) — only the scalar DSL path
+            # (no `frame`) uses the new function-call grammar.
+            "name": "distinct_regions_via_frame",
+            "expr": 'pl.col("n").sum()',
+            "frame": 'frame = lf.group_by(dims).agg(pl.len().alias("n"))',
+        }
+        res = client.post("/api/models/auth_probe/measures", json=body, headers=auth_headers)
+        assert res.status_code == 201
+        history = client.get(
+            "/api/models/auth_probe/measures/distinct_regions_via_frame/history"
+        ).json()
+        assert history[0]["frame"] == body["frame"]
+
+        q = client.post("/api/query", json={
+            "model": "auth_probe", "dimensions": ["region"],
+            "measures": ["distinct_regions_via_frame"]})
+        assert q.status_code == 200
+        assert q.json()["row_count"] > 0
+    finally:
+        client.delete("/api/models/auth_probe")
+
+
+def test_frame_measure_mutation_still_requires_auth(client):
+    _probe_model(client)
+    try:
+        body = {"name": "probe_frame", "expr": "count()", "frame": "frame = lf"}
+        assert client.post("/api/models/auth_probe/measures", json=body).status_code == 401
+    finally:
+        client.delete("/api/models/auth_probe")
+
+
+def test_frame_emits_without_frame_rejected(client, auth_headers):
+    _probe_model(client)
+    try:
+        body = {"name": "bad", "expr": "count()", "frame_emits": ["region"]}
+        res = client.post("/api/models/auth_probe/measures", json=body, headers=auth_headers)
+        assert res.status_code == 400
+        assert "frame_emits" in res.json()["detail"]
+    finally:
+        client.delete("/api/models/auth_probe")

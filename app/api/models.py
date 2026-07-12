@@ -245,8 +245,8 @@ def _validate_measure_body(model: semantic.Model, m: MeasureIn) -> None:
             semantic.validate_frame(m.frame, f"measure '{m.name}'")
         except semantic.ModelError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-        if not m.frame_emits:
-            raise HTTPException(status_code=400, detail=f"measure '{m.name}': 'frame_emits' needs a 'frame'")
+    elif m.frame_emits:
+        raise HTTPException(status_code=400, detail=f"measure '{m.name}': 'frame_emits' needs a 'frame'")
     else:
         try:
             schema = engine.scan(model).collect_schema()

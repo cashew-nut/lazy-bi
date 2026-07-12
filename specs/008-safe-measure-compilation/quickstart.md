@@ -38,6 +38,25 @@ curl -s -X POST http://localhost:8000/query -H 'Content-Type: application/json' 
 # expect: 400, message naming that frame-based measures require an authenticated model-measure save
 ```
 
+**One-time operational step** (per your own running instance — the shipped `models/clinical_ops_recruitment.yaml` predates this feature, so its `median_months_to_75pct_randomised` measure has no provenance history yet; this establishes its first record without changing its behavior). Fetch the measure's current `frame`/`frame_emits`/`expr` from the yaml or `GET /models/clinical_ops_recruitment/yaml`, then re-PUT it through the authenticated endpoint:
+
+```bash
+curl -s -X PUT http://localhost:8000/models/clinical_ops_recruitment/measures/median_months_to_75pct_randomised \
+  -H 'Content-Type: application/json' -H 'X-API-Key: devsecret' -H 'X-Author: <your name>' \
+  -d @- <<'EOF'
+{
+  "name": "median_months_to_75pct_randomised",
+  "label": "Median Months to 75% Randomised",
+  "description": "Median across studies of the months between a study's first actual randomisation and the month its cumulative randomisations reached 75% of its total.",
+  "expr": "pl.col(\"months_to_75\").median()",
+  "frame": "keys = list(dict.fromkeys([\"study_id\", *dims]))\nmonthly = (\n    lf.filter(\n        (pl.col(\"event_type\") == \"randomised\")\n        & (pl.col(\"scenario\") == \"actual\")\n        & (pl.col(\"event_count\") > 0)\n    )\n    .group_by(list(dict.fromkeys([*keys, \"event_month\"])))\n    .agg(pl.col(\"event_count\").sum())\n    .sort(\"event_month\")\n)\nframe = (\n    monthly.with_columns(\n        (pl.col(\"event_count\").cum_sum().over(keys)\n         / pl.col(\"event_count\").sum().over(keys)).alias(\"cume_share\"),\n        pl.col(\"event_month\").min().over(keys).alias(\"first_month\"),\n    )\n    .filter(pl.col(\"cume_share\") >= 0.75)\n    .group_by(keys)\n    .agg(\n        pl.col(\"first_month\").first(),\n        pl.col(\"event_month\").min().alias(\"month_75\"),\n    )\n    .with_columns(\n        ((pl.col(\"month_75\") - pl.col(\"first_month\")).dt.total_days() / 30.44)\n        .alias(\"months_to_75\"),\n        pl.col(\"month_75\").alias(\"event_date\"),\n    )\n)",
+  "frame_emits": ["event_date"]
+}
+EOF
+# expect: 200; GET .../median_months_to_75pct_randomised/history now shows one row, version 1
+# confirm identical results before/after: query the measure both ways and diff the numbers.
+```
+
 ## 4. Auth-gated model-measure authoring
 
 ```bash
