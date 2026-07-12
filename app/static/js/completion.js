@@ -9,53 +9,52 @@
 
 import { el } from "./lib.js";
 
-// completion vocabulary: [insert, hint, caretOffset]
-export const TOP_FNS = [
+// completion vocabulary for the safe measure DSL (see
+// specs/008-safe-measure-compilation/contracts/compile_measure.md) — a small
+// set of allowlisted functions called directly, no `pl.` prefix and no
+// `.method()` chaining: [insert, hint, caretOffset]
+export const DSL_FUNCTIONS = [
   ['col("")', "reference a column", -2],
-  ["len()", "row count", 0],
-  ["lit()", "literal value", -1],
-  ["when().then().otherwise()", "conditional", -20],
-];
-export const METHODS = [
-  ["sum()", "total", 0], ["mean()", "average", 0], ["median()", "median", 0],
-  ["min()", "minimum", 0], ["max()", "maximum", 0],
-  ["n_unique()", "distinct count", 0], ["count()", "non-null count", 0],
-  ["std()", "std deviation", 0], ["quantile(0.5)", "quantile", -1],
-  ["first()", "first value", 0], ["last()", "last value", 0],
-  ["abs()", "absolute", 0], ["round(2)", "round", -1],
-  ["cast(pl.Float64)", "change type", -1], ["fill_null(0)", "replace nulls", -1],
-  ["is_null()", "null test", 0], ["is_not_null()", "non-null test", 0],
-  ["filter()", "aggregate matching rows only", -1],
-  ["dt.year()", "extract year", 0], ["str.contains()", "text match", -1],
+  ["sum()", "total", -1], ["mean()", "average", -1], ["median()", "median", -1],
+  ["min()", "minimum", -1], ["max()", "maximum", -1],
+  ["count()", "row count (no arg) or non-null count of a column", -1],
+  ["count_distinct()", "distinct count", -1],
+  ["std()", "standard deviation", -1], ["var()", "variance", -1],
+  ["first()", "first value", -1], ["last()", "last value", -1],
+  ["where()", 'filter before aggregating: where(value, predicate)', -1],
+  ["if_()", "conditional: if_(predicate, then, else)", -1],
+  ["coalesce()", "first non-null of the arguments", -1],
+  ["cast()", 'change type: cast(value, "int"|"float"|"str"|"bool")', -1],
 ];
 
-// Classify a polars-expression trigger in the text before the caret.
-// Returns { kind: "col"|"top"|"method", prefix, start } or null.
-export function polarsContext(upto, caret) {
+// Classify a measure-DSL trigger in the text before the caret.
+// Returns { kind: "col"|"name", prefix, start } or null.
+export function dslContext(upto, caret) {
   let m;
-  if ((m = upto.match(/pl\.col\(\s*["']([A-Za-z0-9_ ]*)$/)))
+  if ((m = upto.match(/col\(\s*["']([A-Za-z0-9_ ]*)$/)))
     return { kind: "col", prefix: m[1], start: caret - m[1].length };
-  if ((m = upto.match(/(?:^|[^A-Za-z0-9_.])pl\.([a-z_]*)$/)))
-    return { kind: "top", prefix: m[1], start: caret - m[1].length };
-  if ((m = upto.match(/[)\]"'A-Za-z0-9_]\.([a-z_]*)$/)))
-    return { kind: "method", prefix: m[1], start: caret - m[1].length };
+  // a bare identifier right after a natural expression boundary (start of
+  // value, an operator, a comma/paren, or `and`/`or`/`not`/`where(`) — either
+  // a function name or a column reference are valid there
+  if ((m = upto.match(/(?:^|[-+*/%()<>=,!&|:]|\b(?:and|or|not|where)\()\s*([A-Za-z_][A-Za-z0-9_]*)$/)))
+    return { kind: "name", prefix: m[1], start: caret - m[1].length };
   return null;
 }
 
-// Build completion items for a polars context from a schema column list.
-export function polarsItems(ctx, columns, after) {
+// Build completion items for a DSL context from a schema column list.
+export function dslItems(ctx, columns, after) {
+  const cols = (columns || [])
+    .filter((c) => c.name.toLowerCase().startsWith(ctx.prefix.toLowerCase()));
   if (ctx.kind === "col") {
     // don't double the closer if a quote already follows the caret
     const closer = after.startsWith('"') ? "" : '")';
     const skip = closer ? 0 : 2;  // hop over the existing `")` instead
-    return (columns || [])
-      .filter((c) => c.name.toLowerCase().startsWith(ctx.prefix.toLowerCase()))
-      .map((c) => ({ text: c.name, hint: c.dtype, insert: c.name + closer, caretOffset: skip }));
+    return cols.map((c) => ({ text: c.name, hint: c.dtype, insert: c.name + closer, caretOffset: skip }));
   }
-  const source = ctx.kind === "top" ? TOP_FNS : METHODS;
-  return source
+  const fns = DSL_FUNCTIONS
     .filter(([t]) => t.startsWith(ctx.prefix))
     .map(([t, hint, off]) => ({ text: t, hint, insert: t, caretOffset: off }));
+  return [...fns, ...cols.map((c) => ({ text: c.name, hint: c.dtype + " (column)", insert: c.name, caretOffset: 0 }))];
 }
 
 // Bind a completion popup to a textarea + box element.

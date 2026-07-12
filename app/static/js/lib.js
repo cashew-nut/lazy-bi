@@ -22,8 +22,8 @@ export const svgEl = (tag, attrs = {}) => {
 
 export async function api(path, opts = {}) {
   const res = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
     ...opts,
+    headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   if (res.status === 204) return null;

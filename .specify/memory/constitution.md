@@ -44,12 +44,33 @@ interaction state leak into saved payloads, and do not silently persist
 something meant to be a throwaway view.
 
 ### VI. Trusted-Config Security Boundary Is Explicit, Never Silently Widened
-Measure expressions and model YAML are `eval`'d with `pl` in scope, at the
-same trust level as application code — this is acceptable *only* because
-models are single-user, developer-authored configuration. Any change that
-lets a less-trusted actor (an untrusted upload, a portal consumer, a
-multi-tenant user) influence YAML content or measure expressions must
-re-open this principle explicitly rather than ship quietly.
+**Amended by the safe-measure-compilation feature** (see
+`specs/008-safe-measure-compilation/`) — this principle's own rule ("any
+change that lets a less-trusted actor influence measure expressions must
+re-open this principle explicitly") is why this amendment exists. The
+boundary is now three-way, not one flat trust level:
+
+- **Scalar measure expressions — model or inline, no distinction** compile
+  through an allowlisting AST compiler (`app/measure_dsl.py`) that never
+  calls `eval`/`exec`/`compile`. This is no longer "trusted config, same
+  level as application code" for either kind — it's structurally incapable
+  of running arbitrary code, so an inline/query-time measure supplied by an
+  unauthenticated caller is exactly as safe as a saved one. Saving a model
+  measure grants governance (provenance, auth), not extra language power.
+- **The one narrower exception**: a model measure's `frame:` block (a
+  multi-step derived-frame Python snippet — see "Measures over an
+  intermediary frame" in the README) keeps the pre-existing `eval`/`exec`
+  path, at application-code trust level, exactly as this principle
+  originally described. It is reachable **only** through the authenticated
+  model-measure save endpoint (`X-API-Key` + `X-Author`) — never inline,
+  never from a query-time request body, regardless of credentials.
+- **Model YAML itself** (dimensions, joins, structure — everything but a
+  measure's scalar expression) remains trusted, single-user, developer-authored
+  configuration, unchanged from this principle's original scope.
+
+Any future change widening who may reach the `frame:` path, or introducing
+a new eval-based construct, must re-open this principle explicitly, exactly
+as before.
 
 ### VII. Feature Branches, One Development Per Branch
 Every development effort — a feature, a refactor, a fix worth its own
@@ -94,4 +115,4 @@ consistent with these principles; where a feature genuinely needs to violate
 one (e.g. Principle II for a use case that cannot be pushed down), say so
 explicitly in that feature's spec rather than quietly drifting.
 
-**Version**: 1.0.0 | **Ratified**: 2026-07-10 | **Last Amended**: 2026-07-10
+**Version**: 1.1.0 | **Ratified**: 2026-07-10 | **Last Amended**: 2026-07-12

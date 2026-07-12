@@ -24,15 +24,15 @@ dimensions:
 measures:
   - name: shipments
     label: Shipments
-    expr: pl.len()
+    expr: count()
   - name: cost
     label: Shipping Cost
     format: currency
-    expr: pl.col("cost").sum()
+    expr: sum(cost)
   - name: avg_delivery_hours
     label: Avg Delivery Hours
-    expr: pl.col("delivery_hours").mean()
+    expr: mean(delivery_hours)
   - name: cost_per_package
     label: Cost per Package
     format: currency
-    expr: pl.col("cost").sum() / pl.col("packages").sum()
+    expr: sum(cost) / sum(packages)

@@ -63,6 +63,9 @@ To point at a real bucket or an external emulator (MinIO, LocalStack), set
 `CI_S3_ENDPOINT` (this also disables the embedded moto server) plus the usual
 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, and `CI_BUCKET`.
 
+Set `CI_API_KEY` to enable saving/editing/deleting model measures (unset =
+those mutations are always rejected — see "Authoring model measures" below).
+
 ## Project layout
 
 ```
@@ -111,31 +114,70 @@ dimensions:
     column: cat_code      # column can differ from the semantic name
     label: Category
 
-measures:                 # polars expression syntax, `pl` in scope
+measures:                 # the safe measure DSL — see below
   - name: revenue
     label: Revenue
     format: currency      # number | currency | percent (display hint)
-    expr: (pl.col("unit_price") * pl.col("quantity")).sum()
+    expr: sum(unit_price * quantity)
   - name: margin_pct
     format: percent
-    expr: >
-      ((pl.col("unit_price") - pl.col("unit_cost")) * pl.col("quantity")).sum()
-      / (pl.col("unit_price") * pl.col("quantity")).sum()
+    expr: sum((unit_price - unit_cost) * quantity) / sum(unit_price * quantity)
 ```
 
-A measure is any polars expression that reduces to one value per group —
-ratios of aggregates, `n_unique`, conditional sums like
-`pl.col("x").filter(pl.col("flag")).sum()`, all fine. Expressions are validated
-at load time; edit a YAML and hit `POST /api/models/reload` (or restart) to
-pick it up.
+A measure reduces to one value per group — ratios of aggregates,
+`count_distinct`, filtered sums like `sum(where(x, flag))`, all fine.
+Expressions are validated at load time; edit a YAML and hit
+`POST /api/models/reload` (or restart) to pick it up.
 
-### Measures over an intermediary frame
+### The safe measure DSL
 
-Some metrics can't be written as one aggregation over the raw rows — they need
-business logic *between* the scan and the final reduce ("per entity, derive X;
-then take the median of X across entities"). Give a measure a `frame:` block —
-a python snippet that builds a derived LazyFrame — and its `expr:` then
-aggregates over that frame instead of the raw scan:
+A measure is **not** arbitrary Python. It's a small, allowlisted expression
+language, parsed to an AST and compiled straight to a `polars.Expr` — the
+compiler (`app/measure_dsl.py`) never calls `eval`, `exec`, or `compile` on
+measure text, so there is nothing dangerous to execute regardless of who
+supplies it. Both model measures (above) and inline/visual-scoped measures
+(the measure lab, `inline_measures` on `/api/query`) compile through the
+exact same allowlist — saving a model measure grants governance (see below),
+not extra language power.
+
+Grammar: column references (bare names, or `col("name")`), literals, the
+arithmetic/comparison/boolean operators you'd expect (`+ - * / % **`,
+`== != < <= > >= in not in`, `and or not`), and calls to a fixed set of
+functions:
+
+| Function | Meaning |
+|---|---|
+| `sum(x) mean(x) min(x) max(x) median(x) std(x) var(x) first(x) last(x)` | aggregations |
+| `count()` / `count(x)` | row count / non-null count of `x` |
+| `count_distinct(x)` | distinct count |
+| `col("name")` | explicit column reference (bare `name` works too) |
+| `where(value, predicate)` | filter before aggregating — `sum(where(revenue, region == "EU"))` |
+| `if_(predicate, then, else)` | conditional — `pl.when(...).then(...).otherwise(...)` |
+| `coalesce(a, b, ...)` | first non-null of the arguments |
+| `cast(x, "int"\|"float"\|"str"\|"bool")` | change type |
+
+Anything outside this — attribute access (`x.__class__`), subscripts,
+lambdas, comprehensions, f-strings, I/O calls, calling anything that isn't a
+bare allowlisted name — is rejected at compile time (`MeasureCompileError`),
+along with unknown columns/functions and oversized or deeply-nested input.
+See `specs/008-safe-measure-compilation/contracts/compile_measure.md` for the
+full grammar and the node-by-node allowlist.
+
+### Measures over an intermediary frame (authenticated model measures only)
+
+Some metrics can't be written in the safe DSL above — they need business
+logic *between* the scan and the final reduce ("per entity, derive X; then
+take the median of X across entities"), which means real multi-step Python,
+not a small expression. Give a measure a `frame:` block — a python snippet
+that builds a derived LazyFrame, still `eval`/`exec`-based like model YAML
+always has been — and its `expr:` then aggregates over that frame (using the
+same pre-DSL polars-expression syntax, since it's reading columns the frame
+itself produces, not the base schema):
+
+This is a deliberate, narrow carve-out: it is **only ever available through
+the authenticated model-measure save endpoint** (`X-API-Key` + `X-Author`,
+see below) — never as an inline/visual-scoped measure, regardless of
+credentials. A `frame` submitted inline on `/api/query` is rejected outright.
 
 ```yaml
 measures:
@@ -192,8 +234,8 @@ buckets only exist where some entity crossed. Dimensions *not* listed in
 See `median_months_to_75pct_randomised` in `models/clinical_ops_recruitment.yaml`
 for a live example (median months for a study's cumulative randomisations to
 cross 75% of its total, bucketed on timelines by each study's crossing month).
-Inline (visual-scoped) measures may pass `frame` / `frame_emits` alongside
-`expr` in the query API too.
+Inline/visual-scoped measures on the query API cannot use `frame`/`frame_emits` —
+that construct is authenticated-model-measure-only (see above).
 
 ### Time-spine (point-in-time) measures
 
@@ -210,7 +252,7 @@ dimensions:
       end: end_date        # null end = still active
 measures:
   - name: active_customers
-    expr: pl.col("customer_id").n_unique()
+    expr: count_distinct(customer_id)
 ```
 
 Grouping by `active_at` generates a timeline at the requested grain and
@@ -326,21 +368,51 @@ the affordances only insert/patch the one document.
 ### The measure lab
 
 *+ new measure* under the builder's measure list opens an inline editor on the
-visual itself. Completion triggers as you type — `pl.` offers expression
-starters, `pl.col("` offers the source's columns (post-join, with dtypes), `.`
-offers aggregation methods — and every keystroke re-runs the current query with
-the draft measure so it renders live in the chart (with the value shown
-directly when there are no dimensions). Two save paths:
+visual itself. Type in the safe DSL — a bare identifier offers function names
+and columns, `col("` offers the source's columns (post-join, with dtypes) —
+and every keystroke re-runs the current query with the draft measure so it
+renders live in the chart (with the value shown directly when there are no
+dimensions). Two save paths:
 
 - **SAVE TO VISUAL** — the measure travels inside the visual's spec
   (`inline_measures` on the query), works on dashboards and in focus mode, and
-  shows as a dashed *visual* chip with edit/remove.
+  shows as a dashed *visual* chip with edit/remove. No credentials needed —
+  it's compiled through the same safe DSL as everything else, so there's
+  nothing dangerous for an unauthenticated visual author to run.
 - **SAVE TO MODEL** — appends the measure to the model's yaml
-  (comment-preserving) and hot-reloads, promoting it to a shared model measure.
+  (comment-preserving) and hot-reloads, promoting it to a shared model
+  measure. This is an authoring action: the browser prompts once per tab for
+  an API key and your name, which travel as `X-API-Key`/`X-Author` headers.
 
-> ⚠️ Measures are `eval`'d with `pl` in scope. Model YAML is trusted
-> configuration, the same trust level as the application code. Don't load
-> model files from untrusted users.
+> Inline measures are compiled through an allowlisting AST compiler
+> (`app/measure_dsl.py`) that never calls `eval`/`exec`/`compile` — see "The
+> safe measure DSL" above. Saved model measures compile through the same
+> allowlist; the one exception is the `frame:` construct, which stays
+> `eval`/`exec`-based (like model YAML always has been) but is reachable only
+> through the authenticated save path below, never inline.
+
+### Authoring model measures (auth + provenance)
+
+Creating, updating, or deleting a saved model measure requires a shared
+secret: set `CI_API_KEY` in the environment (unset = every mutation is
+rejected with 401 — fail closed by default) and send it as `X-API-Key`,
+alongside a self-declared `X-Author` label recorded on the change. This is a
+minimal placeholder for real auth, not a claim of strong per-user identity —
+swap it for something stronger when the app grows beyond a single shared
+secret. Reading/querying a saved measure never requires it.
+
+| Route | Auth | What it does |
+|---|---|---|
+| `POST /api/models/{m}/measures` | required | create a measure (validated, then appended to the yaml) |
+| `PUT /api/models/{m}/measures/{name}` | required | update a measure in place |
+| `DELETE /api/models/{m}/measures/{name}` | required | remove a measure |
+| `GET /api/models/{m}/measures/{name}/history` | — | append-only provenance: author, version, expression snapshot per save |
+
+Every create/update is validated (the safe DSL, or `validate_frame` for a
+`frame:` measure) before anything is written — an invalid measure is refused,
+never partially saved. Provenance is recorded in a separate SQLite table
+(`measure_provenance`, in `cash_intel.db`) alongside the yaml write; the yaml
+file remains the sole executable source of truth, the table is the audit log.
 
 ## API
 
@@ -353,6 +425,8 @@ directly when there are no dimensions). Two save paths:
 | `POST /api/models/validate` | parse-check YAML + introspect source columns |
 | `POST /api/models`, `DELETE /api/models/{m}` | create a model file / delete one |
 | `GET /api/datasets` | bucket objects grouped into pickable datasets (source picker) |
+| `POST/PUT/DELETE /api/models/{m}/measures[/{name}]` | create/update/delete a model measure (**requires `X-API-Key` + `X-Author`** — see "Authoring model measures" above) |
+| `GET /api/models/{m}/measures/{name}/history` | append-only provenance for a saved measure |
 | `POST /api/query` | run a semantic query, returns columns + rows + timing |
 | `GET/POST /api/visuals`, `PUT/DELETE /api/visuals/{id}` | saved visuals (SQLite: `cash_intel.db`) |
 | `GET/POST /api/dashboards`, `GET/PUT/DELETE /api/dashboards/{id}` | dashboards — ordered tiles `{visual_id, w:1\|2}`; GET by id resolves tile visuals |

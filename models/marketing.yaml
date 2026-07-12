@@ -22,12 +22,12 @@ measures:
   - name: spend
     label: Spend
     format: currency
-    expr: pl.col("spend").sum()
+    expr: sum(spend)
   - name: impressions
     label: Impressions
-    expr: pl.col("impressions").sum()
+    expr: sum(impressions)
   - name: cpm
     label: Cost per Mille
     format: currency
     description: Spend per thousand impressions.
-    expr: pl.col("spend").sum() / (pl.col("impressions").sum() / 1000)
+    expr: sum(spend) / (sum(impressions) / 1000)

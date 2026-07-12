@@ -13,7 +13,7 @@ dimensions:
     type: time
 measures:
   - name: rows
-    expr: pl.len()
+    expr: count()
 """
 
 
@@ -36,14 +36,8 @@ def test_missing_source_rejected():
 
 
 def test_bad_measure_expr_rejected():
-    bad = VALID.replace("pl.len()", "pl.nope()")
+    bad = VALID.replace("count()", "nope()")
     with pytest.raises(semantic.ModelError, match="rows"):
-        semantic.parse_model_text(bad)
-
-
-def test_measure_must_be_expr():
-    bad = VALID.replace("pl.len()", '"42"')  # evaluates, but to an int
-    with pytest.raises(semantic.ModelError, match="not a polars Expr"):
         semantic.parse_model_text(bad)
 
 
@@ -109,7 +103,7 @@ def test_frame_emits_parses_and_requires_frame():
     withemits = FRAMED.replace("    expr:", "    frame_emits: [event_date]\n    expr:")
     m = semantic.parse_model_text(withemits)
     assert m.measures["median_days"].frame_emits == ["event_date"]
-    no_frame = VALID.replace("    expr: pl.len()", "    frame_emits: [event_date]\n    expr: pl.len()")
+    no_frame = VALID.replace("    expr: count()", "    frame_emits: [event_date]\n    expr: count()")
     with pytest.raises(semantic.ModelError, match="frame_emits"):
         semantic.parse_model_text(no_frame)
 
@@ -187,7 +181,7 @@ name: fact
 source: {format: parquet, path: s3://b/fact/*.parquet}
 measures:
   - name: rows
-    expr: pl.len()
+    expr: count()
 """
 
 
@@ -333,3 +327,24 @@ def test_real_geography_bundle_resolves_into_sales(models):
     assert "territory_name" in sales.dimensions
     assert sales.dimensions["region"].geo is not None
     assert {"bundle": "geography", "anchor_dataset": "regions", "datasets": None} in sales.to_public()["imports"]
+
+
+# --- 008-safe-measure-compilation: non-framed measures never eval ----------
+
+def test_non_framed_measure_expr_never_calls_eval(monkeypatch):
+    import builtins
+
+    def _boom(*a, **k):
+        raise AssertionError("non-framed Measure.expr() must never call eval")
+    monkeypatch.setattr(builtins, "eval", _boom)
+
+    m = semantic.parse_model_text(VALID)
+    assert m.measures["rows"].expr() is not None  # count() compiles fine without eval ever firing
+
+
+def test_framed_measure_expr_still_uses_eval_path(monkeypatch):
+    # the framed-measure carve-out is unaffected: it's still the pre-existing
+    # eval-based compile_expr/compile_frame path, gated by auth at the API
+    # layer rather than by the compiler itself.
+    m = semantic.parse_model_text(FRAMED)
+    assert m.measures["median_days"].expr() is not None

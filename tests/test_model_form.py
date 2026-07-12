@@ -125,7 +125,7 @@ def test_form_save_flow_creates_model_with_unmatched_key_names(client):
         "joins": [], "dimension_imports": [],
         "dimensions": [{"name": "channel", "column": "channel", "label": "Channel",
                         "type": "categorical", "description": "", "spine": None, "geo": None}],
-        "measures": [{"name": "rows", "expr": "pl.len()", "label": "Rows",
+        "measures": [{"name": "rows", "expr": "count()", "label": "Rows",
                       "format": "number", "description": ""}],
     }
     gen = client.post("/api/models/generate", json=spec).json()
@@ -259,7 +259,7 @@ def test_bundle_form_save_flow_creates_importable_bundle(client):
             "dimension_imports:\n"
             "  - bundle: catalog\n    anchor_dataset: products_ref\n"
             "    left_on: channel\n    right_on: supplier\n"
-            "measures:\n  - name: rows\n    expr: pl.len()\n"
+            "measures:\n  - name: rows\n    expr: count()\n"
         )
         check = client.post("/api/models/validate", json={"yaml": model_yaml})
         assert check.json()["ok"] is True

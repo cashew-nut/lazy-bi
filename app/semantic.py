@@ -16,6 +16,8 @@ from typing import Optional
 import polars as pl
 import yaml
 
+from . import measure_dsl
+
 _EVAL_GLOBALS = {"__builtins__": {}, "pl": pl}
 
 # frame snippets are multi-statement python where basics like list()/dict()/
@@ -160,8 +162,16 @@ class Measure:
     # grouped — time grains included — on the frame's output afterwards
     frame_emits: list[str] = field(default_factory=list)
 
-    def expr(self) -> pl.Expr:
-        return compile_expr(self.expr_source, f"measure '{self.name}'").alias(self.name)
+    def expr(self, schema: Optional["pl.Schema"] = None) -> pl.Expr:
+        # framed measures keep the pre-existing eval-based path (authenticated-
+        # only — see app/api/models.py); every other measure compiles through
+        # the safe DSL, for both model and inline measures alike.
+        if self.frame_source is not None:
+            return compile_expr(self.expr_source, f"measure '{self.name}'").alias(self.name)
+        try:
+            return measure_dsl.compile_measure(self.expr_source, schema, alias=self.name)
+        except measure_dsl.MeasureCompileError as exc:
+            raise ModelError(f"measure '{self.name}': {exc}") from exc
 
 
 @dataclass
@@ -407,6 +417,51 @@ def append_measure_yaml(text: str, measure: dict) -> str:
             last_content = i
     insert_at = min(last_content + 1, end)
     return "\n".join(lines[:insert_at]) + "\n" + block + "\n".join(lines[insert_at:])
+
+
+def _measure_block_bounds(lines: list[str], measure_name: str) -> Optional[tuple[int, int]]:
+    """Find the [start, end) line range of a `  - name: <measure_name>` entry
+    as rendered by append_measure_yaml — None if no such entry exists."""
+    start = next(
+        (i for i, line in enumerate(lines)
+         if line.startswith("  - ") and line.strip() == f"- name: {measure_name}"),
+        None,
+    )
+    if start is None:
+        return None
+    end = len(lines)
+    last_content = start
+    for i in range(start + 1, len(lines)):
+        line = lines[i]
+        if line.strip() and (line.startswith("  - ") or not line.startswith((" ", "\t"))):
+            end = i
+            break
+        if line.strip():
+            last_content = i
+    return start, last_content + 1
+
+
+def replace_measure_yaml(text: str, measure_name: str, measure: dict) -> str:
+    """Rewrite an existing measure's block in place, preserving the rest of
+    the file (comments included) — the update counterpart of append_measure_yaml."""
+    lines = text.split("\n")
+    bounds = _measure_block_bounds(lines, measure_name)
+    if bounds is None:
+        raise ModelError(f"measure '{measure_name}' not found in yaml")
+    start, end = bounds
+    block = yaml.dump([measure], Dumper=_BlockStrDumper, default_flow_style=False, sort_keys=False, width=1000)
+    block = "".join("  " + line + "\n" for line in block.rstrip("\n").split("\n"))
+    return "\n".join(lines[:start]) + "\n" + block + "\n".join(lines[end:])
+
+
+def remove_measure_yaml(text: str, measure_name: str) -> str:
+    """Delete an existing measure's block, preserving the rest of the file."""
+    lines = text.split("\n")
+    bounds = _measure_block_bounds(lines, measure_name)
+    if bounds is None:
+        raise ModelError(f"measure '{measure_name}' not found in yaml")
+    start, end = bounds
+    return "\n".join(lines[:start] + lines[end:])
 
 
 def parse_model_text(text: str) -> Model:

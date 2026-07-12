@@ -36,46 +36,46 @@ measures:
   - name: screened_actual
     label: Screened (Actual)
     description: Patients actually screened.
-    expr: pl.col("event_count").filter((pl.col("event_type") == "screened") & (pl.col("scenario") == "actual")).sum()
+    expr: sum(where(event_count, event_type == "screened" and scenario == "actual"))
   - name: screened_baseline
     label: Screened (Baseline)
     description: Patients planned to be screened.
-    expr: pl.col("event_count").filter((pl.col("event_type") == "screened") & (pl.col("scenario") == "baseline")).sum()
+    expr: sum(where(event_count, event_type == "screened" and scenario == "baseline"))
   - name: randomised_actual
     label: Randomised (Actual)
     description: Patients actually randomised.
-    expr: pl.col("event_count").filter((pl.col("event_type") == "randomised") & (pl.col("scenario") == "actual")).sum()
+    expr: sum(where(event_count, event_type == "randomised" and scenario == "actual"))
   - name: randomised_baseline
     label: Randomised (Baseline)
     description: Patients planned to be randomised.
-    expr: pl.col("event_count").filter((pl.col("event_type") == "randomised") & (pl.col("scenario") == "baseline")).sum()
+    expr: sum(where(event_count, event_type == "randomised" and scenario == "baseline"))
   - name: screen_fails_actual
     label: Screen Fails (Actual)
-    expr: pl.col("event_count").filter((pl.col("event_type") == "screen_fail") & (pl.col("scenario") == "actual")).sum()
+    expr: sum(where(event_count, event_type == "screen_fail" and scenario == "actual"))
   - name: screen_fails_baseline
     label: Screen Fails (Baseline)
-    expr: pl.col("event_count").filter((pl.col("event_type") == "screen_fail") & (pl.col("scenario") == "baseline")).sum()
+    expr: sum(where(event_count, event_type == "screen_fail" and scenario == "baseline"))
   - name: screen_failure_rate
     label: Screen Failure Rate
     format: percent
     description: Share of actual screened patients who failed screening.
     expr: >
-      pl.col("event_count").filter((pl.col("event_type") == "screen_fail") & (pl.col("scenario") == "actual")).sum()
-      / pl.col("event_count").filter((pl.col("event_type") == "screened") & (pl.col("scenario") == "actual")).sum()
+      sum(where(event_count, event_type == "screen_fail" and scenario == "actual"))
+      / sum(where(event_count, event_type == "screened" and scenario == "actual"))
   - name: randomisation_rate
     label: Randomisation Rate
     format: percent
     description: Share of actual screened patients who were randomised.
     expr: >
-      pl.col("event_count").filter((pl.col("event_type") == "randomised") & (pl.col("scenario") == "actual")).sum()
-      / pl.col("event_count").filter((pl.col("event_type") == "screened") & (pl.col("scenario") == "actual")).sum()
+      sum(where(event_count, event_type == "randomised" and scenario == "actual"))
+      / sum(where(event_count, event_type == "screened" and scenario == "actual"))
   - name: recruitment_vs_plan
     label: Recruitment vs Plan
     format: percent
     description: Actual randomisations as a share of planned (baseline) randomisations.
     expr: >
-      pl.col("event_count").filter((pl.col("event_type") == "randomised") & (pl.col("scenario") == "actual")).sum()
-      / pl.col("event_count").filter((pl.col("event_type") == "randomised") & (pl.col("scenario") == "baseline")).sum()
+      sum(where(event_count, event_type == "randomised" and scenario == "actual"))
+      / sum(where(event_count, event_type == "randomised" and scenario == "baseline"))
   # A measure defined over an intermediary step: `frame` builds a derived lazy
   # frame (one row per study: months from first actual randomisation to the
   # month cumulative randomisations crossed 75% of the study's total), and

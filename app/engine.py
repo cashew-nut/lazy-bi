@@ -15,8 +15,8 @@ from typing import Any, Optional
 
 import polars as pl
 
-from . import config
-from .semantic import ImportBinding, Model, ModelError, Source, TIME_GRAINS, compile_expr, compile_frame
+from . import config, measure_dsl
+from .semantic import ImportBinding, Model, ModelError, Source, TIME_GRAINS, compile_frame
 
 FILTER_OPS = {"eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in", "contains"}
 
@@ -353,6 +353,11 @@ def run_query(model: Model, query: dict) -> dict:
     for m in query.get("inline_measures") or []:
         if not m.get("name") or not m.get("expr"):
             raise QueryError("inline measures need a name and an expr")
+        if m.get("frame") or m.get("frame_emits"):
+            raise QueryError(
+                f"measure '{m['name']}': frame-based measures require an authenticated "
+                "model-measure save; they are never available as inline/query-time measures"
+            )
         inline[m["name"]] = m
     # split measures into plain aggregations (applied in one group_by over the
     # scan) and framed measures, whose expr aggregates over a derived
@@ -362,12 +367,17 @@ def run_query(model: Model, query: dict) -> dict:
     try:
         for m in measure_names:
             if m in inline:
-                frame_source = inline[m].get("frame")
-                emits = set(inline[m].get("frame_emits") or [])
-                expr = compile_expr(inline[m]["expr"], f"measure '{m}'").alias(m)
+                # inline measures are never framed (T004/T005 above already
+                # reject frame/frame_emits on the way in) and always compile
+                # through the safe DSL — never eval, regardless of caller.
+                frame_source, emits = None, set()
+                try:
+                    expr = measure_dsl.compile_measure(inline[m]["expr"], schema, alias=m)
+                except measure_dsl.MeasureCompileError as exc:
+                    raise QueryError(f"measure '{m}': {exc}") from exc
             else:
                 meas = model.measure(m)
-                frame_source, emits, expr = meas.frame_source, set(meas.frame_emits), meas.expr()
+                frame_source, emits, expr = meas.frame_source, set(meas.frame_emits), meas.expr(schema)
             if frame_source:
                 framed.append((m, frame_source, emits, expr))
             else:

@@ -57,5 +57,5 @@ def test_completion_engine_is_shared(client):
     assert 'from "./completion.js"' in editor
     # the vocabulary now lives only in the shared module, not duplicated in the lab
     assert client.get("/static/js/completion.js").status_code == 200
-    assert "const TOP_FNS" not in lab
-    assert "const TOP_FNS" in client.get("/static/js/completion.js").text
+    assert "const DSL_FUNCTIONS" not in lab
+    assert "const DSL_FUNCTIONS" in client.get("/static/js/completion.js").text

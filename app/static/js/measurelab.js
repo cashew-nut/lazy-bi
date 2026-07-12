@@ -5,7 +5,7 @@
 "use strict";
 
 import { buildQuery, refreshModels, renderBuilderViz, renderMeasures, scheduleRun, syncSortOptions } from "./builder.js";
-import { makeCompleter, polarsContext, polarsItems } from "./completion.js";
+import { dslContext, dslItems, makeCompleter } from "./completion.js";
 import { $, api, el, fmtMeasure } from "./lib.js";
 import { hooks, state } from "./state.js";
 
@@ -35,7 +35,7 @@ export function openLab(def = null) {
   $("#lab-label").value = (def && def.label) || "";
   $("#lab-format").value = (def && def.format) || "number";
   $("#lab-expr").value = (def && def.expr) || "";
-  setStatus('type an expression — <b>pl.</b>, <b>.</b> and <b>pl.col("</b> trigger suggestions');
+  setStatus('type an expression — e.g. <b>sum(revenue)</b>; <b>col("</b> triggers column suggestions');
   loadSchema();
   $("#lab-expr").focus();
 }
@@ -126,12 +126,32 @@ async function saveToVisual() {
   scheduleRun();
 }
 
+// Saving a measure to the model is an authoring action and requires the
+// minimal shared credential (see specs/008-safe-measure-compilation) — there
+// is no login system, so we just ask once per tab and cache in
+// sessionStorage, clearing it if the server ever rejects it.
+function measureCredentials() {
+  let key = sessionStorage.getItem("measureApiKey");
+  let author = sessionStorage.getItem("measureAuthor");
+  if (!key || !author) {
+    key = window.prompt("API key to save a model measure (ask your admin):", key || "") || "";
+    author = window.prompt("Your name (recorded on the measure's history):", author || "") || "";
+    sessionStorage.setItem("measureApiKey", key);
+    sessionStorage.setItem("measureAuthor", author);
+  }
+  return { key, author };
+}
+
 async function saveToModel() {
   const def = labDef();
   if (!def.name || !def.expr) return setStatus("needs a name and an expression", true);
+  const { key, author } = measureCredentials();
+  if (!key || !author) return setStatus("✗ saving to the model needs an API key and your name", true);
   setStatus("saving to model…");
   try {
-    await api(`/api/models/${state.model.name}/measures`, { method: "POST", body: def });
+    await api(`/api/models/${state.model.name}/measures`, {
+      method: "POST", body: def, headers: { "X-API-Key": key, "X-Author": author },
+    });
     // promoted: no longer visual-scoped
     state.inlineMeasures = state.inlineMeasures.filter((m) => m.name !== lab.editingName && m.name !== def.name);
     if (lab.editingName && lab.editingName !== def.name) {
@@ -141,6 +161,10 @@ async function saveToModel() {
     await refreshModels();   // measure now appears as a regular model measure
     closeLab(false);
   } catch (err) {
+    if (err.message.includes("API-Key") || err.message.includes("Author")) {
+      sessionStorage.removeItem("measureApiKey");
+      sessionStorage.removeItem("measureAuthor");
+    }
     setStatus("✗ " + err.message, true);
   }
 }
@@ -149,9 +173,9 @@ async function saveToModel() {
 
 // resolve the measure-lab textarea against the model's source columns
 function labResolve(upto, after, caret) {
-  const ctx = polarsContext(upto, caret);
+  const ctx = dslContext(upto, caret);
   if (!ctx) return null;
-  return { items: polarsItems(ctx, lab.schema, after), start: ctx.start };
+  return { items: dslItems(ctx, lab.schema, after), start: ctx.start };
 }
 
 // ── wiring ───────────────────────────────────────────────────
