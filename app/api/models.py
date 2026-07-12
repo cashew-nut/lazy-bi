@@ -52,6 +52,14 @@ class MeasureSpec(BaseModel):
     label: str = ""
     format: str = "number"
     description: str = ""
+    # framed measures (multi-step derived-frame logic) round-trip through the
+    # guided form like any other spec field — MeasureIn's auth gate governs
+    # who may *save* one via the measure-lab path, not whether the form can
+    # see/edit one that already exists on the model (see spec 008 §edge
+    # cases: "hand-edits outside the API" are out of scope to reconcile, and
+    # the whole-model yaml save routes below have never required auth).
+    frame: Optional[str] = None
+    frame_emits: list[str] = []
 
 
 class JoinSpec(BaseModel):
@@ -232,6 +240,46 @@ def model_schema(name: str):
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"source not reachable: {exc}")
     return {"columns": [{"name": n, "dtype": str(t)} for n, t in schema.items()]}
+
+
+class MeasureCheckIn(BaseModel):
+    """A single measure's would-be definition, checked without needing a
+    saved model to validate against — the guided form's source of live,
+    per-row ✓/✗ feedback while a measure is still being typed. Mirrors the
+    checks `_parse_model`/`_validate_measure_body` run at load/save time, but
+    takes candidate names straight from the caller instead of a live scan."""
+    expr: str = ""
+    frame: Optional[str] = None
+    frame_emits: list[str] = []
+    columns: list[str] = []        # source column names, for a plain/window-free expr
+    measure_names: list[str] = []  # sibling measure names, for a window expr (running_total/lag)
+
+
+@router.post("/measures/check")
+def check_measure(body: MeasureCheckIn):
+    if body.frame:
+        # a framed measure still needs its aggregation expr — an empty one
+        # compiles fine as a no-op `exec` (validate_frame wouldn't catch it)
+        # but load_model's compile_expr(m.expr) always runs and fails on it
+        if not body.expr.strip():
+            return {"ok": False, "error": "measure needs an expression", "window": False}
+        try:
+            semantic.validate_frame(body.frame, "measure")
+            semantic.compile_expr(body.expr, "measure")
+        except semantic.ModelError as exc:
+            return {"ok": False, "error": str(exc), "window": False}
+        return {"ok": True, "error": None, "window": False}
+    if body.frame_emits:
+        return {"ok": False, "error": "'frame_emits' needs a 'frame'", "window": False}
+    if not body.expr.strip():
+        return {"ok": False, "error": "measure needs an expression", "window": False}
+    try:
+        is_window = measure_dsl.is_window_expr(body.expr)
+        schema = set(body.measure_names) if is_window else set(body.columns)
+        measure_dsl.compile_measure(body.expr, schema, alias="_check")
+    except measure_dsl.MeasureCompileError as exc:
+        return {"ok": False, "error": str(exc), "window": False}
+    return {"ok": True, "error": None, "window": is_window}
 
 
 def _validate_measure_body(model: semantic.Model, m: MeasureIn) -> None:

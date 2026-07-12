@@ -97,6 +97,10 @@ export function makeCompleter(textarea, box, resolve, onApply) {
     textarea.selectionStart = textarea.selectionEnd = caret;
     textarea.focus();
     hide();
+    // setting .value programmatically fires no native "input" event, but
+    // callers rely on one (e.g. to mirror the field into their own state) —
+    // dispatch it ourselves so an applied suggestion looks like a keystroke
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
     update();          // e.g. col("") immediately offers columns
     if (onApply) onApply();
   }

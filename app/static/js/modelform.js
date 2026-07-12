@@ -8,6 +8,7 @@
 "use strict";
 
 import { refreshModels } from "./builder.js";
+import { dslContext, dslItems, makeCompleter } from "./completion.js";
 import { openEditor } from "./editor.js";
 import {
   colsOf, datasetCards, loadDatasets, manualPathRow, NAME_RE, note, pairRow,
@@ -57,7 +58,12 @@ function toSpec() {
       bundle: i.bundle, anchor_dataset: i.anchor, datasets: i.datasets, ...pairsOf(i.pairs),
     })),
     dimensions: form.dimensions,
-    measures: form.measures.filter((m) => m.name.trim() && m.expr.trim()),
+    measures: form.measures
+      .filter((m) => m.name.trim() && m.expr.trim())
+      .map((m) => ({
+        name: m.name, label: m.label, expr: m.expr, format: m.format, description: m.description,
+        ...(hasFrame(m) ? { frame: m.frame, frame_emits: m.frame_emits || [] } : {}),
+      })),
   };
 }
 
@@ -343,7 +349,9 @@ async function renderShape(main) {
   main.append(dimBox);
 
   main.append(el("div", { class: "sec-title", style: "margin-top:14px" }, "Measures"));
-  main.append(note("polars aggregation expressions — every measure must reduce to one value per group"));
+  main.append(note("safe DSL expressions (e.g. sum(revenue), mean(price)) — every measure must reduce to one "
+    + "value per group. A measure can also be marked complex to add a derived-frame step (group-by/window logic "
+    + "over multiple rows) ahead of its aggregation."));
   const measBox = el("div");
   main.append(measBox);
   renderMeasures(measBox);
@@ -415,25 +423,175 @@ function renderDims(box) {
   box.append(rows);
 }
 
+const FRAME_TEMPLATE =
+  `frame = (\n    lf.group_by(dims)\n    .agg(pl.col("...").sum())\n)`;
+
+const blankMeasure = () => ({ name: "", label: "", expr: "", format: "number", description: "" });
+const blankFramedMeasure = () =>
+  ({ name: "", label: "", expr: "", format: "number", description: "", frame: FRAME_TEMPLATE, frame_emits: [] });
+
+// the one place that decides whether a measure counts as "framed" — blank
+// frame text (e.g. cleared by the author) reverts it to a plain measure
+// rather than saving/rendering it as an empty, invisible frame
+const hasFrame = (m) => !!(m.frame && m.frame.trim());
+
+// combined completion pool for a plain measure's expr: source columns (from
+// the last successful /models/generate) plus sibling measure names — a bare
+// identifier is one or the other depending on whether the expr turns out to
+// be a window measure (running_total()/lag()), which the client can't know
+// until it parses, so both are offered
+function exprColumns() {
+  const cols = generated?.columns || modelColumns();
+  const names = new Set(cols.map((c) => c.name));
+  const measureNames = form.measures.map((m) => m.name).filter((n) => n && !names.has(n));
+  return [...cols, ...measureNames.map((n) => ({ name: n, dtype: "measure" }))];
+}
+
+// ── live per-row validation (POST /api/measures/check) ──
+
+const checkTimers = new WeakMap();
+function scheduleCheck(m, statusEl) {
+  clearTimeout(checkTimers.get(m));
+  checkTimers.set(m, setTimeout(() => runCheck(m, statusEl), 400));
+}
+
+async function runCheck(m, statusEl) {
+  const framed = hasFrame(m);
+  const hasBody = framed ? true : m.expr.trim();
+  if (!m.name.trim() || !hasBody) { statusEl.innerHTML = ""; return; }
+  statusEl.innerHTML = '<span class="pending">checking…</span>';
+  const body = {
+    expr: m.expr || "",
+    frame: framed ? m.frame : null,
+    frame_emits: framed ? (m.frame_emits || []) : [],
+    columns: (generated?.columns || modelColumns()).map((c) => c.name),
+    measure_names: form.measures.map((x) => x.name).filter((n) => n && n !== m.name),
+  };
+  let res;
+  try {
+    res = await api("/api/measures/check", { method: "POST", body });
+  } catch (err) {
+    statusEl.innerHTML = `<span class="err">✗ ${err.message}</span>`;
+    return;
+  }
+  statusEl.innerHTML = res.ok
+    ? `<span class="ok">✓ ${res.window ? "valid — window measure" : "valid"}</span>`
+    : `<span class="err">✗ ${res.error}</span>`;
+}
+
+// dimensions the model has declared so far, offered as frame_emits candidates
+// (frame_emits names dimension(s) the frame recomputes itself — e.g. a
+// per-entity milestone date — see clinical_ops_recruitment.yaml)
+function frameEmitsPicker(m, box) {
+  const wrap = el("div", { class: "mf-subset" });
+  if (!form.dimensions.length) {
+    wrap.append(note("declare a dimension above to offer it here, or type its name once the frame computes it"));
+    return wrap;
+  }
+  for (const d of form.dimensions) {
+    const on = (m.frame_emits || []).includes(d.name);
+    const chip = el("button", { class: "chip" + (on ? " on" : "") },
+      el("span", { class: "tick" }, on ? "✓" : ""), el("span", { class: "lbl" }, d.name));
+    chip.addEventListener("click", () => {
+      m.frame_emits = on ? (m.frame_emits || []).filter((x) => x !== d.name) : [...(m.frame_emits || []), d.name];
+      markDirty();
+      renderMeasures(box);
+    });
+    wrap.append(chip);
+  }
+  return wrap;
+}
+
+function measureCard(m, idx, box) {
+  const isFramed = hasFrame(m);
+  const card = el("div", { class: "mf-measure-card" + (isFramed ? " framed" : "") });
+  const status = el("div", { class: "mf-measure-status" });
+
+  const name = el("input", { value: m.name, placeholder: "measure_name", spellcheck: "false" });
+  name.addEventListener("input", () => { m.name = name.value; markDirty(); scheduleCheck(m, status); });
+  const label = el("input", { value: m.label, placeholder: "Label", spellcheck: "false" });
+  label.addEventListener("input", () => { m.label = label.value; markDirty(); });
+  const fmt = el("select", {}, ...["number", "currency", "percent"].map((f) => el("option", { value: f }, f)));
+  fmt.value = m.format;
+  fmt.addEventListener("change", () => { m.format = fmt.value; markDirty(); });
+  const toggle = el("button", {
+    class: "btn plain", title: isFramed
+      ? "drop the frame step and go back to a plain expression"
+      : "add a derived-frame step ahead of this measure's aggregation",
+  }, isFramed ? "✕ FRAME" : "+ FRAME");
+  toggle.addEventListener("click", () => {
+    if (isFramed) { m.frame = null; m.frame_emits = []; } else { m.frame = FRAME_TEMPLATE; m.frame_emits = []; }
+    markDirty();
+    renderMeasures(box);
+  });
+  const rm = el("button", { class: "rm", title: "remove measure" }, "✕");
+  rm.addEventListener("click", () => { form.measures.splice(idx, 1); markDirty(); renderMeasures(box); });
+
+  const head = el("div", { class: "mf-measure" }, name, label, fmt,
+    ...(isFramed ? [el("span", { class: "mf-badge" }, "⚡ COMPLEX")] : []), toggle, rm);
+  card.append(head);
+
+  if (isFramed) {
+    card.append(note("frame: builds a derived LazyFrame ahead of the aggregation below — lf (filtered scan), "
+      + "dims (the query's other grouping columns) and pl are in scope; assign the result to `frame`. This is the "
+      + "same authenticated-only escape hatch as the measure lab's \"complex measure\" — plain expression measures "
+      + "can't reach it."));
+    const frameWrap = el("div", { class: "mf-expr-wrap" });
+    const frameTa = el("textarea", { class: "mf-frame", rows: "7", spellcheck: "false" });
+    frameTa.value = m.frame || "";
+    const frameSuggest = el("div", { class: "mf-suggest" });
+    frameSuggest.hidden = true;
+    // only the col("...") trigger applies inside frame python (no bare-name/
+    // function completion — that vocabulary belongs to the DSL, not this
+    // eval-based escape hatch)
+    const frameCompleter = makeCompleter(frameTa, frameSuggest, (upto, after, caret) => {
+      const ctx = dslContext(upto, caret);
+      return ctx && ctx.kind === "col" ? { items: dslItems(ctx, exprColumns(), after), start: ctx.start } : null;
+    });
+    frameTa.addEventListener("input", () => {
+      m.frame = frameTa.value; markDirty(); frameCompleter.update(); scheduleCheck(m, status);
+    });
+    frameTa.addEventListener("keydown", (e) => frameCompleter.onKeydown(e));
+    frameTa.addEventListener("blur", () => setTimeout(() => frameCompleter.hide(), 150));
+    frameWrap.append(frameTa, frameSuggest);
+    card.append(frameWrap);
+
+    card.append(el("div", { class: "field-label", style: "margin-top:8px" }, "FRAME_EMITS · dimensions the frame computes itself"));
+    card.append(frameEmitsPicker(m, box));
+
+    card.append(el("div", { class: "field-label", style: "margin-top:8px" }, "EXPR · aggregates the frame's own output columns"));
+    const expr = el("input", { class: "mf-expr", value: m.expr, placeholder: 'pl.col("...").median()', spellcheck: "false" });
+    expr.addEventListener("input", () => { m.expr = expr.value; markDirty(); scheduleCheck(m, status); });
+    card.append(expr);
+  } else {
+    const exprWrap = el("div", { class: "mf-expr-wrap" });
+    const expr = el("input", { class: "mf-expr", value: m.expr, placeholder: "mean(unit_price)", spellcheck: "false" });
+    const suggest = el("div", { class: "mf-suggest" });
+    suggest.hidden = true;
+    const completer = makeCompleter(expr, suggest, (upto, after, caret) => {
+      const ctx = dslContext(upto, caret);
+      return ctx ? { items: dslItems(ctx, exprColumns(), after), start: ctx.start } : null;
+    }, () => scheduleCheck(m, status));
+    expr.addEventListener("input", () => { m.expr = expr.value; markDirty(); completer.update(); scheduleCheck(m, status); });
+    expr.addEventListener("keydown", (e) => completer.onKeydown(e));
+    expr.addEventListener("blur", () => setTimeout(() => completer.hide(), 150));
+    exprWrap.append(expr, suggest);
+    card.append(exprWrap);
+  }
+
+  card.append(status);
+  scheduleCheck(m, status);
+  return card;
+}
+
 function renderMeasures(box) {
   box.innerHTML = "";
-  form.measures.forEach((m, idx) => {
-    const name = el("input", { value: m.name, placeholder: "measure_name", spellcheck: "false" });
-    name.addEventListener("input", () => { m.name = name.value; markDirty(); });
-    const label = el("input", { value: m.label, placeholder: "Label", spellcheck: "false" });
-    label.addEventListener("input", () => { m.label = label.value; markDirty(); });
-    const fmt = el("select", {}, ...["number", "currency", "percent"].map((f) => el("option", { value: f }, f)));
-    fmt.value = m.format;
-    fmt.addEventListener("change", () => { m.format = fmt.value; markDirty(); });
-    const expr = el("input", { class: "mf-expr", value: m.expr, placeholder: "mean(unit_price)", spellcheck: "false" });
-    expr.addEventListener("input", () => { m.expr = expr.value; markDirty(); });
-    const rm = el("button", { class: "rm", title: "remove measure" }, "✕");
-    rm.addEventListener("click", () => { form.measures.splice(idx, 1); markDirty(); renderMeasures(box); });
-    box.append(el("div", { class: "mf-measure" }, name, label, fmt, expr, rm));
-  });
+  form.measures.forEach((m, idx) => box.append(measureCard(m, idx, box)));
   const add = el("button", { class: "ghost" }, "+ add measure");
-  add.addEventListener("click", () => { form.measures.push({ name: "", label: "", expr: "", format: "number", description: "" }); markDirty(); renderMeasures(box); });
-  box.append(el("div", { class: "mf-quick-slot" }), add);
+  add.addEventListener("click", () => { form.measures.push(blankMeasure()); markDirty(); renderMeasures(box); });
+  const addFramed = el("button", { class: "ghost" }, "+ add complex measure (frame)");
+  addFramed.addEventListener("click", () => { form.measures.push(blankFramedMeasure()); markDirty(); renderMeasures(box); });
+  box.append(el("div", { class: "mf-quick-slot" }), el("div", { class: "mf-measure-actions" }, add, addFramed));
 }
 
 function renderQuickAdd(measBox) {

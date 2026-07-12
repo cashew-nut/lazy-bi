@@ -656,11 +656,50 @@ button.ghost.mk-new { margin-top: 2px; }
 .mf-dim-row.imported .tick { color: var(--pink); }
 .mf-dim-col { color: var(--ink-2); }
 .mf-warn { color: #e8b339; font-size: 11px; margin-bottom: 8px; }
-.mf-measure { display: flex; gap: 8px; margin-bottom: 6px; }
+.mf-measure-card {
+  border: 1px solid var(--line); border-radius: 4px; padding: 8px 10px;
+  margin-bottom: 8px; background: var(--panel-2);
+}
+.mf-measure-card.framed { border-color: rgba(255, 46, 210, 0.35); }
+.mf-measure { display: flex; gap: 8px; align-items: center; }
 .mf-measure input:nth-child(1) { width: 170px; flex: none; }
 .mf-measure input:nth-child(2) { width: 150px; flex: none; }
 .mf-measure select { width: 100px; flex: none; }
-.mf-measure .mf-expr { flex: 1; font-family: var(--mono); }
+.mf-badge {
+  flex: none; font-size: 9px; letter-spacing: 1px; color: var(--pink);
+  border: 1px solid rgba(255, 46, 210, 0.4); border-radius: 2px; padding: 3px 6px;
+  text-shadow: 0 0 6px rgba(255, 46, 210, 0.4);
+}
+.mf-measure .btn { flex: none; padding: 5px 9px; font-size: 10px; }
+.mf-expr-wrap { position: relative; margin-top: 6px; }
+.mf-expr { width: 100%; font-family: var(--mono); }
+.mf-frame {
+  width: 100%; resize: vertical; min-height: 90px; margin-top: 6px;
+  background: var(--bg); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 3px;
+  font-family: var(--mono); font-size: 12px; line-height: 1.5;
+  padding: 8px 10px; outline: none;
+}
+.mf-frame:focus { border-color: var(--pink); box-shadow: 0 0 8px rgba(255, 46, 210, 0.25); }
+.mf-measure-card.framed .mf-expr { margin-top: 6px; }
+.mf-suggest {
+  position: absolute; left: 0; top: 100%; z-index: 50;
+  min-width: 320px; max-width: 480px;
+  background: #0c1524; border: 1px solid var(--neon); border-radius: 3px;
+  box-shadow: 0 6px 20px rgba(0, 229, 255, 0.2);
+  font-size: 12px;
+}
+.mf-suggest .sug {
+  display: flex; justify-content: space-between; gap: 18px;
+  padding: 5px 10px; cursor: pointer; color: var(--ink);
+}
+.mf-suggest .sug .hint { color: var(--ink-3); font-size: 10px; }
+.mf-suggest .sug.sel, .mf-suggest .sug:hover { background: rgba(0, 229, 255, 0.14); }
+.mf-measure-status { font-size: 10.5px; letter-spacing: 0.3px; margin-top: 6px; min-height: 13px; }
+.mf-measure-status .ok { color: #2bd97c; text-shadow: 0 0 6px rgba(43, 217, 124, 0.4); }
+.mf-measure-status .err { color: var(--bad); }
+.mf-measure-status .pending { color: var(--ink-3); }
+.mf-measure-actions { display: flex; gap: 8px; }
 .mf-quick { display: flex; align-items: center; gap: 8px; margin: 10px 0 8px; }
 .mf-quick select { width: auto; }
 .mf-yaml {

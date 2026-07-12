@@ -161,6 +161,84 @@ def test_dataset_schema_bad_format_is_400(client):
     assert res.status_code == 400
 
 
+# ── framed measures survive the guided form (regression: MeasureSpec used to
+#    drop `frame`/`frame_emits`, so opening/regenerating a model with a framed
+#    measure through the form silently stripped it and the reconstituted
+#    yaml then failed to compile — "the form says the model is invalid") ──
+
+def test_clinical_ops_spec_includes_frame(client):
+    spec = client.get("/api/models/clinical_ops_recruitment/spec").json()["spec"]
+    framed = next(m for m in spec["measures"] if m["name"] == "median_months_to_75pct_randomised")
+    assert framed["frame"] and "group_by" in framed["frame"]
+    assert framed["frame_emits"] == ["event_date"]
+
+
+def test_clinical_ops_generate_round_trips_frame(client):
+    """The exact form flow: GET .../spec -> POST /models/generate — must stay
+    ok and keep the frame block, not silently regenerate a broken measure."""
+    spec = client.get("/api/models/clinical_ops_recruitment/spec").json()["spec"]
+    body = client.post("/api/models/generate", json=spec).json()
+    assert body["ok"] is True, body.get("error")
+    assert "frame:" in body["yaml"]
+    assert "frame_emits:" in body["yaml"]
+    check = client.post("/api/models/validate", json={"yaml": body["yaml"]}).json()
+    assert check["ok"] is True, check.get("error")
+
+
+# ── /api/measures/check: the form's live per-row validation ─────
+
+def test_measure_check_valid_dsl(client):
+    res = client.post("/api/measures/check", json={"expr": "sum(revenue)", "columns": ["revenue"]})
+    assert res.json() == {"ok": True, "error": None, "window": False}
+
+
+def test_measure_check_unknown_column(client):
+    res = client.post("/api/measures/check", json={"expr": "sum(nope)", "columns": ["revenue"]}).json()
+    assert res["ok"] is False
+    assert "nope" in res["error"]
+
+
+def test_measure_check_window_expr_uses_measure_names(client):
+    res = client.post("/api/measures/check", json={
+        "expr": "running_total(revenue)", "columns": ["revenue"], "measure_names": ["revenue"],
+    }).json()
+    assert res == {"ok": True, "error": None, "window": True}
+    # a raw column that isn't also a sibling measure name is rejected in window mode
+    bad = client.post("/api/measures/check", json={
+        "expr": "running_total(cost)", "columns": ["cost"], "measure_names": ["revenue"],
+    }).json()
+    assert bad["ok"] is False
+
+
+def test_measure_check_frame_ok_and_bad_syntax(client):
+    ok = client.post("/api/measures/check", json={
+        "expr": "pl.col(\"x\").median()",
+        "frame": "frame = lf.group_by(dims).agg(pl.col('x').sum())",
+    }).json()
+    assert ok == {"ok": True, "error": None, "window": False}
+    bad = client.post("/api/measures/check", json={"expr": "x", "frame": "frame = ("}).json()
+    assert bad["ok"] is False
+    assert "syntax" in bad["error"]
+
+
+def test_measure_check_frame_emits_without_frame(client):
+    res = client.post("/api/measures/check", json={"expr": "sum(x)", "frame_emits": ["event_date"]}).json()
+    assert res["ok"] is False
+    assert "frame_emits" in res["error"]
+
+
+def test_measure_check_framed_requires_an_expr(client):
+    """A framed measure with valid frame syntax but a blank aggregation expr
+    must not be reported ok — the real load path (Measure.expr() ->
+    compile_expr) always requires one, even though validate_frame alone
+    (an empty snippet compiles fine as a no-op) wouldn't catch it."""
+    res = client.post("/api/measures/check", json={
+        "expr": "", "frame": "frame = lf.group_by(dims).agg(pl.col('x').sum())",
+    }).json()
+    assert res["ok"] is False
+    assert "expression" in res["error"]
+
+
 # ── redesign IA guards (static) ─────────────────────────────────
 
 def test_modelform_view_present(client):
