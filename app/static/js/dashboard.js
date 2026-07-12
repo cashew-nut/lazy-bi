@@ -137,8 +137,13 @@ const unionSrcModel = (dim, field) =>
 // matches exactly (name is compared by the caller) — values as a set
 // (order-independent, de-duped) plus an exact default match (FR-014)
 export function sameParamDef(a, b) {
-  const av = [...new Set(a.values)].sort((x, y) => x - y);
-  const bv = [...new Set(b.values)].sort((x, y) => x - y);
+  const aType = a.type || "int";
+  const bType = b.type || "int";
+  if (aType !== bType) return false;
+  // numeric types sort numerically; string sorts lexicographically (default)
+  const sorter = aType === "string" ? undefined : (x, y) => x - y;
+  const av = [...new Set(a.values)].sort(sorter);
+  const bv = [...new Set(b.values)].sort(sorter);
   return a.default === b.default && av.length === bv.length && av.every((v, i) => v === bv[i]);
 }
 

@@ -200,37 +200,59 @@ zero or more than one is rejected with a clear error. Window measures follow
 the same trust model as everything else here: inline/query-time and saved
 model measures compile through the identical allowlist, no distinction.
 
-#### Visual parameters: a viewer-toggleable `lag()` offset
+#### Visual parameters: viewer-toggleable, typed values anywhere a literal is legal
 
-A visual can declare a named parameter — a fixed list of allowed integer
-values plus a default — and a `lag()` measure on that same visual can
-reference it instead of a literal period count:
+A visual can declare a named parameter — a fixed list of allowed values
+plus a default, typed as `int`, `float`, or `string` (omit `type` for
+`int`, matching every parameter declared before this existed) — and
+reference it from `param('name')` anywhere a literal constant is already
+legal in a measure: comparisons, `if_()`'s predicate and branches,
+`coalesce()`'s arguments, `where()`'s predicate, `cast()`'s value
+argument, and `lag()`'s periods argument.
 
 ```
-period_list = [1, 2, 3, 4], default 1
+period_list = [1, 2, 3, 4]  (int, default 1)
 revenue_lag = lag(revenue, param('period_list'))
+
+threshold = [10, 50.5, 100]  (float, default 50.5)
+flagged_revenue = if_(revenue > param('threshold'), revenue, 0)
+
+target_channel = ["online", "retail"]  (string, default "online")
+channel_orders = count(where(channel, channel == param('target_channel')))
 ```
 
-Whoever is viewing the visual gets a control listing `period_list`'s
-declared values; picking one re-runs the query with that shift amount,
-with no expression editing involved. `param('name')` is legal in exactly
-one place — `lag()`'s second argument — nothing else in the DSL accepts
-it, so this stays fully inside the same allowlisting compiler as every
-other measure (see "The safe measure DSL" above): the server only ever
-substitutes one of the parameter's own declared values, never an
-arbitrary one, the same way `partition_by`/`order_by` are threaded in from
-query context today. Because a parameter is visual-scoped context a
-shared model measure never has, a measure referencing one can only be
+Whoever is viewing the visual gets a control listing the parameter's
+declared values (a text picker for `string`, numeric for `int`/`float`);
+picking one re-runs the query with that value, no expression editing
+involved. `lag()`'s periods argument keeps one extra rule on top of the
+general case: whatever resolves there must be a genuine `int` — a
+`float`-typed parameter is rejected there even when its value is
+numerically whole (e.g. `2.0`), and `cast()`'s *type-name* argument (its
+`"int"`/`"float"`/`"str"`/`"bool"` string) never accepts `param()` at all,
+only its value argument does. This all stays fully inside the same
+allowlisting compiler as every other measure (see "The safe measure DSL"
+above): the server only ever substitutes one of the parameter's own
+declared, correctly-typed values, never an arbitrary one, the same way
+`partition_by`/`order_by` are threaded in from query context today.
+Because a parameter is visual-scoped context a shared model measure never
+has, a measure referencing one — in any position — can only be
 **SAVE TO VISUAL**'d, never promoted to the model — see "The measure lab"
 below.
 
 On a dashboard, a parameter's current selection is saved per named view,
-alongside its filters. If two tiles' visuals declare a parameter with the
-same name *and* an identical definition (same values, same default), the
-dashboard shows one shared control that drives both; if the definitions
-differ, the dashboard refuses to let both visuals sit on it together
-(add-tile and every dashboard save both enforce this — see
-`specs/009-visual-parameters/`).
+alongside its filters (in portal/viewer mode, toggling a parameter stays
+session-local and is never written back, matching how filters already
+behave there). If two tiles' visuals declare a parameter with the same
+name *and* an identical definition (same type, same values, same
+default), the dashboard shows one shared control that drives both; if the
+definitions differ — including a type mismatch alone, even when the
+values happen to look similar (`int` `[1,2,3]` vs. `string`
+`["1","2","3"]`) — the dashboard refuses to let both visuals sit on it
+together (add-tile and every dashboard save both enforce this — see
+`specs/009-visual-parameters/` and `specs/010-parameter-type-
+generalization/`). Wiring a parameter into a dashboard/visual *filter*
+(as opposed to a measure expression) isn't built — a distinct, larger
+feature touching the filter subsystem instead of the measure DSL.
 
 ### Measures over an intermediary frame (authenticated model measures only)
 
@@ -442,9 +464,11 @@ source columns, *and* sibling measures (model measures plus this visual's
 other inline measures, since a bare name inside `running_total()`/`lag()`
 means a measure, not a column, and the client can't know which mode an
 expression is in until it parses); `col("` offers the source's columns
-(post-join, with dtypes); `param('` — legal only as `lag()`'s periods
-argument — offers this visual's declared parameters, each hinting its
-values and default. Every keystroke re-runs the current query with the
+(post-join, with dtypes); `param('` offers this visual's declared
+parameters, each hinting its type, values, and default (legal anywhere a
+literal is legal in the DSL — comparisons, `if_()`, `coalesce()`,
+`where()`, `cast()`'s value argument, `lag()`'s periods argument). Every
+keystroke re-runs the current query with the
 draft measure so it renders live in the chart (with the value shown
 directly when there are no dimensions). Two save paths:
 
@@ -522,16 +546,20 @@ Query shape:
   "filters": [{"field": "segment", "op": "in", "values": ["corpo", "solo"]}],
   "sort": {"by": "revenue", "desc": true},
   "limit": 1000,
-  "parameters": [{"name": "period_list", "values": [1, 2, 3, 4], "default": 1}],
-  "parameter_values": {"period_list": 2}
+  "parameters": [
+    {"name": "period_list", "type": "int", "values": [1, 2, 3, 4], "default": 1},
+    {"name": "threshold", "type": "float", "values": [10, 50.5, 100], "default": 50.5}
+  ],
+  "parameter_values": {"period_list": 2, "threshold": 100}
 }
 ```
 
 Filter ops: `eq ne gt gte lt lte in not_in contains`. `parameters` declares
 a visual's parameters (travels with the query the same way `inline_measures`
-does); `parameter_values` is the caller's current pick per parameter —
-missing a name falls back to that parameter's own default, and any value
-outside its declared list rejects the whole query before anything runs. A
+does) — `type` is `int`/`float`/`string`, omitted meaning `int`; `parameter_values`
+is the caller's current pick per parameter — missing a name falls back to
+that parameter's own default, and any value outside its declared list (or
+of the wrong type) rejects the whole query before anything runs. A
 dashboard view's saved `parameters: {name: value}` map (alongside its
 `filters`) is what a dashboard tile's query pulls this from.
 

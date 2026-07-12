@@ -622,3 +622,105 @@ def test_resolve_parameter_values_helper_directly():
         engine.resolve_parameter_values(
             [{"name": "period_list", "values": [1, 2, 3, 4], "default": 1}], {"period_list": 99},
         )
+
+
+# --- Parameter types (specs/010-parameter-type-generalization) -------------
+
+def test_param_type_ok_float_accepts_json_integer_shape():
+    # JSON/JS have one numeric type — a float parameter's values routinely
+    # arrive as JSON integers from a well-behaved frontend (research.md §5)
+    assert engine.param_type_ok(100, "float") is True
+    assert engine.param_type_ok(100.5, "float") is True
+    assert engine.param_type_ok(True, "float") is False  # bool is never numeric here
+
+
+def test_param_type_ok_int_rejects_float_shape():
+    assert engine.param_type_ok(5, "int") is True
+    assert engine.param_type_ok(5.0, "int") is False
+    assert engine.param_type_ok(True, "int") is False
+
+
+def test_param_type_ok_string():
+    assert engine.param_type_ok("east", "string") is True
+    assert engine.param_type_ok(1, "string") is False
+
+
+def test_coerce_param_value_float_always_returns_genuine_float():
+    coerced = engine.coerce_param_value(100, "float")
+    assert coerced == 100.0
+    assert isinstance(coerced, float)
+    assert engine.coerce_param_value("east", "string") == "east"
+    assert engine.coerce_param_value(5, "int") == 5
+
+
+def test_resolve_parameter_values_float_type_accepts_json_int_and_coerces():
+    resolved = engine.resolve_parameter_values(
+        [{"name": "threshold", "type": "float", "values": [10, 25.5, 100], "default": 25.5}],
+        {"threshold": 10},
+    )
+    assert resolved == {"threshold": 10.0}
+    assert isinstance(resolved["threshold"], float)
+
+
+def test_resolve_parameter_values_int_type_rejects_float_value():
+    with pytest.raises(engine.QueryError, match="does not match declared type"):
+        engine.resolve_parameter_values(
+            [{"name": "x", "type": "int", "values": [1, 2.5, 3], "default": 1}], {},
+        )
+
+
+def test_resolve_parameter_values_string_type_round_trips():
+    resolved = engine.resolve_parameter_values(
+        [{"name": "region", "type": "string", "values": ["east", "west"], "default": "east"}],
+        {"region": "west"},
+    )
+    assert resolved == {"region": "west"}
+
+
+def test_resolve_parameter_values_string_type_rejects_numeric_default():
+    with pytest.raises(engine.QueryError, match="not one of its declared values"):
+        engine.resolve_parameter_values(
+            [{"name": "region", "type": "string", "values": ["east", "west"], "default": 1}], {},
+        )
+
+
+def test_resolve_parameter_values_absent_type_behaves_as_int():
+    resolved_implicit = engine.resolve_parameter_values(
+        [{"name": "p", "values": [1, 2, 3], "default": 1}], {"p": 2},
+    )
+    resolved_explicit = engine.resolve_parameter_values(
+        [{"name": "p", "type": "int", "values": [1, 2, 3], "default": 1}], {"p": 2},
+    )
+    assert resolved_implicit == resolved_explicit == {"p": 2}
+    with pytest.raises(engine.QueryError, match="does not match declared type"):
+        engine.resolve_parameter_values([{"name": "p", "values": [1, 2.5], "default": 1}], {})
+
+
+def test_resolve_parameter_values_unsupported_type_rejected():
+    with pytest.raises(engine.QueryError, match="unsupported type"):
+        engine.resolve_parameter_values(
+            [{"name": "p", "type": "date", "values": ["2026-01-01"], "default": "2026-01-01"}], {},
+        )
+
+
+def test_query_with_float_param_in_comparison(models):
+    # aggregate-mode measure: bare identifiers are raw source columns, so
+    # this exercises param() inside where()'s predicate against a real
+    # column comparison, not a sibling-measure (window-mode) reference
+    inline = [{"name": "flagged_units", "expr": "sum(where(quantity, unit_price > param('threshold')))"}]
+    r = run(
+        models, "sales", dimensions=[], measures=["flagged_units"], inline_measures=inline,
+        parameters=[{"name": "threshold", "type": "float", "values": [10, 50.5, 100], "default": 50.5}],
+        parameter_values={"threshold": 10},
+    )
+    assert r["rows"]
+
+
+def test_query_with_string_param_in_comparison(models):
+    inline = [{"name": "flagged_units", "expr": "sum(where(quantity, channel == param('target_channel')))"}]
+    r = run(
+        models, "sales", dimensions=[], measures=["flagged_units"], inline_measures=inline,
+        parameters=[{"name": "target_channel", "type": "string", "values": ["online", "retail"], "default": "online"}],
+        parameter_values={"target_channel": "retail"},
+    )
+    assert r["rows"]

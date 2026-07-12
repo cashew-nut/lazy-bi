@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from .. import engine
 from ..registry import registry
 
 router = APIRouter(tags=["dashboards"])
@@ -27,9 +28,24 @@ def _norm_folder(folder: str) -> str:
 
 
 def _same_param_def(a: dict, b: dict) -> bool:
-    """FR-014: identical only if name (checked by the caller), values (as a
-    set), and default all match exactly."""
-    return set(a.get("values") or []) == set(b.get("values") or []) and a.get("default") == b.get("default")
+    """FR-012 (specs/010-parameter-type-generalization, extending spec 009's
+    FR-014): identical only if name (checked by the caller), type, values (as
+    a set), and default all match exactly. Type is compared first and
+    exactly — an absent type always means "int" on both sides, and no
+    cross-type coercion is applied (an int parameter and a string parameter
+    are never identical regardless of their values' contents). Values/
+    default are compared through engine.coerce_param_value so two visuals
+    whose values arrived via slightly different JSON shapes (e.g. a float
+    parameter's [1, 2, 3] vs [1.0, 2.0, 3.0]) still compare equal."""
+    a_type = a.get("type") or "int"
+    b_type = b.get("type") or "int"
+    if a_type != b_type:
+        return False
+    a_values = {engine.coerce_param_value(v, a_type) for v in (a.get("values") or [])}
+    b_values = {engine.coerce_param_value(v, b_type) for v in (b.get("values") or [])}
+    if a_values != b_values:
+        return False
+    return engine.coerce_param_value(a.get("default"), a_type) == engine.coerce_param_value(b.get("default"), b_type)
 
 
 def _check_param_conflicts(items: list[dict]) -> None:

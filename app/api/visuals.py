@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from .. import measure_dsl
+from .. import engine, measure_dsl
 from ..registry import registry
 
 router = APIRouter(tags=["visuals"])
@@ -20,7 +20,11 @@ def _validate_visual_spec(spec: dict) -> None:
     """Structural-only checks on a visual's declared parameters and any
     inline measure referencing them — mirrors app.engine.resolve_parameter_
     values' declaration checks (no query-time selection to validate here,
-    just the shape being saved) plus FR-006 (undeclared parameter refs)."""
+    just the shape being saved) plus FR-006 (undeclared parameter refs).
+    Type-aware since specs/010-parameter-type-generalization: reuses
+    engine.PARAM_TYPES/param_type_ok/coerce_param_value so a visual can
+    never save a parameter whose values/default don't match its declared
+    (or implicit int) type."""
     query = spec.get("query") or {}
     parameters = query.get("parameters") or []
     seen: set = set()
@@ -31,13 +35,29 @@ def _validate_visual_spec(spec: dict) -> None:
         if name in seen:
             raise HTTPException(status_code=400, detail=f"duplicate parameter '{name}'")
         seen.add(name)
+        type_name = p.get("type") or "int"
+        if type_name not in engine.PARAM_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"parameter '{name}' has unsupported type '{type_name}' "
+                       f"(expected one of {sorted(engine.PARAM_TYPES)})",
+            )
         values = p.get("values") or []
         if not values:
             raise HTTPException(status_code=400, detail=f"parameter '{name}' needs a non-empty list of values")
-        if p.get("default") not in values:
+        bad = [v for v in values if not engine.param_type_ok(v, type_name)]
+        if bad:
+            raise HTTPException(
+                status_code=400,
+                detail=f"parameter '{name}': value {bad[0]!r} does not match declared type '{type_name}'",
+            )
+        default = p.get("default")
+        coerced_values = {engine.coerce_param_value(v, type_name) for v in values}
+        if not engine.param_type_ok(default, type_name) or engine.coerce_param_value(default, type_name) not in coerced_values:
             raise HTTPException(
                 status_code=400, detail=f"parameter '{name}' default is not one of its declared values"
             )
+    declared_types = {p.get("name"): (p.get("type") or "int") for p in parameters if p.get("name")}
     for m in query.get("inline_measures") or []:
         expr = m.get("expr") or ""
         unknown = measure_dsl.referenced_parameter_names(expr) - seen
@@ -46,6 +66,17 @@ def _validate_visual_spec(spec: dict) -> None:
                 status_code=400,
                 detail=f"measure '{m.get('name')}': references undeclared parameter(s) {sorted(unknown)}",
             )
+        # lag()'s periods argument requires an int-typed parameter — this one
+        # position gets a save-time type check even without a full compile,
+        # since it's a purely structural (not schema-dependent) fact about
+        # the expression (specs/010-parameter-type-generalization US3)
+        for pname in measure_dsl.lag_period_param_names(expr):
+            if declared_types.get(pname) != "int":
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"measure '{m.get('name')}': lag()'s periods argument references parameter "
+                           f"'{pname}' (type '{declared_types.get(pname)}'), which must be int",
+                )
 
 
 @router.get("/visuals")

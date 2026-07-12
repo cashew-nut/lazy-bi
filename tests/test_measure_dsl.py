@@ -288,16 +288,89 @@ def test_param_wrong_arity_or_type_rejected(agg_schema):
     "running_total(param('period_list'))",
     "if_(param('period_list') > 1, revenue, 0)",
 ])
-def test_param_outside_lag_periods_rejected(agg_schema, text):
-    # param() is not in any function table — it's recognized only while
-    # parsing lag()'s second argument, so anywhere else it hits the
-    # pre-existing generic "unknown function" rejection
+def test_param_now_legal_outside_lag_periods(agg_schema, text):
+    # spec 010: param() is a general function in both _FUNCTIONS and
+    # _WINDOW_FUNCTIONS now, so it compiles anywhere build() already
+    # recurses — not just lag()'s periods argument (spec 009's narrower
+    # scope). See specs/010-parameter-type-generalization.
+    expr = compile_measure(
+        text, agg_schema, alias="ok",
+        partition_by=["region"], order_by="quarter", parameter_values={"period_list": 2},
+    )
+    assert expr is not None
+
+
+def test_param_still_illegal_in_literal_collection(schema):
+    # 'in'/'not in' still requires every element to be a literal ast.Constant
+    # — param() there is out of scope for this feature (contracts/
+    # compile_measure_param_types.md's "Non-goals")
     with pytest.raises(MeasureCompileError) as exc:
-        compile_measure(
-            text, agg_schema, alias="bad",
-            partition_by=["region"], order_by="quarter", parameter_values={"period_list": 2},
-        )
-    assert exc.value.kind == "unknown_function"
+        compile_measure("revenue in [param('x'), 1]", schema, alias="bad")
+    assert exc.value.kind == "disallowed"
+
+
+def test_param_still_illegal_as_cast_type_name_argument(schema):
+    # cast()'s type-name argument stays string-literal-only — param() there
+    # hits the pre-existing _string_literal_arg guard, not a new check
+    with pytest.raises(MeasureCompileError) as exc:
+        compile_measure('cast(revenue, param("x"))', schema, alias="bad", parameter_values={"x": "int"})
+    assert exc.value.kind == "disallowed"
+
+
+# --- param() in general (non-lag) positions, across int/float/string ------
+
+def test_param_in_comparison_float(df, schema):
+    expr = compile_measure(
+        "where(revenue, revenue > param('threshold'))", schema, alias="v",
+        parameter_values={"threshold": 150.0},
+    )
+    out = df.select(expr)["v"].drop_nulls().to_list()
+    assert out == [200.0, 300.0, 400.0]
+
+
+def test_param_in_if_predicate_and_branches(df, schema):
+    expr = compile_measure(
+        "if_(revenue > param('threshold'), param('hi'), param('lo'))", schema, alias="v",
+        parameter_values={"threshold": 150.0, "hi": 1, "lo": 0},
+    )
+    out = df.select(expr)["v"].to_list()
+    assert out == [0, 1, 1, 1]
+
+
+def test_param_in_coalesce(df, schema):
+    expr = compile_measure(
+        "coalesce(maybe_null, param('fallback'))", schema, alias="v",
+        parameter_values={"fallback": -1.0},
+    )
+    out = df.select(expr)["v"].to_list()
+    assert out == [-1.0, 5.0, -1.0, 10.0]
+
+
+def test_param_string_equality(df, schema):
+    expr = compile_measure(
+        "where(revenue, region == param('target_region'))", schema, alias="v",
+        parameter_values={"target_region": "EU"},
+    )
+    out = df.select(expr)["v"].drop_nulls().to_list()
+    assert out == [100.0, 300.0]
+
+
+def test_param_as_cast_value_argument(df, schema):
+    # cast()'s value argument accepts param() — the literal broadcasts to
+    # every row, unlike cast() of a column expression (already covered by
+    # this file's existing cast() tests); the point here is only that the
+    # value-argument slot accepts param() at all.
+    expr = compile_measure(
+        'cast(param("x"), "int")', schema, alias="v", parameter_values={"x": 5.0},
+    )
+    out = df.select(expr)["v"].to_list()
+    assert out == [5]  # a bare literal expr doesn't broadcast to frame height on its own
+
+
+def test_param_as_cast_type_name_argument_still_rejected(df, schema):
+    with pytest.raises(MeasureCompileError) as exc:
+        compile_measure('cast(revenue, param("t"))', schema, alias="v", parameter_values={"t": "int"})
+    assert exc.value.kind == "disallowed"
 
 
 def test_referenced_parameter_names():
@@ -307,6 +380,15 @@ def test_referenced_parameter_names():
     assert referenced_parameter_names(
         "lag(a, param('p1')) + lag(b, param('p2'))"
     ) == {"p1", "p2"}
+
+
+def test_lag_period_param_names():
+    from app.measure_dsl import lag_period_param_names
+    assert lag_period_param_names("lag(revenue, param('period_list'))") == {"period_list"}
+    assert lag_period_param_names("lag(revenue, 2)") == set()
+    # a param() reference elsewhere in the same expression isn't a lag()
+    # periods-argument reference, even if it shares an expression with one
+    assert lag_period_param_names("lag(a, param('p1')) + (b > param('p2'))") == {"p1"}
 
 
 # --- Red-team suite: every payload must raise, and must never execute ------

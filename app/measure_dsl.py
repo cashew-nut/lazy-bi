@@ -335,21 +335,68 @@ def _is_param_call(node: ast.AST) -> bool:
     return isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "param"
 
 
+def _param_name_from_args(args: list) -> str:
+    if len(args) != 1 or not isinstance(args[0], ast.Constant) or not isinstance(args[0].value, str):
+        raise MeasureCompileError("param() takes exactly one string literal argument", kind="disallowed")
+    return args[0].value
+
+
+def _lookup_param(compiler: "_Compiler", name: str):
+    """Return the pre-resolved, already-type-validated value a caller (engine.py
+    for real queries, api/models.py for the live measure check) has stored for
+    a declared parameter. This compiler never sees the parameter's declared
+    values list or type — only the one resolved value, exactly like
+    partition_by/order_by. None during structural-only validation, in which
+    case any param() reference fails closed with 'unknown_parameter'."""
+    if compiler.parameter_values is None or name not in compiler.parameter_values:
+        raise MeasureCompileError(f"unknown parameter '{name}'", kind="unknown_parameter")
+    return compiler.parameter_values[name]
+
+
+def _fn_param(compiler: "_Compiler", args: list, depth: int) -> pl.Expr:
+    """param('name') as a general expression — legal anywhere build() already
+    recurses (comparisons, if_(), coalesce(), where(), cast()'s value
+    argument, ...). Resolves to a polars literal of whatever type (int/float/
+    str) the caller's pre-validated parameter_values dict holds; never the
+    declared value list itself. See _resolve_periods_arg for the one
+    position (lag()'s periods argument) that needs a raw Python int instead
+    of a pl.Expr and layers its own extra type check on top of this same
+    lookup."""
+    name = _param_name_from_args(args)
+    value = _lookup_param(compiler, name)
+    if not _is_allowed_constant(value):
+        raise MeasureCompileError(f"parameter '{name}' resolved to an unsupported value type", kind="disallowed")
+    return pl.lit(value)
+
+
+# registered after _FUNCTIONS' dict literal (above) since _fn_param is
+# defined below it — param() is legal in both compile modes, exactly like
+# if_()/coalesce()/cast() (a pure scalar substitution, no aggregation or raw-
+# row semantics either way)
+_FUNCTIONS["param"] = _fn_param
+
+
 def _resolve_periods_arg(compiler: "_Compiler", node: ast.AST) -> int:
     """lag()'s periods argument accepts either a literal integer (unchanged)
-    or param('name') — a visual-declared parameter reference. param() is not
-    a general allowlisted function (it's absent from both _FUNCTIONS and
-    _WINDOW_FUNCTIONS); this is the only place it's recognized. Used anywhere
-    else, it falls through to _build_call's normal lookup and fails with the
-    pre-existing generic 'unknown function' error — the scope restriction is
-    structural, not a separate check to keep in sync."""
+    or param('name') — a visual-declared parameter reference. Unlike every
+    other position param() can now appear in (see _fn_param), this one needs
+    a raw Python int for polars' .shift(), not a pl.Expr, so it stays a
+    bespoke AST-node inspection rather than routing through compiler.build().
+    The resolved value must be a genuine Python int (not bool, not a
+    numerically-whole float, not a str) — an int-typed parameter's value is
+    always a real int by the time it reaches here (engine.py coerces per the
+    declared type), so this check is what makes a float- or string-typed
+    parameter fail here exactly like an incompatible literal already does,
+    regardless of its numeric content."""
     if _is_param_call(node):
-        if len(node.args) != 1 or not isinstance(node.args[0], ast.Constant) or not isinstance(node.args[0].value, str):
-            raise MeasureCompileError("param() takes exactly one string literal argument", kind="disallowed")
-        name = node.args[0].value
-        if compiler.parameter_values is None or name not in compiler.parameter_values:
-            raise MeasureCompileError(f"unknown parameter '{name}'", kind="unknown_parameter")
-        return compiler.parameter_values[name]
+        name = _param_name_from_args(node.args)
+        value = _lookup_param(compiler, name)
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise MeasureCompileError(
+                "lag()'s periods argument must be a literal integer or an int-typed param('name')",
+                kind="disallowed",
+            )
+        return value
     if isinstance(node, ast.Constant) and isinstance(node.value, int) and not isinstance(node.value, bool):
         return node.value
     raise MeasureCompileError(
@@ -397,6 +444,7 @@ _WINDOW_FUNCTIONS = {
     "if_": _fn_if_,
     "coalesce": _fn_coalesce,
     "cast": _fn_cast,
+    "param": _fn_param,
 }
 
 
@@ -442,6 +490,27 @@ def referenced_parameter_names(text: str) -> set:
         if _is_param_call(n) and len(n.args) == 1
         and isinstance(n.args[0], ast.Constant) and isinstance(n.args[0].value, str)
     }
+
+
+def lag_period_param_names(text: str) -> set:
+    """Names passed to param(...) specifically as lag()'s second (periods)
+    argument, anywhere in `text` — a structural-only subset of
+    referenced_parameter_names(), used by app/api/visuals.py's visual-save
+    validation to catch a non-int-typed parameter used there without needing
+    a live schema/full compile (the existing visual-save check is
+    deliberately structural-only — see _validate_visual_spec). Never
+    evaluates `text`; parses only."""
+    tree = ast.parse(text, mode="eval")
+    names = set()
+    for n in ast.walk(tree):
+        if (
+            isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "lag"
+            and len(n.args) == 2 and _is_param_call(n.args[1])
+        ):
+            arg = n.args[1]
+            if len(arg.args) == 1 and isinstance(arg.args[0], ast.Constant) and isinstance(arg.args[0].value, str):
+                names.add(arg.args[0].value)
+    return names
 
 
 def compile_measure(

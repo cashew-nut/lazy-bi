@@ -89,6 +89,90 @@ def test_visual_measure_referencing_undeclared_parameter_rejected(client):
     assert "undeclared parameter" in res.json()["detail"]
 
 
+# ── 010-parameter-type-generalization: type-aware visual save validation ───
+
+def test_visual_with_float_typed_parameter_saves(client):
+    spec = _visual_spec_with_parameter(
+        parameters=[{"name": "threshold", "type": "float", "values": [10, 50.5, 100], "default": 50.5}],
+        inline_measures=[{"name": "revenue_lag", "expr": "revenue > param('threshold')"}],
+    )
+    created = client.post("/api/visuals", json={"name": "t_float_param", "model": "sales", "spec": spec}).json()
+    assert created["spec"]["query"]["parameters"][0]["type"] == "float"
+    client.delete(f"/api/visuals/{created['id']}")
+
+
+def test_visual_with_string_typed_parameter_saves(client):
+    spec = _visual_spec_with_parameter(
+        parameters=[{"name": "region_pick", "type": "string", "values": ["east", "west"], "default": "east"}],
+        inline_measures=[{"name": "revenue_lag", "expr": "coalesce(revenue, 0)"}],
+    )
+    created = client.post("/api/visuals", json={"name": "t_string_param", "model": "sales", "spec": spec}).json()
+    assert created["spec"]["query"]["parameters"][0]["type"] == "string"
+    client.delete(f"/api/visuals/{created['id']}")
+
+
+def test_visual_rejects_unsupported_parameter_type(client):
+    spec = _visual_spec_with_parameter(
+        parameters=[{"name": "bad", "type": "date", "values": ["2026-01-01"], "default": "2026-01-01"}],
+        inline_measures=[{"name": "revenue_lag", "expr": "coalesce(revenue, 0)"}],
+    )
+    res = client.post("/api/visuals", json={"name": "t_bad_type", "model": "sales", "spec": spec})
+    assert res.status_code == 400
+    assert "unsupported type" in res.json()["detail"]
+
+
+def test_visual_rejects_wrong_typed_value_in_list(client):
+    spec = _visual_spec_with_parameter(
+        parameters=[{"name": "threshold", "type": "int", "values": [1, 2.5, 3], "default": 1}],
+        inline_measures=[{"name": "revenue_lag", "expr": "coalesce(revenue, 0)"}],
+    )
+    res = client.post("/api/visuals", json={"name": "t_wrong_value_type", "model": "sales", "spec": spec})
+    assert res.status_code == 400
+    assert "does not match declared type" in res.json()["detail"]
+
+
+def test_visual_rejects_wrong_typed_default(client):
+    spec = _visual_spec_with_parameter(
+        parameters=[{"name": "region_pick", "type": "string", "values": ["east", "west"], "default": 1}],
+        inline_measures=[{"name": "revenue_lag", "expr": "coalesce(revenue, 0)"}],
+    )
+    res = client.post("/api/visuals", json={"name": "t_wrong_default_type", "model": "sales", "spec": spec})
+    assert res.status_code == 400
+    assert "default is not one of its declared values" in res.json()["detail"]
+
+
+def test_visual_rejects_non_int_parameter_used_as_lag_periods(client):
+    # 010-parameter-type-generalization US3: caught at visual-save time
+    # (structurally, without a full compile — see lag_period_param_names),
+    # not only at query time (already covered in test_measure_dsl.py/
+    # test_engine.py) or live-check time (test_measures_check_rejects_*).
+    spec = _visual_spec_with_parameter(
+        parameters=[{"name": "label", "type": "string", "values": ["a", "b"], "default": "a"}],
+        inline_measures=[{"name": "revenue_lag", "expr": "lag(revenue, param('label'))"}],
+    )
+    res = client.post("/api/visuals", json={"name": "t_lag_type_mismatch", "model": "sales", "spec": spec})
+    assert res.status_code == 400
+    assert "must be int" in res.json()["detail"]
+
+
+def test_visual_rejects_float_parameter_used_as_lag_periods_even_when_whole(client):
+    spec = _visual_spec_with_parameter(
+        parameters=[{"name": "n", "type": "float", "values": [2.0, 3.0], "default": 2.0}],
+        inline_measures=[{"name": "revenue_lag", "expr": "lag(revenue, param('n'))"}],
+    )
+    res = client.post("/api/visuals", json={"name": "t_lag_float_mismatch", "model": "sales", "spec": spec})
+    assert res.status_code == 400
+    assert "must be int" in res.json()["detail"]
+
+
+def test_visual_parameter_absent_type_defaults_to_int(client):
+    # exact spec-009 shape, no "type" key at all
+    spec = _visual_spec_with_parameter()
+    created = client.post("/api/visuals", json={"name": "t_absent_type", "model": "sales", "spec": spec}).json()
+    assert "type" not in created["spec"]["query"]["parameters"][0]
+    client.delete(f"/api/visuals/{created['id']}")
+
+
 def test_dashboard_publish_portal_flow(client):
     dash = client.post("/api/dashboards", json={
         "name": "flow", "items": [], "views": [{"name": "default", "filters": []}], "active_view": 0}).json()
@@ -105,6 +189,21 @@ def _make_param_visual(client, name, values, default, param_name="period_list"):
     spec = _visual_spec_with_parameter(
         parameters=[{"name": param_name, "values": values, "default": default}],
         inline_measures=[{"name": "revenue_lag", "expr": f"lag(revenue, param('{param_name}'))"}],
+    )
+    return client.post("/api/visuals", json={"name": name, "model": "sales", "spec": spec}).json()
+
+
+def _make_typed_param_visual(client, name, type_name, values, default, param_name="p"):
+    # a comparison works for every type (unlike lag(), which requires int),
+    # so this helper is what US4's type-conflict tests use to build a
+    # non-int-typed visual without tripping US3's lag()-periods type check
+    if type_name == "string":
+        expr = f"count(where(channel, channel == param('{param_name}')))"
+    else:
+        expr = f"sum(if_(unit_price > param('{param_name}'), unit_price, 0))"
+    spec = _visual_spec_with_parameter(
+        parameters=[{"name": param_name, "type": type_name, "values": values, "default": default}],
+        inline_measures=[{"name": "flagged", "expr": expr}],
     )
     return client.post("/api/visuals", json={"name": name, "model": "sales", "spec": spec}).json()
 
@@ -162,6 +261,32 @@ def test_dashboard_allows_two_visuals_with_identical_parameter(client):
         client.delete(f"/api/visuals/{v2['id']}")
 
 
+def test_dashboard_absent_type_and_explicit_int_type_are_the_same_parameter(client):
+    # 010-parameter-type-generalization US2: an untyped (spec-009-era)
+    # parameter and an explicitly int-typed one must be treated as
+    # identical for sharing purposes — proves "absent type == int" holds
+    # all the way through dashboard definition-equality, not just
+    # declaration validation.
+    v1 = _make_param_visual(client, "v_untyped", [1, 2, 3, 4], 1)  # no "type" key at all
+    spec = _visual_spec_with_parameter(
+        parameters=[{"name": "period_list", "type": "int", "values": [1, 2, 3, 4], "default": 1}],
+        inline_measures=[{"name": "revenue_lag", "expr": "lag(revenue, param('period_list'))"}],
+    )
+    v2 = client.post("/api/visuals", json={"name": "v_explicit_int", "model": "sales", "spec": spec}).json()
+    try:
+        res = client.post("/api/dashboards", json={
+            "name": "d_untyped_vs_explicit_int",
+            "items": [{"visual_id": v1["id"], "w": 1}, {"visual_id": v2["id"], "w": 1}],
+            "views": [{"name": "default", "filters": [], "parameters": {"period_list": 3}}],
+            "active_view": 0,
+        })
+        assert res.status_code == 201
+        client.delete(f"/api/dashboards/{res.json()['id']}")
+    finally:
+        client.delete(f"/api/visuals/{v1['id']}")
+        client.delete(f"/api/visuals/{v2['id']}")
+
+
 def test_dashboard_rejects_two_visuals_with_conflicting_values(client):
     v1 = _make_param_visual(client, "v_conflict_a", [1, 2, 3, 4], 1)
     v2 = _make_param_visual(client, "v_conflict_b", [1, 2, 3], 1)
@@ -192,6 +317,59 @@ def test_dashboard_rejects_two_visuals_with_conflicting_default(client):
         })
         assert res.status_code == 400
         assert "period_list" in res.json()["detail"]
+    finally:
+        client.delete(f"/api/visuals/{v1['id']}")
+        client.delete(f"/api/visuals/{v2['id']}")
+
+
+def test_dashboard_rejects_same_name_different_type(client):
+    # 010-parameter-type-generalization US4: a type mismatch alone is
+    # sufficient to conflict, even with values that "look" similar
+    v1 = _make_typed_param_visual(client, "v_type_conflict_int", "int", [1, 2, 3], 1)
+    v2 = _make_typed_param_visual(client, "v_type_conflict_string", "string", ["1", "2", "3"], "1")
+    try:
+        res = client.post("/api/dashboards", json={
+            "name": "d_type_conflict",
+            "items": [{"visual_id": v1["id"], "w": 1}, {"visual_id": v2["id"], "w": 1}],
+            "views": [{"name": "default", "filters": []}],
+            "active_view": 0,
+        })
+        assert res.status_code == 400
+        assert "'p'" in res.json()["detail"]
+    finally:
+        client.delete(f"/api/visuals/{v1['id']}")
+        client.delete(f"/api/visuals/{v2['id']}")
+
+
+def test_dashboard_allows_two_visuals_with_identical_float_parameter(client):
+    v1 = _make_typed_param_visual(client, "v_float_share_a", "float", [10, 50.5, 100], 50.5)
+    v2 = _make_typed_param_visual(client, "v_float_share_b", "float", [10, 50.5, 100], 50.5)
+    try:
+        res = client.post("/api/dashboards", json={
+            "name": "d_float_share",
+            "items": [{"visual_id": v1["id"], "w": 1}, {"visual_id": v2["id"], "w": 1}],
+            "views": [{"name": "default", "filters": []}],
+            "active_view": 0,
+        })
+        assert res.status_code == 201
+        client.delete(f"/api/dashboards/{res.json()['id']}")
+    finally:
+        client.delete(f"/api/visuals/{v1['id']}")
+        client.delete(f"/api/visuals/{v2['id']}")
+
+
+def test_dashboard_allows_two_visuals_with_identical_string_parameter(client):
+    v1 = _make_typed_param_visual(client, "v_string_share_a", "string", ["EU", "US"], "EU")
+    v2 = _make_typed_param_visual(client, "v_string_share_b", "string", ["EU", "US"], "EU")
+    try:
+        res = client.post("/api/dashboards", json={
+            "name": "d_string_share",
+            "items": [{"visual_id": v1["id"], "w": 1}, {"visual_id": v2["id"], "w": 1}],
+            "views": [{"name": "default", "filters": []}],
+            "active_view": 0,
+        })
+        assert res.status_code == 201
+        client.delete(f"/api/dashboards/{res.json()['id']}")
     finally:
         client.delete(f"/api/visuals/{v1['id']}")
         client.delete(f"/api/visuals/{v2['id']}")
@@ -630,6 +808,36 @@ def test_query_parameterized_measure_promotion_to_model_blocked(client, auth_hea
     assert "parameterized measures" in res.json()["detail"]
 
 
+# ── 010-parameter-type-generalization: /api/query with non-int parameter_values ──
+# Regression coverage for a real bug the pydantic layer alone can hide:
+# QueryRequest.parameter_values was still typed dict[str, int] from spec 009,
+# which pydantic rejects with a 422 for a float/string value before the
+# request body ever reaches engine.resolve_parameter_values — caught via
+# browser walkthrough, not by tests/test_engine.py (which calls
+# engine.run_query() directly, bypassing QueryRequest entirely).
+
+def test_query_endpoint_accepts_float_parameter_value(client):
+    res = client.post("/api/query", json={
+        "model": "sales", "dimensions": [], "measures": ["revenue", "flagged"],
+        "inline_measures": [{"name": "flagged", "expr": "sum(if_(unit_price > param('threshold'), unit_price, 0))"}],
+        "parameters": [{"name": "threshold", "type": "float", "values": [10, 50.5, 100], "default": 50.5}],
+        "parameter_values": {"threshold": 10},
+    })
+    assert res.status_code == 200
+    assert res.json()["rows"]
+
+
+def test_query_endpoint_accepts_string_parameter_value(client):
+    res = client.post("/api/query", json={
+        "model": "sales", "dimensions": [], "measures": ["revenue", "flagged"],
+        "inline_measures": [{"name": "flagged", "expr": "sum(where(unit_price, region == param('region_pick')))"}],
+        "parameters": [{"name": "region_pick", "type": "string", "values": ["EU", "US", "APAC"], "default": "EU"}],
+        "parameter_values": {"region_pick": "US"},
+    })
+    assert res.status_code == 200
+    assert res.json()["rows"]
+
+
 def test_measures_check_resolves_parameter_to_default(client):
     res = client.post("/api/measures/check", json={
         "expr": "lag(revenue, param('period_list'))",
@@ -652,3 +860,53 @@ def test_measures_check_rejects_undeclared_parameter(client):
     body = res.json()
     assert body["ok"] is False
     assert "nope" in body["error"]
+
+
+# ── 010-parameter-type-generalization: /api/measures/check across types ────
+# (verification-only — check_measure() already passed parameter_values
+# unconditionally, not gated on window mode, so it needed no code change)
+
+def test_measures_check_resolves_float_param_in_comparison(client):
+    res = client.post("/api/measures/check", json={
+        "expr": "revenue > param('threshold')",
+        "columns": ["revenue"],
+        "parameters": [{"name": "threshold", "type": "float", "values": [10, 50.5, 100], "default": 50.5}],
+    })
+    body = res.json()
+    assert body["ok"] is True
+    assert body["window"] is False
+
+
+def test_measures_check_resolves_string_param_in_coalesce(client):
+    res = client.post("/api/measures/check", json={
+        "expr": "coalesce(revenue, param('fallback'))",
+        "columns": ["revenue"],
+        "parameters": [{"name": "fallback", "type": "string", "values": ["n/a", "unknown"], "default": "n/a"}],
+    })
+    body = res.json()
+    assert body["ok"] is True
+    assert body["window"] is False
+
+
+# ── 010-parameter-type-generalization US3: clear type-mismatch errors ──────
+
+def test_measures_check_rejects_string_param_as_lag_periods(client):
+    res = client.post("/api/measures/check", json={
+        "expr": "lag(revenue, param('label'))",
+        "measure_names": ["revenue"],
+        "parameters": [{"name": "label", "type": "string", "values": ["a", "b"], "default": "a"}],
+    })
+    body = res.json()
+    assert body["ok"] is False
+    assert "int-typed param" in body["error"]
+
+
+def test_measures_check_rejects_float_param_as_lag_periods_even_when_whole(client):
+    res = client.post("/api/measures/check", json={
+        "expr": "lag(revenue, param('n'))",
+        "measure_names": ["revenue"],
+        "parameters": [{"name": "n", "type": "float", "values": [2.0, 3.0], "default": 2.0}],
+    })
+    body = res.json()
+    assert body["ok"] is False
+    assert "int-typed param" in body["error"]
