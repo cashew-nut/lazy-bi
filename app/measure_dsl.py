@@ -34,7 +34,7 @@ MAX_MEASURE_LEN = 2000
 MAX_NODES = 200
 MAX_DEPTH = 30
 
-ErrorKind = Literal["disallowed", "unknown_function", "unknown_column", "limit_exceeded"]
+ErrorKind = Literal["disallowed", "unknown_function", "unknown_column", "unknown_parameter", "limit_exceeded"]
 
 
 class MeasureCompileError(ValueError):
@@ -84,6 +84,7 @@ class _Compiler:
         window: bool = False,
         partition_by: Optional[list] = None,
         order_by: Optional[str] = None,
+        parameter_values: Optional[dict] = None,
     ):
         # schema is None only for the model-yaml load-time structural check
         # (no live schema is fetched just to parse config, matching this
@@ -100,6 +101,15 @@ class _Compiler:
         # running_total()/lag() build the bare reduction then, without .over().
         self.partition_by = partition_by
         self.order_by = order_by
+        # parameter_values maps a declared visual parameter's name to the one
+        # already-validated int to substitute for it — the caller (engine.py
+        # for real queries, api/models.py for the live measure check) has
+        # already checked this value is a member of that parameter's declared
+        # list; this compiler never sees the list itself, only the resolved
+        # value, exactly like partition_by/order_by above. None during
+        # structural-only validation, in which case any param() reference
+        # fails closed with "unknown_parameter" (see _resolve_periods_arg).
+        self.parameter_values = parameter_values
 
     def build(self, node: ast.AST, depth: int) -> pl.Expr:
         if depth > MAX_DEPTH:
@@ -321,10 +331,30 @@ _FUNCTIONS = {
 }
 
 
-def _int_literal(node: ast.AST, what: str) -> int:
+def _is_param_call(node: ast.AST) -> bool:
+    return isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "param"
+
+
+def _resolve_periods_arg(compiler: "_Compiler", node: ast.AST) -> int:
+    """lag()'s periods argument accepts either a literal integer (unchanged)
+    or param('name') — a visual-declared parameter reference. param() is not
+    a general allowlisted function (it's absent from both _FUNCTIONS and
+    _WINDOW_FUNCTIONS); this is the only place it's recognized. Used anywhere
+    else, it falls through to _build_call's normal lookup and fails with the
+    pre-existing generic 'unknown function' error — the scope restriction is
+    structural, not a separate check to keep in sync."""
+    if _is_param_call(node):
+        if len(node.args) != 1 or not isinstance(node.args[0], ast.Constant) or not isinstance(node.args[0].value, str):
+            raise MeasureCompileError("param() takes exactly one string literal argument", kind="disallowed")
+        name = node.args[0].value
+        if compiler.parameter_values is None or name not in compiler.parameter_values:
+            raise MeasureCompileError(f"unknown parameter '{name}'", kind="unknown_parameter")
+        return compiler.parameter_values[name]
     if isinstance(node, ast.Constant) and isinstance(node.value, int) and not isinstance(node.value, bool):
         return node.value
-    raise MeasureCompileError(f"{what} must be a literal integer", kind="disallowed")
+    raise MeasureCompileError(
+        "lag()'s periods argument must be a literal integer or param('name')", kind="disallowed"
+    )
 
 
 def _fn_running_total(compiler: "_Compiler", args: list, depth: int) -> pl.Expr:
@@ -343,7 +373,7 @@ def _fn_lag(compiler: "_Compiler", args: list, depth: int) -> pl.Expr:
     value = compiler.build(args[0], depth + 1)
     periods = 1
     if len(args) == 2:
-        periods = _int_literal(args[1], "lag()'s periods argument")
+        periods = _resolve_periods_arg(compiler, args[1])
         if periods < 1:
             raise MeasureCompileError("lag()'s periods argument must be a positive integer", kind="disallowed")
     expr = value.shift(periods)
@@ -399,6 +429,21 @@ def referenced_names(text: str) -> set:
     return {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} - call_funcs
 
 
+def referenced_parameter_names(text: str) -> set:
+    """Names passed to param(...) anywhere in `text` — not just inside a
+    legal lag() position, since this is used to detect and reject the
+    construct where it's out of scope (e.g. a model-measure save, where no
+    visual parameter context exists at all). Never evaluates `text`; parses
+    only, same posture as referenced_names()/is_window_expr()."""
+    tree = ast.parse(text, mode="eval")
+    return {
+        n.args[0].value
+        for n in ast.walk(tree)
+        if _is_param_call(n) and len(n.args) == 1
+        and isinstance(n.args[0], ast.Constant) and isinstance(n.args[0].value, str)
+    }
+
+
 def compile_measure(
     text: str,
     schema: Optional["pl.Schema"],
@@ -406,6 +451,7 @@ def compile_measure(
     alias: str,
     partition_by: Optional[list] = None,
     order_by: Optional[str] = None,
+    parameter_values: Optional[dict] = None,
 ) -> pl.Expr:
     """Parse -> allowlist/validate -> build polars.Expr. Never evaluates `text`.
     Raises MeasureCompileError (fail closed) on anything outside the allowlist.
@@ -414,7 +460,9 @@ def compile_measure(
     fetched). `partition_by`/`order_by` are consulted only for window
     measures (see is_window_expr) — the engine passes the query's actual
     dimensions once it knows them; left None for structural-only validation,
-    which builds the bare running_total/lag reduction without `.over()`."""
+    which builds the bare running_total/lag reduction without `.over()`.
+    `parameter_values` is a pre-resolved {name: int} for any param('name')
+    reference inside lag()'s periods argument — see _resolve_periods_arg."""
     if len(text) > MAX_MEASURE_LEN:
         raise MeasureCompileError(f"measure text exceeds {MAX_MEASURE_LEN} character limit", kind="limit_exceeded")
     try:
@@ -425,6 +473,8 @@ def compile_measure(
     if node_count > MAX_NODES:
         raise MeasureCompileError(f"expression exceeds {MAX_NODES} node limit", kind="limit_exceeded")
     window = is_window_expr(text)
-    compiler = _Compiler(schema, window=window, partition_by=partition_by, order_by=order_by)
+    compiler = _Compiler(
+        schema, window=window, partition_by=partition_by, order_by=order_by, parameter_values=parameter_values
+    )
     expr = compiler.build(tree.body, depth=0)
     return expr.alias(alias)

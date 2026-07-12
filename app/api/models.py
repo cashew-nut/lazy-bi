@@ -253,6 +253,7 @@ class MeasureCheckIn(BaseModel):
     frame_emits: list[str] = []
     columns: list[str] = []        # source column names, for a plain/window-free expr
     measure_names: list[str] = []  # sibling measure names, for a window expr (running_total/lag)
+    parameters: list[dict] = []    # the visual's currently-declared parameters, if any
 
 
 @router.post("/measures/check")
@@ -276,8 +277,11 @@ def check_measure(body: MeasureCheckIn):
     try:
         is_window = measure_dsl.is_window_expr(body.expr)
         schema = set(body.measure_names) if is_window else set(body.columns)
-        measure_dsl.compile_measure(body.expr, schema, alias="_check")
-    except measure_dsl.MeasureCompileError as exc:
+        # there is no "current selection" while still drafting — check against
+        # each declared parameter's default, same as a query with no override
+        parameter_values = engine.resolve_parameter_values(body.parameters, {})
+        measure_dsl.compile_measure(body.expr, schema, alias="_check", parameter_values=parameter_values)
+    except (measure_dsl.MeasureCompileError, engine.QueryError) as exc:
         return {"ok": False, "error": str(exc), "window": False}
     return {"ok": True, "error": None, "window": is_window}
 
@@ -285,6 +289,14 @@ def check_measure(body: MeasureCheckIn):
 def _validate_measure_body(model: semantic.Model, m: MeasureIn) -> None:
     if m.format not in ("number", "currency", "percent"):
         raise HTTPException(status_code=400, detail=f"unknown format '{m.format}'")
+    if m.expr and measure_dsl.referenced_parameter_names(m.expr):
+        # parameters are visual-scoped context a model measure never has —
+        # this construct can only ever be saved as an inline (visual) measure
+        raise HTTPException(
+            status_code=400,
+            detail=f"measure '{m.name}': references a parameter — parameterized measures can only "
+                   "be saved to a visual, not to the shared model",
+        )
     if m.frame:
         # the framed-measure construct is authenticated-model-measure-only:
         # a load-time syntax check now, the real compile_frame run happens

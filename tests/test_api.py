@@ -40,6 +40,55 @@ def test_visuals_roundtrip(client):
     assert client.delete(f"/api/visuals/{created['id']}").status_code == 204
 
 
+def _visual_spec_with_parameter(parameters=None, inline_measures=None):
+    return {
+        "query": {
+            "model": "sales",
+            "measures": ["revenue", "revenue_lag"],
+            "inline_measures": inline_measures if inline_measures is not None else [
+                {"name": "revenue_lag", "expr": "lag(revenue, param('period_list'))"}
+            ],
+            "parameters": parameters if parameters is not None else [
+                {"name": "period_list", "values": [1, 2, 3, 4], "default": 1}
+            ],
+        },
+        "chartType": "auto",
+    }
+
+
+def test_visual_with_valid_parameter_saves(client):
+    created = client.post("/api/visuals", json={
+        "name": "t_param", "model": "sales", "spec": _visual_spec_with_parameter()}).json()
+    assert created["spec"]["query"]["parameters"][0]["name"] == "period_list"
+    client.delete(f"/api/visuals/{created['id']}")
+
+
+def test_visual_duplicate_parameter_name_rejected(client):
+    spec = _visual_spec_with_parameter(parameters=[
+        {"name": "period_list", "values": [1, 2], "default": 1},
+        {"name": "period_list", "values": [3, 4], "default": 3},
+    ])
+    res = client.post("/api/visuals", json={"name": "t_dup", "model": "sales", "spec": spec})
+    assert res.status_code == 400
+    assert "duplicate" in res.json()["detail"]
+
+
+def test_visual_default_not_in_values_rejected(client):
+    spec = _visual_spec_with_parameter(parameters=[
+        {"name": "period_list", "values": [1, 2, 3], "default": 9}
+    ])
+    res = client.post("/api/visuals", json={"name": "t_bad_default", "model": "sales", "spec": spec})
+    assert res.status_code == 400
+    assert "declared values" in res.json()["detail"]
+
+
+def test_visual_measure_referencing_undeclared_parameter_rejected(client):
+    spec = _visual_spec_with_parameter(parameters=[])
+    res = client.post("/api/visuals", json={"name": "t_undeclared", "model": "sales", "spec": spec})
+    assert res.status_code == 400
+    assert "undeclared parameter" in res.json()["detail"]
+
+
 def test_dashboard_publish_portal_flow(client):
     dash = client.post("/api/dashboards", json={
         "name": "flow", "items": [], "views": [{"name": "default", "filters": []}], "active_view": 0}).json()
@@ -394,3 +443,74 @@ def test_window_measure_unknown_sibling_rejected_on_save(client, auth_headers):
         assert "does_not_exist" in res.json()["detail"]
     finally:
         client.delete("/api/models/window_probe")
+
+
+# ── visual parameters: param() references in lag(), via /api/query ─────────
+
+def _param_query_body(parameter_values=None):
+    return {
+        "model": "sales",
+        "dimensions": [{"name": "order_date", "grain": "1q"}],
+        "measures": ["revenue", "revenue_lag"],
+        "inline_measures": [{"name": "revenue_lag", "expr": "lag(revenue, param('period_list'))"}],
+        "parameters": [{"name": "period_list", "values": [1, 2, 3, 4], "default": 1}],
+        "parameter_values": parameter_values or {},
+    }
+
+
+def test_query_parameter_resolves_default_when_no_override(client):
+    res = client.post("/api/query", json=_param_query_body())
+    assert res.status_code == 200
+    assert res.json()["rows"]
+
+
+def test_query_parameter_override_used(client):
+    default_rows = client.post("/api/query", json=_param_query_body()).json()["rows"]
+    overridden_rows = client.post("/api/query", json=_param_query_body({"period_list": 2})).json()["rows"]
+    default_lags = sorted(r["revenue_lag"] for r in default_rows if r["revenue_lag"] is not None)
+    overridden_lags = sorted(r["revenue_lag"] for r in overridden_rows if r["revenue_lag"] is not None)
+    assert default_lags != overridden_lags
+
+
+def test_query_parameter_value_outside_declared_list_rejected(client):
+    res = client.post("/api/query", json=_param_query_body({"period_list": 99}))
+    assert res.status_code == 400
+    assert "not a declared value" in res.json()["detail"]
+
+
+def test_query_parameter_undeclared_name_rejected(client):
+    res = client.post("/api/query", json=_param_query_body({"nope": 1}))
+    assert res.status_code == 400
+    assert "unknown parameter" in res.json()["detail"]
+
+
+def test_query_parameterized_measure_promotion_to_model_blocked(client, auth_headers):
+    res = client.post("/api/models/sales/measures", json={
+        "name": "revenue_lag_bad", "expr": "lag(revenue, param('period_list'))",
+    }, headers=auth_headers)
+    assert res.status_code == 400
+    assert "parameterized measures" in res.json()["detail"]
+
+
+def test_measures_check_resolves_parameter_to_default(client):
+    res = client.post("/api/measures/check", json={
+        "expr": "lag(revenue, param('period_list'))",
+        "measure_names": ["revenue"],
+        "parameters": [{"name": "period_list", "values": [1, 2, 3, 4], "default": 1}],
+    })
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is True
+    assert body["window"] is True
+
+
+def test_measures_check_rejects_undeclared_parameter(client):
+    res = client.post("/api/measures/check", json={
+        "expr": "lag(revenue, param('nope'))",
+        "measure_names": ["revenue"],
+        "parameters": [{"name": "period_list", "values": [1, 2, 3, 4], "default": 1}],
+    })
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is False
+    assert "nope" in body["error"]

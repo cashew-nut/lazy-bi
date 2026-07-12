@@ -547,3 +547,68 @@ def test_shipped_model_window_measures_end_to_end(models):
         else:
             expected = (cur["revenue"] - prev["revenue"]) / prev["revenue"]
             assert cur["revenue_pct_change"] == pytest.approx(expected)
+
+
+# --- Visual parameters: param() reference in lag(), resolved per query -----
+
+def _period_list_query(models, parameter_values=None):
+    inline = [{"name": "revenue_lag", "expr": "lag(revenue, param('period_list'))"}]
+    return run(
+        models, "sales",
+        dimensions=[{"name": "order_date", "grain": "1q"}],
+        measures=["revenue", "revenue_lag"],
+        inline_measures=inline,
+        parameters=[{"name": "period_list", "values": [1, 2, 3, 4], "default": 1}],
+        parameter_values=parameter_values or {},
+    )
+
+
+def test_parameter_uses_declared_default_when_no_override(models):
+    default_r = _period_list_query(models)
+    literal = [{"name": "revenue_lag", "expr": "lag(revenue, 1)"}]
+    literal_r = run(
+        models, "sales", dimensions=[{"name": "order_date", "grain": "1q"}],
+        measures=["revenue", "revenue_lag"], inline_measures=literal,
+    )
+    rows_default = sorted(default_r["rows"], key=lambda row: row["order_date"])
+    rows_literal = sorted(literal_r["rows"], key=lambda row: row["order_date"])
+    assert [r["revenue_lag"] for r in rows_default] == [r["revenue_lag"] for r in rows_literal]
+
+
+def test_parameter_override_changes_result(models):
+    r1 = _period_list_query(models, {"period_list": 1})
+    r2 = _period_list_query(models, {"period_list": 2})
+    lag1 = [row["revenue_lag"] for row in sorted(r1["rows"], key=lambda row: row["order_date"])]
+    lag2 = [row["revenue_lag"] for row in sorted(r2["rows"], key=lambda row: row["order_date"])]
+    assert lag1 != lag2
+
+
+def test_parameter_value_outside_declared_list_rejected(models):
+    with pytest.raises(engine.QueryError, match="not a declared value"):
+        _period_list_query(models, {"period_list": 99})
+
+
+def test_parameter_undeclared_name_rejected(models):
+    with pytest.raises(engine.QueryError, match="unknown parameter"):
+        _period_list_query(models, {"nope": 1})
+
+
+def test_parameter_default_not_in_values_rejected(models):
+    inline = [{"name": "revenue_lag", "expr": "lag(revenue, param('period_list'))"}]
+    with pytest.raises(engine.QueryError, match="not one of its declared values"):
+        run(
+            models, "sales", dimensions=[{"name": "order_date", "grain": "1q"}],
+            measures=["revenue", "revenue_lag"], inline_measures=inline,
+            parameters=[{"name": "period_list", "values": [1, 2, 3], "default": 9}],
+        )
+
+
+def test_resolve_parameter_values_helper_directly():
+    resolved = engine.resolve_parameter_values(
+        [{"name": "period_list", "values": [1, 2, 3, 4], "default": 1}], {"period_list": 3},
+    )
+    assert resolved == {"period_list": 3}
+    with pytest.raises(engine.QueryError):
+        engine.resolve_parameter_values(
+            [{"name": "period_list", "values": [1, 2, 3, 4], "default": 1}], {"period_list": 99},
+        )
