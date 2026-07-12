@@ -11,6 +11,9 @@ TEST_ENDPOINT = "http://127.0.0.1:9700"
 _tmpdir = tempfile.mkdtemp(prefix="cash_intel_test_")
 os.environ["CI_S3_ENDPOINT"] = TEST_ENDPOINT          # also disables the embedded emulator
 os.environ["CI_DB_PATH"] = str(Path(_tmpdir) / "test.db")
+os.environ["CI_API_KEY"] = "test-secret"
+
+AUTH_HEADERS = {"X-API-Key": "test-secret", "X-Author": "tester"}
 
 import pytest  # noqa: E402
 from moto.server import ThreadedMotoServer  # noqa: E402
@@ -57,3 +60,8 @@ def client(seeded):
 
     with TestClient(app) as c:   # context manager runs the lifespan
         yield c
+
+
+@pytest.fixture()
+def auth_headers():
+    return dict(AUTH_HEADERS)

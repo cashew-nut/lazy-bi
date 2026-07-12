@@ -32,17 +32,17 @@ measures:
   - name: active_customers
     label: Active Customers
     description: Distinct customers active at each timeline point.
-    expr: pl.col("customer_id").n_unique()
+    expr: count_distinct(customer_id)
   - name: mrr
     label: MRR
     format: currency
     description: Monthly recurring revenue of active subscriptions.
-    expr: pl.col("monthly_fee").sum()
+    expr: sum(monthly_fee)
   - name: arpu
     label: ARPU
     format: currency
-    expr: pl.col("monthly_fee").sum() / pl.col("customer_id").n_unique()
+    expr: sum(monthly_fee) / count_distinct(customer_id)
   - name: signups
     label: Signups
     description: Use with Signup Date (not the spine) for cohort counts.
-    expr: pl.len()
+    expr: count()

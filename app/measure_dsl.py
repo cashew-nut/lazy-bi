@@ -64,7 +64,12 @@ _COMPARE_OPS = {
 
 
 class _Compiler:
-    def __init__(self, schema: "pl.Schema"):
+    def __init__(self, schema: Optional["pl.Schema"]):
+        # schema is None only for the model-yaml load-time structural check
+        # (no live schema is fetched just to parse config, matching this
+        # codebase's lazy/no-scan-to-load-yaml precedent) — column existence
+        # is otherwise always checked wherever a real schema is available
+        # (query time, and the API's validate/generate/measure-save routes).
         self.schema = schema
 
     def build(self, node: ast.AST, depth: int) -> pl.Expr:
@@ -91,7 +96,7 @@ class _Compiler:
     def _build_name(self, node: ast.Name) -> pl.Expr:
         name = node.id
         _check_identifier(name)
-        if name not in self.schema:
+        if self.schema is not None and name not in self.schema:
             raise MeasureCompileError(f"unknown column '{name}'", kind="unknown_column")
         return pl.col(name)
 
@@ -216,7 +221,7 @@ def _fn_col(compiler: _Compiler, args: list, depth: int) -> pl.Expr:
         raise MeasureCompileError("col() requires exactly 1 argument", kind="disallowed")
     name = _string_literal_arg(args[0], "col()")
     _check_identifier(name)
-    if name not in compiler.schema:
+    if compiler.schema is not None and name not in compiler.schema:
         raise MeasureCompileError(f"unknown column '{name}'", kind="unknown_column")
     return pl.col(name)
 
@@ -279,9 +284,11 @@ _FUNCTIONS = {
 }
 
 
-def compile_measure(text: str, schema: "pl.Schema", *, alias: str) -> pl.Expr:
+def compile_measure(text: str, schema: Optional["pl.Schema"], *, alias: str) -> pl.Expr:
     """Parse -> allowlist/validate -> build polars.Expr. Never evaluates `text`.
-    Raises MeasureCompileError (fail closed) on anything outside the allowlist."""
+    Raises MeasureCompileError (fail closed) on anything outside the allowlist.
+    `schema=None` skips column-existence checks (used only for model-yaml
+    load-time structural validation, where no live schema is fetched)."""
     if len(text) > MAX_MEASURE_LEN:
         raise MeasureCompileError(f"measure text exceeds {MAX_MEASURE_LEN} character limit", kind="limit_exceeded")
     try:

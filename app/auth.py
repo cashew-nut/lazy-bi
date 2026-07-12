@@ -8,6 +8,22 @@ per-user attribution — see specs/008-safe-measure-compilation/spec.md.
 """
 from __future__ import annotations
 
+import secrets
 
-def require_measure_author(x_api_key: str, author: str) -> str:
-    raise NotImplementedError
+from fastapi import Header, HTTPException
+
+from . import config
+
+
+def require_measure_author(
+    x_api_key: str = Header(default=""),
+    x_author: str = Header(default=""),
+) -> str:
+    """FastAPI dependency: 401 if config.API_KEY is unset or the header
+    doesn't match it (fail closed when unconfigured); 400 if the key is
+    valid but no author label was given. Returns the author label."""
+    if not config.API_KEY or not secrets.compare_digest(x_api_key, config.API_KEY):
+        raise HTTPException(status_code=401, detail="missing or invalid X-API-Key")
+    if not x_author.strip():
+        raise HTTPException(status_code=400, detail="X-Author header is required")
+    return x_author

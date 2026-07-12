@@ -377,7 +377,7 @@ def run_query(model: Model, query: dict) -> dict:
                     raise QueryError(f"measure '{m}': {exc}") from exc
             else:
                 meas = model.measure(m)
-                frame_source, emits, expr = meas.frame_source, set(meas.frame_emits), meas.expr()
+                frame_source, emits, expr = meas.frame_source, set(meas.frame_emits), meas.expr(schema)
             if frame_source:
                 framed.append((m, frame_source, emits, expr))
             else:

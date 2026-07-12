@@ -1,6 +1,7 @@
 # Semantic model: sales order lines
 # `source.path` is any glob polars can scan lazily from the object store.
-# Measures are polars expressions evaluated with `pl` in scope; each must
+# Measures are written in the safe measure DSL (see README) — a small
+# allowlisted expression language, not arbitrary polars/Python; each must
 # reduce to a single value per group (an aggregation).
 name: sales
 label: Sales Orders
@@ -50,37 +51,35 @@ measures:
   - name: revenue
     label: Revenue
     format: currency
-    expr: (pl.col("unit_price") * pl.col("quantity")).sum()
+    expr: sum(unit_price * quantity)
   - name: cost
     label: Cost
     format: currency
-    expr: (pl.col("unit_cost") * pl.col("quantity")).sum()
+    expr: sum(unit_cost * quantity)
   - name: profit
     label: Profit
     format: currency
-    expr: ((pl.col("unit_price") - pl.col("unit_cost")) * pl.col("quantity")).sum()
+    expr: sum((unit_price - unit_cost) * quantity)
   - name: margin_pct
     label: Margin %
     format: percent
     description: Profit as a share of revenue.
-    expr: >
-      ((pl.col("unit_price") - pl.col("unit_cost")) * pl.col("quantity")).sum()
-      / (pl.col("unit_price") * pl.col("quantity")).sum()
+    expr: sum((unit_price - unit_cost) * quantity) / sum(unit_price * quantity)
   - name: orders
     label: Orders
-    expr: pl.col("order_id").n_unique()
+    expr: count_distinct(order_id)
   - name: units
     label: Units Sold
-    expr: pl.col("quantity").sum()
+    expr: sum(quantity)
   - name: aov
     label: Avg Order Value
     format: currency
-    expr: (pl.col("unit_price") * pl.col("quantity")).sum() / pl.col("order_id").n_unique()
+    expr: sum(unit_price * quantity) / count_distinct(order_id)
   - name: avg_unit_price
     label: Avg Unit Price
     format: currency
-    expr: pl.col("unit_price").mean()
+    expr: mean(unit_price)
   - name: margin_per_unit
     label: Margin / Unit
     format: currency
-    expr: ((pl.col("unit_price") - pl.col("unit_cost")) * pl.col("quantity")).sum() / pl.col("quantity").sum()
+    expr: sum((unit_price - unit_cost) * quantity) / sum(quantity)

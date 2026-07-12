@@ -225,7 +225,7 @@ datasets:
 name: test_fact
 source: {{format: parquet, path: s3://{config.BUCKET}/test/import_fact.parquet}}
 dimensions: [{{name: id, label: Id}}]
-measures: [{{name: total, expr: pl.col("amount").sum()}}]
+measures: [{{name: total, expr: sum(amount)}}]
 dimension_imports:
   - {{bundle: test_geo, anchor_dataset: regions, on: region, how: {how}}}
 """)
@@ -282,7 +282,7 @@ dimensions:
     type: time
 measures:
   - name: events
-    expr: pl.len()
+    expr: count()
   - name: median_days_to_75
     frame: |
       keys = list(dict.fromkeys(["study_id", *dims]))

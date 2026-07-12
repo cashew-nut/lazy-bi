@@ -47,7 +47,7 @@ source: {format: parquet, path: s3://b/x.parquet}
 
 measures:
   - name: rows
-    expr: pl.len()
+    expr: count()
 
 dimensions:
   - name: region
@@ -55,7 +55,7 @@ dimensions:
 
 
 def test_append_into_middle_measures_block():
-    out = semantic.append_measure_yaml(DOC, {"name": "avg", "expr": 'pl.col("v").mean()'})
+    out = semantic.append_measure_yaml(DOC, {"name": "avg", "expr": "mean(v)"})
     m = semantic.parse_model_text(out)
     assert list(m.measures) == ["rows", "avg"]
     assert out.startswith("# header comment stays")          # comments preserved
@@ -64,13 +64,13 @@ def test_append_into_middle_measures_block():
 
 def test_append_when_measures_missing():
     out = semantic.append_measure_yaml("name: t\nsource: {format: parquet, path: s3://b/x.parquet}\n",
-                                       {"name": "rows", "expr": "pl.len()"})
+                                       {"name": "rows", "expr": "count()"})
     assert "rows" in semantic.parse_model_text(out).measures
 
 
 def test_append_quotes_awkward_exprs():
     out = semantic.append_measure_yaml(DOC, {
-        "name": "tricky", "expr": 'pl.col("a").filter(pl.col("b") > 0).sum()'})
+        "name": "tricky", "expr": 'sum(where(a, b > 0))'})
     m = semantic.parse_model_text(out)
     assert m.measures["tricky"].expr() is not None
 
@@ -91,24 +91,24 @@ def test_query_api_accepts_inline_measures(client):
     assert res.json()["rows"][0]["probe"] == 60_000
 
 
-def test_save_measure_to_model(client):
+def test_save_measure_to_model(client, auth_headers):
     yaml_text = ("name: lab_probe\nsource: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
-                 "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: pl.len()\n")
+                 "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: count()\n")
     assert client.post("/api/models", json={"yaml": yaml_text}).status_code == 201
     try:
         res = client.post("/api/models/lab_probe/measures", json={
-            "name": "avg_price", "expr": 'pl.col("unit_price").mean()',
-            "label": "Avg Price", "format": "currency"})
+            "name": "avg_price", "expr": "mean(unit_price)",
+            "label": "Avg Price", "format": "currency"}, headers=auth_headers)
         assert res.status_code == 201
         assert any(m["name"] == "avg_price" and m["format"] == "currency"
                    for m in res.json()["measures"])
         # duplicates and junk rejected
         assert client.post("/api/models/lab_probe/measures", json={
-            "name": "avg_price", "expr": "pl.len()"}).status_code == 409
+            "name": "avg_price", "expr": "count()"}, headers=auth_headers).status_code == 409
         assert client.post("/api/models/lab_probe/measures", json={
-            "name": "Bad Name", "expr": "pl.len()"}).status_code == 400
+            "name": "Bad Name", "expr": "count()"}, headers=auth_headers).status_code == 400
         assert client.post("/api/models/lab_probe/measures", json={
-            "name": "b", "expr": "pl.nope()"}).status_code == 400
+            "name": "b", "expr": "nope()"}, headers=auth_headers).status_code == 400
         # the saved measure actually computes
         q = client.post("/api/query", json={"model": "lab_probe", "dimensions": [], "measures": ["avg_price"]})
         assert q.status_code == 200 and q.json()["rows"][0]["avg_price"] > 0

@@ -139,7 +139,7 @@ def test_delete_imported_bundle_refused(client):
 def test_editor_validate(client):
     ok = client.post("/api/models/validate", json={"yaml": (
         "name: probe\nsource: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
-        "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: pl.len()\n")}).json()
+        "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: count()\n")}).json()
     assert ok["ok"] and any(c["name"] == "region" for c in ok["columns"])
     bad = client.post("/api/models/validate", json={"yaml": "name: x"}).json()
     assert not bad["ok"] and "source" in bad["error"]
@@ -147,7 +147,7 @@ def test_editor_validate(client):
 
 def test_editor_create_and_delete_model(client, tmp_path):
     yaml_text = ("name: temp_probe\nsource: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
-                 "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: pl.len()\n")
+                 "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: count()\n")
     created = client.post("/api/models", json={"yaml": yaml_text})
     assert created.status_code == 201
     assert client.post("/api/models", json={"yaml": yaml_text}).status_code == 409
@@ -167,7 +167,7 @@ def test_guided_import_roundtrip(client):
         "  - bundle: geography\n"
         "    anchor_dataset: regions\n"
         "    on: region\n"
-        "measures:\n  - name: rows\n    expr: pl.len()\n"
+        "measures:\n  - name: rows\n    expr: count()\n"
     )
     # validation surfaces the imported dims before any save
     ok = client.post("/api/models/validate", json={"yaml": yaml_text}).json()
@@ -186,7 +186,7 @@ def test_raw_yaml_parity_and_invalid_not_persisted(client):
     """Raw-YAML editing keeps full parity: a valid PUT persists + reloads; an
     invalid PUT is rejected (400) and does not change the stored yaml."""
     base = ("name: t_parity\nsource: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
-            "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: pl.len()\n")
+            "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: count()\n")
     assert client.post("/api/models", json={"yaml": base}).status_code == 201
     try:
         good = base.replace("label: ", "") + "\n# a valid trailing comment\n"
@@ -194,8 +194,85 @@ def test_raw_yaml_parity_and_invalid_not_persisted(client):
         assert "valid trailing comment" in client.get("/api/models/t_parity/yaml").json()["yaml"]
 
         # invalid yaml (measure expr that cannot compile) must be refused + not stored
-        bad = base.replace("expr: pl.len()", "expr: pl.col(")
+        bad = base.replace("expr: count()", "expr: sum(")
         assert client.put("/api/models/t_parity/yaml", json={"yaml": bad}).status_code == 400
         assert "valid trailing comment" in client.get("/api/models/t_parity/yaml").json()["yaml"]
     finally:
         client.delete("/api/models/t_parity")
+
+
+# ── 008-safe-measure-compilation: auth-gated model-measure authoring ───────
+
+def _probe_model(client):
+    yaml_text = ("name: auth_probe\nsource: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
+                 "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: count()\n")
+    assert client.post("/api/models", json={"yaml": yaml_text}).status_code == 201
+
+
+def test_measure_mutation_requires_auth(client):
+    _probe_model(client)
+    try:
+        body = {"name": "probe", "expr": "sum(unit_price)"}
+        # no credentials at all
+        assert client.post("/api/models/auth_probe/measures", json=body).status_code == 401
+        # wrong key
+        assert client.post("/api/models/auth_probe/measures", json=body,
+                            headers={"X-API-Key": "nope", "X-Author": "eve"}).status_code == 401
+        # correct key, missing author
+        assert client.post("/api/models/auth_probe/measures", json=body,
+                            headers={"X-API-Key": "test-secret"}).status_code == 400
+        # correct key, empty author
+        assert client.post("/api/models/auth_probe/measures", json=body,
+                            headers={"X-API-Key": "test-secret", "X-Author": "  "}).status_code == 400
+        # PUT/DELETE are gated the same way
+        assert client.put("/api/models/auth_probe/measures/rows", json={
+            "name": "rows", "expr": "count()"}).status_code == 401
+        assert client.delete("/api/models/auth_probe/measures/rows").status_code == 401
+    finally:
+        client.delete("/api/models/auth_probe")
+
+
+def test_measure_authoring_success_and_provenance(client, auth_headers):
+    _probe_model(client)
+    try:
+        create = client.post("/api/models/auth_probe/measures", json={
+            "name": "avg_price", "expr": "mean(unit_price)"}, headers=auth_headers)
+        assert create.status_code == 201
+        history = client.get("/api/models/auth_probe/measures/avg_price/history").json()
+        assert len(history) == 1
+        assert history[0]["version"] == 1 and history[0]["author"] == auth_headers["X-Author"]
+        assert history[0]["action"] == "create" and history[0]["expr"] == "mean(unit_price)"
+
+        update = client.put("/api/models/auth_probe/measures/avg_price", json={
+            "name": "avg_price", "expr": "mean(unit_cost)"}, headers=auth_headers)
+        assert update.status_code == 200
+        history = client.get("/api/models/auth_probe/measures/avg_price/history").json()
+        assert [h["version"] for h in history] == [2, 1]
+        assert history[0]["action"] == "update" and history[0]["expr"] == "mean(unit_cost)"
+
+        # invalid expression on update is refused, nothing changes
+        bad = client.put("/api/models/auth_probe/measures/avg_price", json={
+            "name": "avg_price", "expr": "nope(unit_cost)"}, headers=auth_headers)
+        assert bad.status_code == 400
+        assert len(client.get("/api/models/auth_probe/measures/avg_price/history").json()) == 2
+
+        delete = client.delete("/api/models/auth_probe/measures/avg_price", headers=auth_headers)
+        assert delete.status_code == 204
+        model = next(m for m in client.get("/api/models").json() if m["name"] == "auth_probe")
+        assert "avg_price" not in {m["name"] for m in model["measures"]}
+        history = client.get("/api/models/auth_probe/measures/avg_price/history").json()
+        assert history[0]["action"] == "delete" and history[0]["version"] == 3 and history[0]["expr"] is None
+    finally:
+        client.delete("/api/models/auth_probe")
+
+
+def test_reading_saved_measure_needs_no_auth(client, auth_headers):
+    _probe_model(client)
+    try:
+        client.post("/api/models/auth_probe/measures", json={
+            "name": "avg_price", "expr": "mean(unit_price)"}, headers=auth_headers)
+        q = client.post("/api/query", json={
+            "model": "auth_probe", "dimensions": [], "measures": ["avg_price"]})
+        assert q.status_code == 200 and q.json()["rows"][0]["avg_price"] > 0
+    finally:
+        client.delete("/api/models/auth_probe")
