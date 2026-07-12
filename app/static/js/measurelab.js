@@ -198,11 +198,28 @@ async function saveToModel() {
 
 // ── completion (shared engine, polars-expression context) ────
 
-// resolve the measure-lab textarea against the model's source columns
+// combined completion pool for a bare identifier: source columns plus
+// sibling measure names (model measures + this visual's other inline
+// measures) — a bare name is one or the other depending on whether the
+// expr turns out to be a window measure (running_total()/lag()), which
+// isn't known until it's parsed, so both are offered together (mirrors
+// modelform.js's exprColumns()). The measure currently being edited is
+// excluded so it's never suggested as its own sibling.
+function exprPool() {
+  const names = new Set(lab.schema.map((c) => c.name));
+  const measureNames = [
+    ...state.model.measures.map((m) => m.name),
+    ...state.inlineMeasures.map((m) => m.name),
+  ].filter((n, i, arr) => n && n !== lab.editingName && !names.has(n) && arr.indexOf(n) === i);
+  return [...lab.schema, ...measureNames.map((n) => ({ name: n, dtype: "measure" }))];
+}
+
+// resolve the measure-lab textarea against source columns, sibling
+// measures, and this visual's declared parameters (for param('name'))
 function labResolve(upto, after, caret) {
   const ctx = dslContext(upto, caret);
   if (!ctx) return null;
-  return { items: dslItems(ctx, lab.schema, after), start: ctx.start };
+  return { items: dslItems(ctx, exprPool(), after, state.parameters), start: ctx.start };
 }
 
 // ── wiring ───────────────────────────────────────────────────

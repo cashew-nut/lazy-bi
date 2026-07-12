@@ -437,11 +437,16 @@ the affordances only insert/patch the one document.
 ### The measure lab
 
 *+ new measure* under the builder's measure list opens an inline editor on the
-visual itself. Type in the safe DSL — a bare identifier offers function names
-and columns, `col("` offers the source's columns (post-join, with dtypes) —
-and every keystroke re-runs the current query with the draft measure so it
-renders live in the chart (with the value shown directly when there are no
-dimensions). Two save paths:
+visual itself. Type in the safe DSL — a bare identifier offers function names,
+source columns, *and* sibling measures (model measures plus this visual's
+other inline measures, since a bare name inside `running_total()`/`lag()`
+means a measure, not a column, and the client can't know which mode an
+expression is in until it parses); `col("` offers the source's columns
+(post-join, with dtypes); `param('` — legal only as `lag()`'s periods
+argument — offers this visual's declared parameters, each hinting its
+values and default. Every keystroke re-runs the current query with the
+draft measure so it renders live in the chart (with the value shown
+directly when there are no dimensions). Two save paths:
 
 - **SAVE TO VISUAL** — the measure travels inside the visual's spec
   (`inline_measures` on the query), works on dashboards and in focus mode, and
