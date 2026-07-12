@@ -12,6 +12,8 @@ export const state = {
   dims: [],             // [{name, grain?}]
   measures: [],         // [name]
   inlineMeasures: [],   // visual-scoped measure defs {name,label,expr,format}
+  parameters: [],        // visual-scoped parameter declarations {name,values,default}
+  parameterValues: {},   // current picks {name: value}; missing name -> that parameter's default
   filters: [],          // [{field, op, value, values}]
   chartType: "auto",
   sort: { by: "", desc: true },

@@ -2,7 +2,7 @@
 "use strict";
 
 import {
-  refreshSaved, renderBuilderViz, renderChartSeg, renderFilters, saveVisual,
+  addParameter, refreshSaved, renderBuilderViz, renderChartSeg, renderFilters, saveVisual,
   scheduleRun, selectModel,
 } from "./builder.js";
 import { PALETTE } from "./charts/common.js";
@@ -35,6 +35,7 @@ async function init() {
       state.filters.push({ field: state.model.dimensions[0].name, op: "eq", value: "", values: [] });
       renderFilters();
     });
+    $("#add-param").addEventListener("click", () => addParameter());
     $("#chart-seg").addEventListener("click", (e) => {
       const btn = e.target.closest("button");
       if (!btn) return;
