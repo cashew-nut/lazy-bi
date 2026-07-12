@@ -131,9 +131,9 @@ Single project, existing repository layout (see `plan.md`'s Project Structure) �
 
 ### Implementation for User Story 5
 
-- [ ] T028 [P] [US5] Verify `renderParamToggleBar()` in `app/static/js/builder.js` renders `string`/`float` parameter values correctly (values are already correctly typed from T013/T014's parsing, so this should already work structurally) — fix if a display/comparison bug is found (e.g. a stray numeric assumption), otherwise no code change
-- [ ] T029 [P] [US5] Verify `renderDashParams()` in `app/static/js/dashboard.js` (the dashboard-level shared parameter control) renders `string`/`float` parameter values correctly — fix if found, otherwise no code change
-- [ ] T030 [US5] Browser walkthrough per quickstart.md §5.2: a `string` parameter's viewer control shows its declared text options (not numeric parsing/sorting); a `float` parameter's control allows its declared decimal values; both toggle-and-rerun correctly on a standalone visual and on a dashboard. Zero console errors.
+- [X] T028 [P] [US5] Verify `renderParamToggleBar()` in `app/static/js/builder.js` renders `string`/`float` parameter values correctly (values are already correctly typed from T013/T014's parsing, so this should already work structurally) — fix if a display/comparison bug is found (e.g. a stray numeric assumption), otherwise no code change
+- [X] T029 [P] [US5] Verify `renderDashParams()` in `app/static/js/dashboard.js` (the dashboard-level shared parameter control) renders `string`/`float` parameter values correctly — fix if found, otherwise no code change
+- [X] T030 [US5] Browser walkthrough per quickstart.md §5.2: a `string` parameter's viewer control shows its declared text options (not numeric parsing/sorting); a `float` parameter's control allows its declared decimal values; both toggle-and-rerun correctly on a standalone visual and on a dashboard. Zero console errors.
 
 **Checkpoint**: All five user stories verified — feature complete.
 
