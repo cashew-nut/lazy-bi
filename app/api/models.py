@@ -173,7 +173,8 @@ def get_model_spec(name: str):
     the structured spec the guided form edits."""
     model = get_model(name)
     try:
-        parsed = semantic.parse_model_text(model.origin.read_text())
+        # already loaded & validated; re-parse structurally only (no re-eval)
+        parsed = semantic.parse_model_text(model.origin.read_text(), validate=False)
     except semantic.ModelError as exc:  # file edited into a bad state on disk
         raise HTTPException(status_code=400, detail=str(exc))
     return {"name": name, "file": model.origin.name, "spec": semantic.model_to_spec(parsed)}
@@ -238,10 +239,8 @@ def add_measure(name: str, m: MeasureIn):
         raise HTTPException(status_code=409, detail=f"'{m.name}' already exists on model '{name}'")
     if m.format not in ("number", "currency", "percent"):
         raise HTTPException(status_code=400, detail=f"unknown format '{m.format}'")
-    try:
-        semantic.compile_expr(m.expr, f"measure '{m.name}'")
-    except semantic.ModelError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    # the measure's expression is validated (sandboxed) below by _parse_or_400
+    # on the assembled document — no in-process eval of it here
 
     entry = {"name": m.name}
     if m.label:

@@ -237,7 +237,22 @@ def _spine_prepare(lf: pl.LazyFrame, dims: list, schema: pl.Schema) -> pl.LazyFr
 
 
 def run_query(model: Model, query: dict) -> dict:
-    """Execute a semantic query.
+    """Execute a semantic query, evaluating its measure code in the sandbox
+    subprocess by default (config.SANDBOX_ENABLED). The heavy lifting is in
+    run_query_local, which the sandbox worker calls in-process on the other
+    side of the process boundary; set CI_SANDBOX=off to skip the subprocess and
+    run it here (trusted single-user deployments and the fast test suites)."""
+    if config.SANDBOX_ENABLED:
+        from . import sandbox
+        try:
+            return sandbox.execute(model, query)
+        except sandbox.SandboxError as exc:
+            raise QueryError(str(exc)) from exc
+    return run_query_local(model, query)
+
+
+def run_query_local(model: Model, query: dict) -> dict:
+    """Execute a semantic query in-process (evaluates measure code here).
 
     query = {
       dimensions: ["region", {"name": "order_date", "grain": "1mo"}],

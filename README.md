@@ -338,9 +338,64 @@ directly when there are no dimensions). Two save paths:
 - **SAVE TO MODEL** — appends the measure to the model's yaml
   (comment-preserving) and hot-reloads, promoting it to a shared model measure.
 
-> ⚠️ Measures are `eval`'d with `pl` in scope. Model YAML is trusted
-> configuration, the same trust level as the application code. Don't load
-> model files from untrusted users.
+> ⚠️ Measures are `eval`'d/`exec`'d with `pl` in scope — arbitrary Python. By
+> default that evaluation is confined to a throwaway sandboxed subprocess (see
+> below), so an inline measure submitted through the query API can't reach the
+> app process or its host. Model YAML on disk is still trusted configuration —
+> the same trust level as the application code — but the sandbox is what makes
+> ad-hoc, network-submitted measures safe to run.
+
+## Safety: the measure-code sandbox
+
+A measure `expr`/`frame` is evaluated Python. Clearing `__builtins__` around the
+`eval` is **not** a security boundary — `().__class__.__bases__[0].__subclasses__()`
+walks straight back to `Popen`/`os` — so any measure that reaches the app
+process is remote code execution. That matters most for **inline measures**,
+which arrive in the body of `POST /api/query` and (like the whole demo) are
+unauthenticated, and for the model **validate / save** endpoints, which compile
+submitted YAML.
+
+So by default (`CI_SANDBOX=on`) every evaluation of measure code — query
+execution *and* expression validation — runs in a fresh, hardened subprocess,
+one per request:
+
+- **process isolation** — a new process per call; nothing leaks between queries,
+  and a crash/segfault/OOM can't take the API down;
+- **`execve`/`execveat`/`ptrace` denied** via a seccomp-BPF filter — a hostile
+  expression that reconstructs `Popen` still cannot launch a shell, even in the
+  bare-subprocess tier that shares the filesystem (polars only needs
+  mmap/futex/threads/network, which stay allowed);
+- **resource limits** — `RLIMIT_CPU`, `FSIZE`, `NPROC`, `NOFILE` (and optional
+  `RLIMIT_AS`) plus a wall-clock timeout the parent enforces with `SIGKILL`, so
+  an infinite loop or fork-bomb is bounded;
+- **`PR_SET_NO_NEW_PRIVS`** + cores/`ptrace` off — no setuid escalation, no
+  memory scraping;
+- **a stripped environment** — the worker sees only the scoped S3 read
+  credentials the scan needs, never the rest of the host's env;
+- **data-only return path** — the child `collect()`s and hands back **JSON**,
+  never a polars plan, which could otherwise carry a pickled Python UDF that
+  executed on the parent's side.
+
+When `bubblewrap` or `nsjail` is installed the worker is additionally wrapped in
+a namespace jail (read-only root, private `/tmp`, `--die-with-parent`), keeping
+network up for the S3 scan; `CI_SANDBOX_BACKEND=auto` picks the strongest
+available and always falls back to the hardened bare subprocess.
+
+**Operational notes.** The scan needs to read your data bucket, so give the
+sandbox **read-only, single-bucket** S3 credentials — a breach then reads data
+it could already query, nothing more. The network stays open for that scan, so
+egress filtering (the sandbox shouldn't reach anything but your S3 endpoint)
+belongs at the infrastructure layer. Isolation via seccomp/rlimits is
+Linux-only; on other platforms the subprocess still isolates process state,
+secrets, and resources, but install `bwrap`/`nsjail` or run on Linux for the
+syscall filter.
+
+Cost: a spawned worker imports polars, adding **~250–350 ms per query** over
+in-process evaluation — the price of not eval'ing attacker-controlled Python in
+your API process. Set `CI_SANDBOX=off` **only** for a single-user, fully-trusted
+deployment (it reverts to in-process `eval`). Knobs: `CI_SANDBOX`,
+`CI_SANDBOX_BACKEND`, `CI_SANDBOX_CPU_SECONDS`, `CI_SANDBOX_TIMEOUT_SECONDS`,
+`CI_SANDBOX_MEM_MB`, `CI_SANDBOX_FSIZE_MB`, `CI_SANDBOX_NPROC`.
 
 ## API
 

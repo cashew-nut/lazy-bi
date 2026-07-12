@@ -11,6 +11,10 @@ TEST_ENDPOINT = "http://127.0.0.1:9700"
 _tmpdir = tempfile.mkdtemp(prefix="cash_intel_test_")
 os.environ["CI_S3_ENDPOINT"] = TEST_ENDPOINT          # also disables the embedded emulator
 os.environ["CI_DB_PATH"] = str(Path(_tmpdir) / "test.db")
+# The broad suites run measure code in-process for speed; the sandbox path (on
+# by default in production) has its own dedicated suite, test_sandbox.py, which
+# flips it back on. Default-secure is verified there, not weakened here.
+os.environ.setdefault("CI_SANDBOX", "off")
 
 import pytest  # noqa: E402
 from moto.server import ThreadedMotoServer  # noqa: E402

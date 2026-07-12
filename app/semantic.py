@@ -58,6 +58,29 @@ def validate_frame(source: str, owner: str) -> None:
         raise ModelError(f"{owner}: invalid frame syntax: {exc}") from exc
 
 
+def _syntax_check_expr(source: str, owner: str) -> None:
+    """Compile-only (no eval) syntax check for a measure expression. Structural
+    parsing stays free of code execution — the semantic check that it evaluates
+    to a real pl.Expr (compile_expr) runs later, in the sandbox for untrusted
+    text (see validate_model_exprs)."""
+    try:
+        compile(source, f"<{owner}>", "eval")
+    except SyntaxError as exc:
+        raise ModelError(f"{owner}: invalid expression syntax: {exc}") from exc
+
+
+def validate_model_exprs(model: "Model") -> None:
+    """Fully validate every measure's expr/frame by *evaluating* it (this is
+    the eval that must not touch the API process for untrusted models). Raises
+    ModelError on the first invalid measure. Runs in-process — callers reach it
+    either directly (trusted / CI_SANDBOX=off) or via a sandbox worker."""
+    for meas in model.measures.values():
+        owner = f"measure '{meas.name}'"
+        if meas.frame_source:
+            validate_frame(meas.frame_source, owner)
+        meas.expr()  # compile_expr — raises ModelError if it isn't a real pl.Expr
+
+
 def compile_frame(source: str, lf: pl.LazyFrame, dims: list[str], owner: str) -> pl.LazyFrame:
     """Evaluate a measure's intermediary-frame snippet (trusted config, like
     compile_expr). The snippet sees `lf` (the filtered scan, with the query's
@@ -355,12 +378,14 @@ def _parse_model(raw: dict, origin: Path) -> Model:
                 frame_emits=_as_list(m["frame_emits"]) if m.get("frame_emits") else [],
             )
             if meas.frame_source:
-                validate_frame(meas.frame_source, f"measure '{meas.name}'")
+                validate_frame(meas.frame_source, f"measure '{meas.name}'")  # eval-free
             elif meas.frame_emits:
                 raise ModelError(
                     f"{origin.name}: measure '{meas.name}': 'frame_emits' needs a 'frame'"
                 )
-            meas.expr()  # validate at load time
+            # syntax only here (no eval); full validation is a separate,
+            # sandboxable step — see validate_model_exprs / parse_model_text
+            _syntax_check_expr(meas.expr_source, f"measure '{meas.name}'")
             model.measures[meas.name] = meas
         for imp in raw.get("dimension_imports", []):
             model.imports.append(_parse_import(imp, origin.name))
@@ -409,15 +434,34 @@ def append_measure_yaml(text: str, measure: dict) -> str:
     return "\n".join(lines[:insert_at]) + "\n" + block + "\n".join(lines[insert_at:])
 
 
-def parse_model_text(text: str) -> Model:
-    """Parse and validate a model from editor-supplied YAML text."""
+def validate_exprs(model: "Model") -> None:
+    """Run a model's measure-expression validation through the sandbox when it
+    is enabled, in-process otherwise. This is the single choke point where the
+    untrusted `eval` happens; keeping it out of the API process by default is
+    the whole point of app/sandbox.py."""
+    from . import config
+    if config.SANDBOX_ENABLED:
+        from . import sandbox
+        sandbox.validate_model(model)
+    else:
+        validate_model_exprs(model)
+
+
+def parse_model_text(text: str, validate: bool = True) -> Model:
+    """Parse a model from editor-supplied (untrusted) YAML text. Structural
+    parsing never evals; `validate` additionally checks the measure code —
+    sandboxed by default. Pass validate=False when re-parsing content already
+    loaded and validated (e.g. rendering the form for an on-disk model)."""
     try:
         raw = yaml.safe_load(text)
     except yaml.YAMLError as exc:
         raise ModelError(f"invalid yaml: {exc}")
     if not isinstance(raw, dict):
         raise ModelError("yaml must be a mapping with name / source / dimensions / measures")
-    return _parse_model(raw, Path("<editor>"))
+    model = _parse_model(raw, Path("<editor>"))
+    if validate:
+        validate_exprs(model)
+    return model
 
 
 def load_models(models_dir: Path) -> dict[str, Model]:
@@ -427,6 +471,10 @@ def load_models(models_dir: Path) -> dict[str, Model]:
             raw = yaml.safe_load(fh)
         model = _parse_model(raw, path)
         model.origin = path
+        # models on disk are trusted config, but a create/put-yaml endpoint
+        # writes here then reloads — so validate through the same sandbox choke
+        # point rather than eval'ing freshly-written measure code in-process
+        validate_exprs(model)
         models[model.name] = model
     return models
 
