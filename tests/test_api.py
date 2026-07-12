@@ -193,6 +193,21 @@ def _make_param_visual(client, name, values, default, param_name="period_list"):
     return client.post("/api/visuals", json={"name": name, "model": "sales", "spec": spec}).json()
 
 
+def _make_typed_param_visual(client, name, type_name, values, default, param_name="p"):
+    # a comparison works for every type (unlike lag(), which requires int),
+    # so this helper is what US4's type-conflict tests use to build a
+    # non-int-typed visual without tripping US3's lag()-periods type check
+    if type_name == "string":
+        expr = f"count(where(channel, channel == param('{param_name}')))"
+    else:
+        expr = f"sum(if_(unit_price > param('{param_name}'), unit_price, 0))"
+    spec = _visual_spec_with_parameter(
+        parameters=[{"name": param_name, "type": type_name, "values": values, "default": default}],
+        inline_measures=[{"name": "flagged", "expr": expr}],
+    )
+    return client.post("/api/visuals", json={"name": name, "model": "sales", "spec": spec}).json()
+
+
 def test_dashboard_view_saves_and_loads_parameter_selection(client):
     v = _make_param_visual(client, "v_param_view", [1, 2, 3, 4], 1)
     try:
@@ -302,6 +317,59 @@ def test_dashboard_rejects_two_visuals_with_conflicting_default(client):
         })
         assert res.status_code == 400
         assert "period_list" in res.json()["detail"]
+    finally:
+        client.delete(f"/api/visuals/{v1['id']}")
+        client.delete(f"/api/visuals/{v2['id']}")
+
+
+def test_dashboard_rejects_same_name_different_type(client):
+    # 010-parameter-type-generalization US4: a type mismatch alone is
+    # sufficient to conflict, even with values that "look" similar
+    v1 = _make_typed_param_visual(client, "v_type_conflict_int", "int", [1, 2, 3], 1)
+    v2 = _make_typed_param_visual(client, "v_type_conflict_string", "string", ["1", "2", "3"], "1")
+    try:
+        res = client.post("/api/dashboards", json={
+            "name": "d_type_conflict",
+            "items": [{"visual_id": v1["id"], "w": 1}, {"visual_id": v2["id"], "w": 1}],
+            "views": [{"name": "default", "filters": []}],
+            "active_view": 0,
+        })
+        assert res.status_code == 400
+        assert "'p'" in res.json()["detail"]
+    finally:
+        client.delete(f"/api/visuals/{v1['id']}")
+        client.delete(f"/api/visuals/{v2['id']}")
+
+
+def test_dashboard_allows_two_visuals_with_identical_float_parameter(client):
+    v1 = _make_typed_param_visual(client, "v_float_share_a", "float", [10, 50.5, 100], 50.5)
+    v2 = _make_typed_param_visual(client, "v_float_share_b", "float", [10, 50.5, 100], 50.5)
+    try:
+        res = client.post("/api/dashboards", json={
+            "name": "d_float_share",
+            "items": [{"visual_id": v1["id"], "w": 1}, {"visual_id": v2["id"], "w": 1}],
+            "views": [{"name": "default", "filters": []}],
+            "active_view": 0,
+        })
+        assert res.status_code == 201
+        client.delete(f"/api/dashboards/{res.json()['id']}")
+    finally:
+        client.delete(f"/api/visuals/{v1['id']}")
+        client.delete(f"/api/visuals/{v2['id']}")
+
+
+def test_dashboard_allows_two_visuals_with_identical_string_parameter(client):
+    v1 = _make_typed_param_visual(client, "v_string_share_a", "string", ["EU", "US"], "EU")
+    v2 = _make_typed_param_visual(client, "v_string_share_b", "string", ["EU", "US"], "EU")
+    try:
+        res = client.post("/api/dashboards", json={
+            "name": "d_string_share",
+            "items": [{"visual_id": v1["id"], "w": 1}, {"visual_id": v2["id"], "w": 1}],
+            "views": [{"name": "default", "filters": []}],
+            "active_view": 0,
+        })
+        assert res.status_code == 201
+        client.delete(f"/api/dashboards/{res.json()['id']}")
     finally:
         client.delete(f"/api/visuals/{v1['id']}")
         client.delete(f"/api/visuals/{v2['id']}")
