@@ -171,3 +171,37 @@ def test_excessive_nesting_depth_rejected(schema):
 def test_dunder_column_name_rejected(schema):
     with pytest.raises(MeasureCompileError):
         compile_measure("sum(__class__)", schema, alias="v")
+
+
+# --- US4: disallowed (security) vs merely-unsupported errors are distinguishable ---
+
+def test_disallowed_construct_has_disallowed_kind(schema):
+    with pytest.raises(MeasureCompileError) as exc:
+        compile_measure("revenue.__class__", schema, alias="v")
+    assert exc.value.kind == "disallowed"
+
+
+def test_unknown_function_has_unknown_function_kind(schema):
+    with pytest.raises(MeasureCompileError) as exc:
+        compile_measure("foobar(revenue)", schema, alias="v")
+    assert exc.value.kind == "unknown_function"
+
+
+def test_unknown_column_has_unknown_column_kind(schema):
+    with pytest.raises(MeasureCompileError) as exc:
+        compile_measure("sum(does_not_exist)", schema, alias="v")
+    assert exc.value.kind == "unknown_column"
+
+
+def test_oversized_input_has_limit_exceeded_kind(schema):
+    with pytest.raises(MeasureCompileError) as exc:
+        compile_measure("x" * 2500, schema, alias="v")
+    assert exc.value.kind == "limit_exceeded"
+
+
+def test_error_message_is_not_a_python_traceback(schema):
+    with pytest.raises(MeasureCompileError) as exc:
+        compile_measure("foobar(revenue)", schema, alias="v")
+    message = str(exc.value)
+    assert "Traceback" not in message and "File \"" not in message
+    assert "foobar" in message  # names the specific unsupported construct

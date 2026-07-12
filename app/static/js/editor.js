@@ -9,7 +9,7 @@
 "use strict";
 
 import { refreshModels } from "./builder.js";
-import { makeCompleter, polarsContext, polarsItems } from "./completion.js";
+import { dslContext, dslItems, makeCompleter } from "./completion.js";
 import { renderImportPanel } from "./dimlab.js";
 import { $, api, el, fmtBytes } from "./lib.js";
 import { hooks, showView, state } from "./state.js";
@@ -40,7 +40,7 @@ dimensions:
 measures:
   - name: rows
     label: Row Count
-    expr: pl.len()
+    expr: count()
 `;
 
 const NEW_BUNDLE_TEMPLATE = `# new common dimensional model — SAVE writes dimensions/<name>.yaml
@@ -75,7 +75,7 @@ const KINDS = {
     create: (yaml) => api("/api/models", { method: "POST", body: { yaml } }),
     put: (name, yaml) => api(`/api/models/${name}/yaml`, { method: "PUT", body: { yaml } }),
     del: (name) => api(`/api/models/${name}`, { method: "DELETE" }),
-    insert: (col) => `pl.col("${col}")`,   // measures use pl.col(...)
+    insert: (col) => col,   // bare names are valid everywhere: dims, joins, and DSL measure exprs
   },
   bundle: {
     template: NEW_BUNDLE_TEMPLATE,
@@ -170,7 +170,7 @@ async function validateModel(yaml) {
   $("#editor-report").innerHTML = `<b>${res.model.label}</b> (${res.model.name})<br>`
     + `${res.model.dimensions} dimensions · ${res.model.measures} measures`
     + (res.schema_error ? `<br><span class="warn">⚠ ${res.schema_error}</span>` : "");
-  renderColChips(res.columns, "click to insert pl.col(...) at cursor");
+  renderColChips(res.columns, "click to insert the column name at cursor");
   return { ok: true };
 }
 
@@ -316,13 +316,14 @@ async function toggleDatasetPicker() {
 
 // ── expression intellisense in the yaml editor (US4) ──
 
-// Context-aware completion: polars completion inside `expr:` values, bare
-// column-name completion in dimension/join/key contexts (see
-// specs/007-modelling-workspace/contracts/completion.md).
+// Context-aware completion: measure-DSL completion inside `expr:` values,
+// bare column-name completion in dimension/join/key contexts (see
+// specs/007-modelling-workspace/contracts/completion.md and
+// specs/008-safe-measure-compilation/contracts/compile_measure.md).
 function yamlResolve(upto, after, caret) {
-  // polars-expression completion — wherever a pl. trigger appears (measures)
-  const pctx = polarsContext(upto, caret);
-  if (pctx) return { items: polarsItems(pctx, editor.columns, after), start: pctx.start };
+  // measure-DSL completion — wherever a DSL trigger appears (measures)
+  const pctx = dslContext(upto, caret);
+  if (pctx) return { items: dslItems(pctx, editor.columns, after), start: pctx.start };
   // bare column-name completion in column-key contexts
   const line = upto.slice(upto.lastIndexOf("\n") + 1);
   const m = line.match(/^(\s*(?:-\s*)?)([A-Za-z_]+):[ \t]*(\S*)$/);

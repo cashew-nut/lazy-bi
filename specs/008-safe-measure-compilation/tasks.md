@@ -124,12 +124,12 @@ description: "Task list for Safe Measure Compilation"
 
 ### Tests for US4
 
-- [ ] T029 [US4] In `tests/test_measure_dsl.py`, assert that `MeasureCompileError` messages/attributes distinguish a disallowed/security-relevant construct (e.g. attribute access, a banned node type) from a merely-unsupported one (unknown function name, unknown column, oversized/deep input) — e.g. via a `kind` attribute on the exception, not just free-text message matching.
+- [X] T029 [US4] In `tests/test_measure_dsl.py`, assert that `MeasureCompileError` messages/attributes distinguish a disallowed/security-relevant construct (e.g. attribute access, a banned node type) from a merely-unsupported one (unknown function name, unknown column, oversized/deep input) — e.g. via a `kind` attribute on the exception, not just free-text message matching.
 
 ### Implementation for US4
 
-- [ ] T030 [US4] In `app/measure_dsl.py`, give `MeasureCompileError` a `kind: Literal["disallowed", "unknown_function", "unknown_column", "limit_exceeded"]` attribute (or equivalent), and set it correctly at every raise site in the visitor/guards per [contracts/compile_measure.md](./contracts/compile_measure.md). (Depends on T010, T011, T012.)
-- [ ] T031 [US4] Confirm `app/api/query.py` and `app/api/models.py`'s existing `except semantic.ModelError` blocks also catch `MeasureCompileError` (add an explicit `except` clause if the two aren't already compatible) so the specific message reaches the HTTP response detail unwrapped. (Depends on T030.)
+- [X] T030 [US4] In `app/measure_dsl.py`, give `MeasureCompileError` a `kind: Literal["disallowed", "unknown_function", "unknown_column", "limit_exceeded"]` attribute (or equivalent), and set it correctly at every raise site in the visitor/guards per [contracts/compile_measure.md](./contracts/compile_measure.md). (Depends on T010, T011, T012.)
+- [X] T031 [US4] Confirm `app/api/query.py` and `app/api/models.py`'s existing `except semantic.ModelError` blocks also catch `MeasureCompileError` (add an explicit `except` clause if the two aren't already compatible) so the specific message reaches the HTTP response detail unwrapped. (Depends on T030.)
 
 **Checkpoint**: US4 fully functional and testable independently — error responses are specific and categorized, never a raw traceback.
 
@@ -139,10 +139,10 @@ description: "Task list for Safe Measure Compilation"
 
 **Purpose**: Documentation, the constitutional amendment, and full-suite/browser verification required before "done".
 
-- [ ] T032 [P] Update `README.md`: document the measure DSL grammar, a few example measures, the `X-API-Key`/`X-Author` auth requirement for model-measure authoring, and the framed-measure carve-out policy (Constitution Development Workflow mandate — README stays current with every shipped feature).
-- [ ] T033 Amend `.specify/memory/constitution.md` Principle VI per [research.md](./research.md) R5: record the three-way trust-boundary split (inline measures fully allowlisted; model measures' scalar expressions equally allowlisted; the single `frame` construct remains eval-level but is now access-controlled) as the explicit "re-opening" event the principle itself calls for.
-- [ ] T034 Run the full suite (`pytest -q`) and fix any regressions; run the static check from [quickstart.md](./quickstart.md) step 6 (`grep` confirming `app/measure_dsl.py` contains no `eval(`/`exec(`/`compile(` calls, and that `app/semantic.py`'s remaining calls are reachable only from the authenticated frame carve-out).
-- [ ] T035 Execute [quickstart.md](./quickstart.md) steps 1-5 end to end (compiler suite, full regression, framed carve-out, auth-gated authoring, browser spot-check of a rewritten measure in Studio) and record results per Constitution IV.
+- [X] T032 [P] Update `README.md`: document the measure DSL grammar, a few example measures, the `X-API-Key`/`X-Author` auth requirement for model-measure authoring, and the framed-measure carve-out policy (Constitution Development Workflow mandate — README stays current with every shipped feature).
+- [X] T033 Amend `.specify/memory/constitution.md` Principle VI per [research.md](./research.md) R5: record the three-way trust-boundary split (inline measures fully allowlisted; model measures' scalar expressions equally allowlisted; the single `frame` construct remains eval-level but is now access-controlled) as the explicit "re-opening" event the principle itself calls for.
+- [X] T034 Run the full suite (`pytest -q`) and fix any regressions; run the static check from [quickstart.md](./quickstart.md) step 6 (`grep` confirming `app/measure_dsl.py` contains no `eval(`/`exec(`/`compile(` calls, and that `app/semantic.py`'s remaining calls are reachable only from the authenticated frame carve-out).
+- [X] T035 Execute [quickstart.md](./quickstart.md) steps 1-5 end to end (compiler suite, full regression, framed carve-out, auth-gated authoring, browser spot-check of a rewritten measure in Studio) and record results per Constitution IV.
 
 ---
 

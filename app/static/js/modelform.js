@@ -17,7 +17,7 @@ import { $, api, el } from "./lib.js";
 import { hooks, showView, state } from "./state.js";
 
 const STEPS = ["SOURCE", "JOINS", "COMMON MODELS", "DIMENSIONS & MEASURES", "REVIEW & SAVE"];
-const AGGS = { sum: "sum()", mean: "mean()", min: "min()", max: "max()", n_unique: "n_unique()" };
+const AGGS = { sum: "sum", mean: "mean", min: "min", max: "max", count_distinct: "count_distinct" };
 
 const form = {
   editingName: null,   // name of the existing model being edited (null = new)
@@ -72,7 +72,7 @@ export async function openModelForm(name) {
     editingName: name, step: 0, dirty: false,
     name: "", label: "", description: "", source: null, joins: [], imports: [],
     dimensions: [],
-    measures: [{ name: "rows", label: "Row Count", expr: "pl.len()", format: "number", description: "" }],
+    measures: [{ name: "rows", label: "Row Count", expr: "count()", format: "number", description: "" }],
   });
   generated = null;
   showView("modelform");
@@ -425,7 +425,7 @@ function renderMeasures(box) {
     const fmt = el("select", {}, ...["number", "currency", "percent"].map((f) => el("option", { value: f }, f)));
     fmt.value = m.format;
     fmt.addEventListener("change", () => { m.format = fmt.value; markDirty(); });
-    const expr = el("input", { class: "mf-expr", value: m.expr, placeholder: 'pl.col("unit_price").mean()', spellcheck: "false" });
+    const expr = el("input", { class: "mf-expr", value: m.expr, placeholder: "mean(unit_price)", spellcheck: "false" });
     expr.addEventListener("input", () => { m.expr = expr.value; markDirty(); });
     const rm = el("button", { class: "rm", title: "remove measure" }, "✕");
     rm.addEventListener("click", () => { form.measures.splice(idx, 1); markDirty(); renderMeasures(box); });
@@ -447,7 +447,7 @@ function renderQuickAdd(measBox) {
     const c = colSel.value, a = aggSel.value;
     form.measures.push({
       name: `${c}_${a}`, label: "", format: "number", description: "",
-      expr: `pl.col("${c}").${AGGS[a]}`,
+      expr: `${AGGS[a]}(${c})`,
     });
     markDirty();
     renderMeasures(measBox);
