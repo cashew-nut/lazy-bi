@@ -25,6 +25,11 @@ export const DSL_FUNCTIONS = [
   ["if_()", "conditional: if_(predicate, then, else)", -1],
   ["coalesce()", "first non-null of the arguments", -1],
   ["cast()", 'change type: cast(value, "int"|"float"|"str"|"bool")', -1],
+  // window functions: reference sibling *measures* (not raw columns), and
+  // need a time dimension in the query to order by — e.g.
+  // running_total(revenue), (revenue - lag(revenue, 1)) / lag(revenue, 1)
+  ["running_total()", "cumulative sum over the query's date axis: running_total(measure)", -1],
+  ["lag()", "value from n periods back: lag(measure[, periods=1])", -1],
 ];
 
 // Classify a measure-DSL trigger in the text before the caret.

@@ -435,3 +435,115 @@ def test_clinical_framed_measure_on_timeline(models):
             measures=["median_months_to_75pct_randomised"])
     assert 1 <= r["row_count"] <= 10
     assert all(row["median_months_to_75pct_randomised"] > 0 for row in r["rows"])
+
+
+# --- Window measures: running_total() / lag() over a query-time partition --
+
+def _quarterly(models, extra_measures=(), extra_inline=None):
+    return run(
+        models, "sales",
+        dimensions=[{"name": "order_date", "grain": "1q"}],
+        measures=["revenue", *extra_measures],
+        inline_measures=extra_inline or [],
+    )
+
+
+def test_running_total_inline_matches_cumulative_sum(models):
+    inline = [{"name": "revenue_running_total", "expr": "running_total(revenue)"}]
+    r = _quarterly(models, extra_measures=["revenue_running_total"], extra_inline=inline)
+    rows = sorted(r["rows"], key=lambda row: row["order_date"])
+    running = 0.0
+    for row in rows:
+        running += row["revenue"]
+        assert row["revenue_running_total"] == pytest.approx(running)
+
+
+def test_running_total_partitions_by_other_query_dimensions(models):
+    inline = [{"name": "revenue_running_total", "expr": "running_total(revenue)"}]
+    r = run(
+        models, "sales",
+        dimensions=["channel", {"name": "order_date", "grain": "1q"}],
+        measures=["revenue", "revenue_running_total"],
+        inline_measures=inline,
+    )
+    by_channel: dict = {}
+    for row in sorted(r["rows"], key=lambda row: (row["channel"], row["order_date"])):
+        running = by_channel.setdefault(row["channel"], 0.0) + row["revenue"]
+        assert row["revenue_running_total"] == pytest.approx(running)
+        by_channel[row["channel"]] = running
+    assert len(by_channel) > 1  # actually exercised more than one partition
+
+
+def test_pct_change_from_previous_quarter(models):
+    text = "(revenue - lag(revenue, 1)) / lag(revenue, 1)"
+    inline = [{"name": "revenue_qoq", "expr": text}]
+    r = _quarterly(models, extra_measures=["revenue_qoq"], extra_inline=inline)
+    rows = sorted(r["rows"], key=lambda row: row["order_date"])
+    assert rows[0]["revenue_qoq"] is None  # no prior quarter to compare to
+    for prev, cur in zip(rows, rows[1:]):
+        expected = (cur["revenue"] - prev["revenue"]) / prev["revenue"]
+        assert cur["revenue_qoq"] == pytest.approx(expected)
+
+
+def test_window_measure_dependency_dropped_when_not_requested(models):
+    # requesting only the running total shouldn't force `revenue` into the
+    # result — it's still computed internally (the running total needs it)
+    # but trimmed from the response unless also explicitly requested
+    inline = [{"name": "revenue_running_total", "expr": "running_total(revenue)"}]
+    r = run(
+        models, "sales",
+        dimensions=[{"name": "order_date", "grain": "1q"}],
+        measures=["revenue_running_total"],
+        inline_measures=inline,
+    )
+    assert "revenue" not in r["rows"][0]
+    assert "revenue_running_total" in r["rows"][0]
+    assert all(c["name"] != "revenue" for c in r["columns"])
+
+
+def test_window_measure_requires_a_time_dimension(models):
+    inline = [{"name": "revenue_running_total", "expr": "running_total(revenue)"}]
+    with pytest.raises(engine.QueryError, match="time dimension"):
+        run(models, "sales", dimensions=["channel"],
+            measures=["revenue", "revenue_running_total"], inline_measures=inline)
+
+
+def test_window_measure_rejects_ambiguous_multiple_time_dimensions(models):
+    inline = [{"name": "mrr_running_total", "expr": "running_total(mrr)"}]
+    with pytest.raises(engine.QueryError, match="one time dimension"):
+        run(models, "subscriptions",
+            dimensions=[{"name": "active_at", "grain": "1mo"}, {"name": "start_month", "grain": "1mo"}],
+            measures=["mrr", "mrr_running_total"], inline_measures=inline)
+
+
+def test_window_measure_cannot_depend_on_another_window_measure(models):
+    inline = [
+        {"name": "revenue_running_total", "expr": "running_total(revenue)"},
+        {"name": "double_running_total", "expr": "running_total(revenue_running_total)"},
+    ]
+    with pytest.raises(engine.QueryError, match="window measure"):
+        run(models, "sales", dimensions=[{"name": "order_date", "grain": "1q"}],
+            measures=["revenue_running_total", "double_running_total"], inline_measures=inline)
+
+
+def test_window_measure_unknown_dependency_rejected(models):
+    inline = [{"name": "bogus_running_total", "expr": "running_total(does_not_exist)"}]
+    with pytest.raises(engine.QueryError):
+        run(models, "sales", dimensions=[{"name": "order_date", "grain": "1q"}],
+            measures=["bogus_running_total"], inline_measures=inline)
+
+
+def test_shipped_model_window_measures_end_to_end(models):
+    """revenue_running_total / revenue_pct_change ship on the sales model
+    itself (not just as inline demos) — exercise them as real model measures."""
+    r = _quarterly(models, extra_measures=["revenue_running_total", "revenue_pct_change"])
+    rows = sorted(r["rows"], key=lambda row: row["order_date"])
+    running = 0.0
+    for prev, cur in zip([None, *rows], rows):
+        running += cur["revenue"]
+        assert cur["revenue_running_total"] == pytest.approx(running)
+        if prev is None:
+            assert cur["revenue_pct_change"] is None
+        else:
+            expected = (cur["revenue"] - prev["revenue"]) / prev["revenue"]
+            assert cur["revenue_pct_change"] == pytest.approx(expected)
