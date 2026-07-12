@@ -492,6 +492,27 @@ def referenced_parameter_names(text: str) -> set:
     }
 
 
+def lag_period_param_names(text: str) -> set:
+    """Names passed to param(...) specifically as lag()'s second (periods)
+    argument, anywhere in `text` — a structural-only subset of
+    referenced_parameter_names(), used by app/api/visuals.py's visual-save
+    validation to catch a non-int-typed parameter used there without needing
+    a live schema/full compile (the existing visual-save check is
+    deliberately structural-only — see _validate_visual_spec). Never
+    evaluates `text`; parses only."""
+    tree = ast.parse(text, mode="eval")
+    names = set()
+    for n in ast.walk(tree):
+        if (
+            isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "lag"
+            and len(n.args) == 2 and _is_param_call(n.args[1])
+        ):
+            arg = n.args[1]
+            if len(arg.args) == 1 and isinstance(arg.args[0], ast.Constant) and isinstance(arg.args[0].value, str):
+                names.add(arg.args[0].value)
+    return names
+
+
 def compile_measure(
     text: str,
     schema: Optional["pl.Schema"],

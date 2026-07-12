@@ -98,9 +98,9 @@ Single project, existing repository layout (see `plan.md`'s Project Structure) �
 
 ### Implementation for User Story 3
 
-- [ ] T021 [US3] Add a pytest case to `tests/test_api.py`: `/api/measures/check` with a `string`-typed parameter referenced as `lag()`'s periods argument returns `ok: false` with an error naming the type mismatch, not a generic parse failure — quickstart.md §1
-- [ ] T022 [US3] Add a pytest case to `tests/test_api.py`: saving a visual whose inline measure uses a `float`-typed parameter as `lag()`'s periods argument is rejected at visual-save time (via `_validate_visual_spec`/`_validate_measure_body`'s existing compile-time checks), not only at query time — mirrors spec 009's "fail closed at save time" posture (depends on T011)
-- [ ] T023 [US3] Browser walkthrough: in the Measure Lab, declare a `string` parameter, write `lag(revenue, param('name'))`, and confirm the live-check status shows a clear rejection message naming the type mismatch (not a generic/obscure error). Zero console errors otherwise.
+- [X] T021 [US3] Add a pytest case to `tests/test_api.py`: `/api/measures/check` with a `string`-typed parameter referenced as `lag()`'s periods argument returns `ok: false` with an error naming the type mismatch, not a generic parse failure — quickstart.md §1
+- [X] T022 [US3] Add a pytest case to `tests/test_api.py`: saving a visual whose inline measure uses a `float`-typed parameter as `lag()`'s periods argument is rejected at visual-save time (via `_validate_visual_spec`/`_validate_measure_body`'s existing compile-time checks), not only at query time — mirrors spec 009's "fail closed at save time" posture (depends on T011)
+- [X] T023 [US3] Browser walkthrough: in the Measure Lab, declare a `string` parameter, write `lag(revenue, param('name'))`, and confirm the live-check status shows a clear rejection message naming the type mismatch (not a generic/obscure error). Zero console errors otherwise.
 
 **Checkpoint**: User Stories 1-3 verified.
 

@@ -57,6 +57,7 @@ def _validate_visual_spec(spec: dict) -> None:
             raise HTTPException(
                 status_code=400, detail=f"parameter '{name}' default is not one of its declared values"
             )
+    declared_types = {p.get("name"): (p.get("type") or "int") for p in parameters if p.get("name")}
     for m in query.get("inline_measures") or []:
         expr = m.get("expr") or ""
         unknown = measure_dsl.referenced_parameter_names(expr) - seen
@@ -65,6 +66,17 @@ def _validate_visual_spec(spec: dict) -> None:
                 status_code=400,
                 detail=f"measure '{m.get('name')}': references undeclared parameter(s) {sorted(unknown)}",
             )
+        # lag()'s periods argument requires an int-typed parameter — this one
+        # position gets a save-time type check even without a full compile,
+        # since it's a purely structural (not schema-dependent) fact about
+        # the expression (specs/010-parameter-type-generalization US3)
+        for pname in measure_dsl.lag_period_param_names(expr):
+            if declared_types.get(pname) != "int":
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"measure '{m.get('name')}': lag()'s periods argument references parameter "
+                           f"'{pname}' (type '{declared_types.get(pname)}'), which must be int",
+                )
 
 
 @router.get("/visuals")

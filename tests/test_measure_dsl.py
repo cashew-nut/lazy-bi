@@ -382,6 +382,15 @@ def test_referenced_parameter_names():
     ) == {"p1", "p2"}
 
 
+def test_lag_period_param_names():
+    from app.measure_dsl import lag_period_param_names
+    assert lag_period_param_names("lag(revenue, param('period_list'))") == {"period_list"}
+    assert lag_period_param_names("lag(revenue, 2)") == set()
+    # a param() reference elsewhere in the same expression isn't a lag()
+    # periods-argument reference, even if it shares an expression with one
+    assert lag_period_param_names("lag(a, param('p1')) + (b > param('p2'))") == {"p1"}
+
+
 # --- Red-team suite: every payload must raise, and must never execute ------
 
 RED_TEAM_PAYLOADS = [

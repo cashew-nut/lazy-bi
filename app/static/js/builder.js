@@ -364,9 +364,15 @@ export function currentSpec() {
 export async function saveVisual(asNew) {
   const name = $("#visual-name").value.trim() || "untitled_visual";
   const payload = { name, model: state.model.name, spec: currentSpec() };
-  const saved = (!asNew && state.visualId)
-    ? await api(`/api/visuals/${state.visualId}`, { method: "PUT", body: payload })
-    : await api("/api/visuals", { method: "POST", body: payload });
+  let saved;
+  try {
+    saved = (!asNew && state.visualId)
+      ? await api(`/api/visuals/${state.visualId}`, { method: "PUT", body: payload })
+      : await api("/api/visuals", { method: "POST", body: payload });
+  } catch (err) {
+    alert("Couldn't save: " + err.message);
+    return;
+  }
   state.visualId = saved.id;
   state.visualName = saved.name;
   refreshSaved();

@@ -141,6 +141,30 @@ def test_visual_rejects_wrong_typed_default(client):
     assert "default is not one of its declared values" in res.json()["detail"]
 
 
+def test_visual_rejects_non_int_parameter_used_as_lag_periods(client):
+    # 010-parameter-type-generalization US3: caught at visual-save time
+    # (structurally, without a full compile — see lag_period_param_names),
+    # not only at query time (already covered in test_measure_dsl.py/
+    # test_engine.py) or live-check time (test_measures_check_rejects_*).
+    spec = _visual_spec_with_parameter(
+        parameters=[{"name": "label", "type": "string", "values": ["a", "b"], "default": "a"}],
+        inline_measures=[{"name": "revenue_lag", "expr": "lag(revenue, param('label'))"}],
+    )
+    res = client.post("/api/visuals", json={"name": "t_lag_type_mismatch", "model": "sales", "spec": spec})
+    assert res.status_code == 400
+    assert "must be int" in res.json()["detail"]
+
+
+def test_visual_rejects_float_parameter_used_as_lag_periods_even_when_whole(client):
+    spec = _visual_spec_with_parameter(
+        parameters=[{"name": "n", "type": "float", "values": [2.0, 3.0], "default": 2.0}],
+        inline_measures=[{"name": "revenue_lag", "expr": "lag(revenue, param('n'))"}],
+    )
+    res = client.post("/api/visuals", json={"name": "t_lag_float_mismatch", "model": "sales", "spec": spec})
+    assert res.status_code == 400
+    assert "must be int" in res.json()["detail"]
+
+
 def test_visual_parameter_absent_type_defaults_to_int(client):
     # exact spec-009 shape, no "type" key at all
     spec = _visual_spec_with_parameter()
@@ -794,3 +818,27 @@ def test_measures_check_resolves_string_param_in_coalesce(client):
     body = res.json()
     assert body["ok"] is True
     assert body["window"] is False
+
+
+# ── 010-parameter-type-generalization US3: clear type-mismatch errors ──────
+
+def test_measures_check_rejects_string_param_as_lag_periods(client):
+    res = client.post("/api/measures/check", json={
+        "expr": "lag(revenue, param('label'))",
+        "measure_names": ["revenue"],
+        "parameters": [{"name": "label", "type": "string", "values": ["a", "b"], "default": "a"}],
+    })
+    body = res.json()
+    assert body["ok"] is False
+    assert "int-typed param" in body["error"]
+
+
+def test_measures_check_rejects_float_param_as_lag_periods_even_when_whole(client):
+    res = client.post("/api/measures/check", json={
+        "expr": "lag(revenue, param('n'))",
+        "measure_names": ["revenue"],
+        "parameters": [{"name": "n", "type": "float", "values": [2.0, 3.0], "default": 2.0}],
+    })
+    body = res.json()
+    assert body["ok"] is False
+    assert "int-typed param" in body["error"]
