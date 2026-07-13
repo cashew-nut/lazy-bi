@@ -12,6 +12,7 @@ import {
   paramConflictMessage, publishCurrent, refreshDashList, renderDashboard, renderDashFilters,
   renderFocusFilters, saveDash,
 } from "./dashboard.js";
+import { initAuth } from "./auth.js";
 import { attachBundleForm, confirmLeaveBundleForm, openBundleForm } from "./bundleform.js";
 import { attachEditor, confirmLeaveEditor, deleteEditorItem, saveEditor } from "./editor.js";
 import { $, api } from "./lib.js";
@@ -23,6 +24,7 @@ import { refreshPubs, showView, state } from "./state.js";
 
 async function init() {
   try {
+    await initAuth();   // renders the login view first when no session exists
     const [health, models] = await Promise.all([api("/api/health"), api("/api/models")]);
     $("#conn").innerHTML = `<span class="dot">◉</span> S3 ${health.s3_endpoint.replace(/^https?:\/\//, "")} · POLARS ONLINE`;
     state.models = models;

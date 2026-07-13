@@ -5,10 +5,11 @@ pieces out of scope for v1 (create/delete/live-validate — see
 specs/006-common-dimensions/spec.md Assumptions)."""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from .. import config, engine, semantic
+from ..auth import require_role
 from ..registry import registry
 from .deps import get_bundle
 from .models import DimensionSpec, SourceSpec
@@ -76,7 +77,7 @@ def list_dimension_bundles():
     return [_to_public(b) for b in registry.dimension_bundles.values()]
 
 
-@router.post("/dimensions/reload")
+@router.post("/dimensions/reload", dependencies=[Depends(require_role("admin"))])
 def reload_dimension_bundles():
     _reload_or_400()
     return {"loaded": list(registry.dimension_bundles)}
@@ -106,7 +107,7 @@ def validate_dimension_bundle(body: YamlIn):
             "bundle": {"name": parsed.name, "label": parsed.label, "datasets": datasets}}
 
 
-@router.post("/dimensions/generate")
+@router.post("/dimensions/generate", dependencies=[Depends(require_role("author"))])
 def generate_bundle_yaml(spec: BundleSpec):
     """Render the guided bundle form's structured spec to canonical YAML, then
     run the same parse + per-dataset schema introspection as
@@ -143,7 +144,8 @@ def get_bundle_spec(name: str):
     return {"name": name, "file": bundle.origin.name, "spec": semantic.bundle_to_spec(parsed)}
 
 
-@router.post("/dimensions", status_code=201)
+@router.post("/dimensions", status_code=201,
+             dependencies=[Depends(require_role("admin"))])
 def create_dimension_bundle(body: YamlIn):
     try:
         parsed = semantic.parse_bundle_text(body.yaml)
@@ -158,7 +160,8 @@ def create_dimension_bundle(body: YamlIn):
     return _to_public(registry.dimension_bundles[parsed.name])
 
 
-@router.delete("/dimensions/{name}", status_code=204)
+@router.delete("/dimensions/{name}", status_code=204,
+               dependencies=[Depends(require_role("admin"))])
 def delete_dimension_bundle(name: str):
     bundle = get_bundle(name)
     importers = _importing_models(name)
@@ -178,7 +181,7 @@ def get_dimension_bundle_yaml(name: str):
     return {"name": name, "file": bundle.origin.name, "yaml": bundle.origin.read_text()}
 
 
-@router.put("/dimensions/{name}/yaml")
+@router.put("/dimensions/{name}/yaml", dependencies=[Depends(require_role("admin"))])
 def put_dimension_bundle_yaml(name: str, body: YamlIn):
     bundle = get_bundle(name)
     try:

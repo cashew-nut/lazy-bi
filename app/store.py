@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS measure_provenance (
     frame TEXT,
     frame_emits TEXT,
     author TEXT NOT NULL,
+    user_id INTEGER,
     version INTEGER NOT NULL,
     created_at TEXT NOT NULL
 );
@@ -49,6 +50,12 @@ class VisualStore:
         self.db_path = db_path
         with self._conn() as conn:
             conn.executescript(SCHEMA)
+            # Spec 011: provenance rows written by an authenticated account
+            # carry its user id; pre-auth rows stay NULL ("legacy,
+            # self-declared"). Guarded so existing databases upgrade in place.
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(measure_provenance)")}
+            if "user_id" not in cols:
+                conn.execute("ALTER TABLE measure_provenance ADD COLUMN user_id INTEGER")
 
     def _conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -201,6 +208,8 @@ class VisualStore:
             "frame": row["frame"],
             "frame_emits": json.loads(row["frame_emits"]) if row["frame_emits"] else None,
             "author": row["author"],
+            "user_id": row["user_id"],
+            "verified": row["user_id"] is not None,
             "version": row["version"],
             "created_at": row["created_at"],
         }
@@ -208,7 +217,7 @@ class VisualStore:
     def record_measure_provenance(
         self, model: str, measure: str, action: str, author: str,
         expr: Optional[str] = None, frame: Optional[str] = None,
-        frame_emits: Optional[list] = None,
+        frame_emits: Optional[list] = None, user_id: Optional[int] = None,
     ) -> dict:
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         with self._conn() as conn:
@@ -219,10 +228,10 @@ class VisualStore:
             version = (prev["v"] or 0) + 1
             cur = conn.execute(
                 "INSERT INTO measure_provenance "
-                "(model, measure, action, expr, frame, frame_emits, author, version, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "(model, measure, action, expr, frame, frame_emits, author, user_id, version, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (model, measure, action, expr, frame,
-                 json.dumps(frame_emits) if frame_emits else None, author, version, now),
+                 json.dumps(frame_emits) if frame_emits else None, author, user_id, version, now),
             )
             row = conn.execute(
                 "SELECT * FROM measure_provenance WHERE id = ?", (cur.lastrowid,)

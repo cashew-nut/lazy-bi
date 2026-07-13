@@ -17,7 +17,7 @@
 
 ## Phase 1: Setup
 
-- [ ] T001 Add `argon2-cffi` to `requirements.txt` (pinned) and install into `.venv`; verify `from argon2 import PasswordHasher` imports
+- [X] T001 Add `argon2-cffi` to `requirements.txt` (pinned) and install into `.venv`; verify `from argon2 import PasswordHasher` imports
 
 ---
 
@@ -25,13 +25,13 @@
 
 **⚠️ CRITICAL**: no user-story work until this phase completes.
 
-- [ ] T002 [P] Add auth config to `app/config.py`: `CI_SESSION_IDLE_DAYS` (7), `CI_SESSION_MAX_DAYS` (30), `CI_COOKIE_SECURE` (0); delete `API_KEY`/`CI_API_KEY` (data-model.md "Configuration additions")
-- [ ] T003 [P] Create `app/authstore.py` `AuthStore`: schema for `users`, `sessions`, `api_tokens`, `audit_events` per data-model.md (idempotent executescript, VisualStore idiom); user CRUD with username validation + case-insensitive uniqueness; last-active-admin invariant on role/active updates; session create/get(join users)/touch(60s throttle)/revoke/revoke_all_for_user with idle+absolute expiry; token create/list/revoke/lookup-by-hash; `record_audit()`; lockout fields update helpers
-- [ ] T004 [P] Add guarded migration in `app/store.py`: `ALTER TABLE measure_provenance ADD COLUMN user_id INTEGER` (wrap in try/except or PRAGMA table_info check); extend `record_measure_provenance(user_id=None)` and `_provenance_to_dict` to expose `user_id` and `verified` (user_id is not None)
-- [ ] T005 Rewrite `app/auth.py`: `User` dataclass (id, username, display_name, role, is_active); ordinal role compare (viewer<author<admin); Argon2id hash/verify with `check_needs_rehash`; `establish_session(user_id)` → (cookie value, row) storing SHA-256 (research R2); token verification (`cipat_` SHA-256 lookup, R5); login attempt gate (5 fails → 60s doubling to 15min cap, always-hash timing, R8); FastAPI deps `get_current_user` (reads `request.state.user`) and `require_role(role)`; delete `require_measure_author`
-- [ ] T006 Add `AuthMiddleware` to `app/main.py` + wire `registry.auth_store` in `app/registry.py`: default-deny all `/api/*` except `POST /api/auth/login` and `GET /api/health` (401); resolve principal from Bearer token first, else `ci_session` cookie (R3/R5 precedence); on cookie-authenticated non-GET require `X-Requested-With: fetch` else 403 (R4); attach principal to `request.state`; init AuthStore in lifespan
-- [ ] T007 Rework `tests/conftest.py`: app/client fixtures create viewer, author, admin accounts via AuthStore and expose logged-in `TestClient`s per role (cookie jar + CSRF header baked in) plus an anonymous client; keep existing moto/bucket fixtures working
-- [ ] T008 Foundational tests in `tests/test_auth.py`: AuthStore CRUD + expiry math + last-admin invariant; hash/verify round-trip; session issue/revoke; token hash lookup; middleware 401 default-deny and CSRF 403 (spot routes)
+- [X] T002 [P] Add auth config to `app/config.py`: `CI_SESSION_IDLE_DAYS` (7), `CI_SESSION_MAX_DAYS` (30), `CI_COOKIE_SECURE` (0); delete `API_KEY`/`CI_API_KEY` (data-model.md "Configuration additions")
+- [X] T003 [P] Create `app/authstore.py` `AuthStore`: schema for `users`, `sessions`, `api_tokens`, `audit_events` per data-model.md (idempotent executescript, VisualStore idiom); user CRUD with username validation + case-insensitive uniqueness; last-active-admin invariant on role/active updates; session create/get(join users)/touch(60s throttle)/revoke/revoke_all_for_user with idle+absolute expiry; token create/list/revoke/lookup-by-hash; `record_audit()`; lockout fields update helpers
+- [X] T004 [P] Add guarded migration in `app/store.py`: `ALTER TABLE measure_provenance ADD COLUMN user_id INTEGER` (wrap in try/except or PRAGMA table_info check); extend `record_measure_provenance(user_id=None)` and `_provenance_to_dict` to expose `user_id` and `verified` (user_id is not None)
+- [X] T005 Rewrite `app/auth.py`: `User` dataclass (id, username, display_name, role, is_active); ordinal role compare (viewer<author<admin); Argon2id hash/verify with `check_needs_rehash`; `establish_session(user_id)` → (cookie value, row) storing SHA-256 (research R2); token verification (`cipat_` SHA-256 lookup, R5); login attempt gate (5 fails → 60s doubling to 15min cap, always-hash timing, R8); FastAPI deps `get_current_user` (reads `request.state.user`) and `require_role(role)`; delete `require_measure_author`
+- [X] T006 Add `AuthMiddleware` to `app/main.py` + wire `registry.auth_store` in `app/registry.py`: default-deny all `/api/*` except `POST /api/auth/login` and `GET /api/health` (401); resolve principal from Bearer token first, else `ci_session` cookie (R3/R5 precedence); on cookie-authenticated non-GET require `X-Requested-With: fetch` else 403 (R4); attach principal to `request.state`; init AuthStore in lifespan
+- [X] T007 Rework `tests/conftest.py`: app/client fixtures create viewer, author, admin accounts via AuthStore and expose logged-in `TestClient`s per role (cookie jar + CSRF header baked in) plus an anonymous client; keep existing moto/bucket fixtures working
+- [X] T008 Foundational tests in `tests/test_auth.py`: AuthStore CRUD + expiry math + last-admin invariant; hash/verify round-trip; session issue/revoke; token hash lookup; middleware 401 default-deny and CSRF 403 (spot routes)
 
 **Checkpoint**: foundation ready — user stories can start.
 
@@ -43,17 +43,17 @@
 
 **Independent test** (spec US1): fresh DB → bootstrap admin announced; every route refuses anonymous; role matrix holds for all three roles; session survives reload; sign-out ends it.
 
-- [ ] T009 [US1] Create `app/api/auth.py` router per contracts/auth-api.md: `POST /api/auth/login` (423 lockout, identical 401s, Set-Cookie, audit `login`/`login_failed`/`lockout`), `POST /api/auth/logout` (revoke + clear cookie, audit), `GET /api/auth/me`, `POST /api/auth/password` (verify current, rehash, revoke other sessions, audit); register in `app/api/__init__.py`
-- [ ] T010 [US1] Add `seed_bootstrap_admin()` to `app/seed.py` and call from lifespan in `app/main.py`: only when users table empty; username `admin`, `secrets.token_urlsafe(12)` password, prominent boxed log print, audit `bootstrap_admin_created` (research R9)
-- [ ] T011 [P] [US1] Gate `app/api/models.py` per contract matrix: admin on `POST /models`, `PUT /models/{name}/yaml`, `DELETE /models/{name}`, `POST /models/reload`; author on `POST /models/generate` and measure save/delete routes (frame-payload check → admin, Principle VI); viewer floor elsewhere; measure endpoints take `user: User = Depends(require_role("author"))` and pass `user.display_name`/`user.id` to provenance
-- [ ] T012 [P] [US1] Gate `app/api/dimensions.py`: admin on create/delete/`PUT yaml`/reload; author on `POST /dimensions/generate`; viewer floor on GETs + validate
-- [ ] T013 [P] [US1] Gate `app/api/visuals.py` and `app/api/dashboards.py`: author on all POST/PUT/DELETE incl. `/publish`; viewer floor on GETs incl. `/portal`
-- [ ] T014 [US1] Create `tests/test_role_matrix.py`: walk `app.routes`, assert every (route, method) × {anonymous, viewer, author, admin} verdict matches the contract matrix exactly — unknown/unlisted routes fail the test (SC-001/SC-002)
-- [ ] T015 [US1] Extend `tests/test_auth.py` for US1: login/logout lifecycle, cookie flags (HttpOnly/SameSite=Lax), idle+absolute expiry, bootstrap admin created once and never re-seeded, lockout backoff + no username oracle, retired `X-API-Key`/`X-Author` requests → 401, audit rows written
-- [ ] T016 [US1] Migrate existing suites to authed fixtures: `tests/test_api.py`, `tests/test_datasets.py`, `tests/test_measure_lab.py`, `tests/test_model_form.py`, `tests/test_static.py` (static stays public), `tests/test_store.py` (provenance signature) — full suite green
-- [ ] T017 [US1] Frontend login: new `app/static/js/auth.js` (login view, `me` cache, logout, `canAuthor()`/`isAdmin()` helpers); `app/static/js/main.js` boots via `GET /api/auth/me` → login view on 401; `app/static/js/lib.js` `api()` adds `X-Requested-With: fetch` and global 401 → login view preserving JS state (research R10); user badge + logout in `app/static/index.html`; login styling in `app/static/style.css`
-- [ ] T018 [US1] Hide/disable mutating UI outside role in existing modules (`builder.js` save, `dashboard.js` edit/publish, `measurelab.js` save, `modelling.js`/`editor.js`/`dimlab.js` admin-only): gate with auth.js helpers — server remains enforcer (FR-008)
-- [ ] T019 [US1] Browser-verify US1 per quickstart.md §4 steps 1–5 (login view, sign-in, query loop unchanged, cold-reload persistence, viewer gating, sign-out) with screenshots + zero console errors
+- [X] T009 [US1] Create `app/api/auth.py` router per contracts/auth-api.md: `POST /api/auth/login` (423 lockout, identical 401s, Set-Cookie, audit `login`/`login_failed`/`lockout`), `POST /api/auth/logout` (revoke + clear cookie, audit), `GET /api/auth/me`, `POST /api/auth/password` (verify current, rehash, revoke other sessions, audit); register in `app/api/__init__.py`
+- [X] T010 [US1] Add `seed_bootstrap_admin()` to `app/seed.py` and call from lifespan in `app/main.py`: only when users table empty; username `admin`, `secrets.token_urlsafe(12)` password, prominent boxed log print, audit `bootstrap_admin_created` (research R9)
+- [X] T011 [P] [US1] Gate `app/api/models.py` per contract matrix: admin on `POST /models`, `PUT /models/{name}/yaml`, `DELETE /models/{name}`, `POST /models/reload`; author on `POST /models/generate` and measure save/delete routes (frame-payload check → admin, Principle VI); viewer floor elsewhere; measure endpoints take `user: User = Depends(require_role("author"))` and pass `user.display_name`/`user.id` to provenance
+- [X] T012 [P] [US1] Gate `app/api/dimensions.py`: admin on create/delete/`PUT yaml`/reload; author on `POST /dimensions/generate`; viewer floor on GETs + validate
+- [X] T013 [P] [US1] Gate `app/api/visuals.py` and `app/api/dashboards.py`: author on all POST/PUT/DELETE incl. `/publish`; viewer floor on GETs incl. `/portal`
+- [X] T014 [US1] Create `tests/test_role_matrix.py`: walk `app.routes`, assert every (route, method) × {anonymous, viewer, author, admin} verdict matches the contract matrix exactly — unknown/unlisted routes fail the test (SC-001/SC-002)
+- [X] T015 [US1] Extend `tests/test_auth.py` for US1: login/logout lifecycle, cookie flags (HttpOnly/SameSite=Lax), idle+absolute expiry, bootstrap admin created once and never re-seeded, lockout backoff + no username oracle, retired `X-API-Key`/`X-Author` requests → 401, audit rows written
+- [X] T016 [US1] Migrate existing suites to authed fixtures: `tests/test_api.py`, `tests/test_datasets.py`, `tests/test_measure_lab.py`, `tests/test_model_form.py`, `tests/test_static.py` (static stays public), `tests/test_store.py` (provenance signature) — full suite green
+- [X] T017 [US1] Frontend login: new `app/static/js/auth.js` (login view, `me` cache, logout, `canAuthor()`/`isAdmin()` helpers); `app/static/js/main.js` boots via `GET /api/auth/me` → login view on 401; `app/static/js/lib.js` `api()` adds `X-Requested-With: fetch` and global 401 → login view preserving JS state (research R10); user badge + logout in `app/static/index.html`; login styling in `app/static/style.css`
+- [X] T018 [US1] Hide/disable mutating UI outside role in existing modules (`builder.js` save, `dashboard.js` edit/publish, `measurelab.js` save, `modelling.js`/`editor.js`/`dimlab.js` admin-only): gate with auth.js helpers — server remains enforcer (FR-008)
+- [X] T019 [US1] Browser-verify US1 per quickstart.md §4 steps 1–5 (login view, sign-in, query loop unchanged, cold-reload persistence, viewer gating, sign-out) with screenshots + zero console errors
 
 **Checkpoint**: US1 alone is a shippable MVP — the app is fully fail-closed.
 

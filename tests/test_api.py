@@ -575,54 +575,55 @@ def _probe_model(client):
     assert client.post("/api/models", json={"yaml": yaml_text}).status_code == 201
 
 
-def test_measure_mutation_requires_auth(client):
+def test_measure_mutation_requires_auth(client, anon_client, viewer_client):
     _probe_model(client)
     try:
         body = {"name": "probe", "expr": "sum(unit_price)"}
         # no credentials at all
-        assert client.post("/api/models/auth_probe/measures", json=body).status_code == 401
-        # wrong key
-        assert client.post("/api/models/auth_probe/measures", json=body,
-                            headers={"X-API-Key": "nope", "X-Author": "eve"}).status_code == 401
-        # correct key, missing author
-        assert client.post("/api/models/auth_probe/measures", json=body,
-                            headers={"X-API-Key": "test-secret"}).status_code == 400
-        # correct key, empty author
-        assert client.post("/api/models/auth_probe/measures", json=body,
-                            headers={"X-API-Key": "test-secret", "X-Author": "  "}).status_code == 400
+        assert anon_client.post("/api/models/auth_probe/measures", json=body).status_code == 401
+        # the retired spec-008 shared-secret headers grant nothing (spec 011)
+        assert anon_client.post("/api/models/auth_probe/measures", json=body,
+                                headers={"X-API-Key": "test-secret", "X-Author": "eve",
+                                         "X-Requested-With": "fetch"}).status_code == 401
+        # authenticated but below the author role
+        assert viewer_client.post("/api/models/auth_probe/measures", json=body).status_code == 403
         # PUT/DELETE are gated the same way
-        assert client.put("/api/models/auth_probe/measures/rows", json={
+        assert anon_client.put("/api/models/auth_probe/measures/rows", json={
             "name": "rows", "expr": "count()"}).status_code == 401
-        assert client.delete("/api/models/auth_probe/measures/rows").status_code == 401
+        assert viewer_client.put("/api/models/auth_probe/measures/rows", json={
+            "name": "rows", "expr": "count()"}).status_code == 403
+        assert anon_client.delete("/api/models/auth_probe/measures/rows").status_code == 401
+        assert viewer_client.delete("/api/models/auth_probe/measures/rows").status_code == 403
     finally:
         client.delete("/api/models/auth_probe")
 
 
-def test_measure_authoring_success_and_provenance(client, auth_headers):
+def test_measure_authoring_success_and_provenance(client, author_client):
     _probe_model(client)
     try:
-        create = client.post("/api/models/auth_probe/measures", json={
-            "name": "avg_price", "expr": "mean(unit_price)"}, headers=auth_headers)
+        create = author_client.post("/api/models/auth_probe/measures", json={
+            "name": "avg_price", "expr": "mean(unit_price)"})
         assert create.status_code == 201
         history = client.get("/api/models/auth_probe/measures/avg_price/history").json()
         assert len(history) == 1
-        assert history[0]["version"] == 1 and history[0]["author"] == auth_headers["X-Author"]
+        assert history[0]["version"] == 1 and history[0]["author"] == "Author Tester"
+        assert history[0]["verified"] is True and history[0]["user_id"]
         assert history[0]["action"] == "create" and history[0]["expr"] == "mean(unit_price)"
 
-        update = client.put("/api/models/auth_probe/measures/avg_price", json={
-            "name": "avg_price", "expr": "mean(unit_cost)"}, headers=auth_headers)
+        update = author_client.put("/api/models/auth_probe/measures/avg_price", json={
+            "name": "avg_price", "expr": "mean(unit_cost)"})
         assert update.status_code == 200
         history = client.get("/api/models/auth_probe/measures/avg_price/history").json()
         assert [h["version"] for h in history] == [2, 1]
         assert history[0]["action"] == "update" and history[0]["expr"] == "mean(unit_cost)"
 
         # invalid expression on update is refused, nothing changes
-        bad = client.put("/api/models/auth_probe/measures/avg_price", json={
-            "name": "avg_price", "expr": "nope(unit_cost)"}, headers=auth_headers)
+        bad = author_client.put("/api/models/auth_probe/measures/avg_price", json={
+            "name": "avg_price", "expr": "nope(unit_cost)"})
         assert bad.status_code == 400
         assert len(client.get("/api/models/auth_probe/measures/avg_price/history").json()) == 2
 
-        delete = client.delete("/api/models/auth_probe/measures/avg_price", headers=auth_headers)
+        delete = author_client.delete("/api/models/auth_probe/measures/avg_price")
         assert delete.status_code == 204
         model = next(m for m in client.get("/api/models").json() if m["name"] == "auth_probe")
         assert "avg_price" not in {m["name"] for m in model["measures"]}
@@ -632,21 +633,24 @@ def test_measure_authoring_success_and_provenance(client, auth_headers):
         client.delete("/api/models/auth_probe")
 
 
-def test_reading_saved_measure_needs_no_auth(client, auth_headers):
+def test_saved_measure_queryable_by_any_signed_in_role(client, author_client, viewer_client, anon_client):
     _probe_model(client)
     try:
-        client.post("/api/models/auth_probe/measures", json={
-            "name": "avg_price", "expr": "mean(unit_price)"}, headers=auth_headers)
-        q = client.post("/api/query", json={
+        author_client.post("/api/models/auth_probe/measures", json={
+            "name": "avg_price", "expr": "mean(unit_price)"})
+        q = viewer_client.post("/api/query", json={
             "model": "auth_probe", "dimensions": [], "measures": ["avg_price"]})
         assert q.status_code == 200 and q.json()["rows"][0]["avg_price"] > 0
+        # but never anonymously (spec 011: no anonymous access at all)
+        assert anon_client.post("/api/query", json={
+            "model": "auth_probe", "dimensions": [], "measures": ["avg_price"]}).status_code == 401
     finally:
         client.delete("/api/models/auth_probe")
 
 
 # ── 008-safe-measure-compilation: framed-measure carve-out (US3) ──────────
 
-def test_authenticated_frame_measure_saves_and_computes(client, auth_headers):
+def test_authenticated_frame_measure_saves_and_computes(client):
     """A frame-bearing measure is an authenticated-model-measure-only
     construct: it's accepted here (with provenance), but never inline
     (see test_engine.py's inline-frame-rejected tests)."""
@@ -661,7 +665,7 @@ def test_authenticated_frame_measure_saves_and_computes(client, auth_headers):
             "expr": 'pl.col("n").sum()',
             "frame": 'frame = lf.group_by(dims).agg(pl.len().alias("n"))',
         }
-        res = client.post("/api/models/auth_probe/measures", json=body, headers=auth_headers)
+        res = client.post("/api/models/auth_probe/measures", json=body)
         assert res.status_code == 201
         history = client.get(
             "/api/models/auth_probe/measures/distinct_regions_via_frame/history"
@@ -677,20 +681,25 @@ def test_authenticated_frame_measure_saves_and_computes(client, auth_headers):
         client.delete("/api/models/auth_probe")
 
 
-def test_frame_measure_mutation_still_requires_auth(client):
+def test_frame_measure_mutation_requires_admin(client, anon_client, author_client):
+    """The frame: escape hatch escalates beyond author — admin only
+    (spec 011, Principle VI)."""
     _probe_model(client)
     try:
         body = {"name": "probe_frame", "expr": "count()", "frame": "frame = lf"}
-        assert client.post("/api/models/auth_probe/measures", json=body).status_code == 401
+        assert anon_client.post("/api/models/auth_probe/measures", json=body).status_code == 401
+        res = author_client.post("/api/models/auth_probe/measures", json=body)
+        assert res.status_code == 403
+        assert "admin" in res.json()["detail"]
     finally:
         client.delete("/api/models/auth_probe")
 
 
-def test_frame_emits_without_frame_rejected(client, auth_headers):
+def test_frame_emits_without_frame_rejected(client):
     _probe_model(client)
     try:
         body = {"name": "bad", "expr": "count()", "frame_emits": ["region"]}
-        res = client.post("/api/models/auth_probe/measures", json=body, headers=auth_headers)
+        res = client.post("/api/models/auth_probe/measures", json=body)
         assert res.status_code == 400
         assert "frame_emits" in res.json()["detail"]
     finally:
@@ -708,7 +717,7 @@ def _probe_model_with_time(client):
     assert client.post("/api/models", json={"yaml": yaml_text}).status_code == 201
 
 
-def test_window_measure_saves_without_touching_the_live_source(client, auth_headers):
+def test_window_measure_saves_without_touching_the_live_source(client, author_client):
     """Unlike a plain measure, a window measure's validation never needs to
     scan the source (it only checks sibling measure names) — a bogus source
     path shouldn't block saving one."""
@@ -719,18 +728,18 @@ def test_window_measure_saves_without_touching_the_live_source(client, auth_head
     )
     assert client.post("/api/models", json={"yaml": yaml_text}).status_code == 201
     try:
-        res = client.post("/api/models/window_probe_unreachable/measures", json={
-            "name": "revenue_running_total", "expr": "running_total(revenue)"}, headers=auth_headers)
+        res = author_client.post("/api/models/window_probe_unreachable/measures", json={
+            "name": "revenue_running_total", "expr": "running_total(revenue)"})
         assert res.status_code == 201
     finally:
         client.delete("/api/models/window_probe_unreachable")
 
 
-def test_window_measure_authoring_and_query_end_to_end(client, auth_headers):
+def test_window_measure_authoring_and_query_end_to_end(client, author_client):
     _probe_model_with_time(client)
     try:
-        create = client.post("/api/models/window_probe/measures", json={
-            "name": "revenue_running_total", "expr": "running_total(revenue)"}, headers=auth_headers)
+        create = author_client.post("/api/models/window_probe/measures", json={
+            "name": "revenue_running_total", "expr": "running_total(revenue)"})
         assert create.status_code == 201
         history = client.get("/api/models/window_probe/measures/revenue_running_total/history").json()
         assert history[0]["expr"] == "running_total(revenue)"
@@ -750,11 +759,11 @@ def test_window_measure_authoring_and_query_end_to_end(client, auth_headers):
         client.delete("/api/models/window_probe")
 
 
-def test_window_measure_unknown_sibling_rejected_on_save(client, auth_headers):
+def test_window_measure_unknown_sibling_rejected_on_save(client, author_client):
     _probe_model_with_time(client)
     try:
-        res = client.post("/api/models/window_probe/measures", json={
-            "name": "bad", "expr": "running_total(does_not_exist)"}, headers=auth_headers)
+        res = author_client.post("/api/models/window_probe/measures", json={
+            "name": "bad", "expr": "running_total(does_not_exist)"})
         assert res.status_code == 400
         assert "does_not_exist" in res.json()["detail"]
     finally:
@@ -800,10 +809,10 @@ def test_query_parameter_undeclared_name_rejected(client):
     assert "unknown parameter" in res.json()["detail"]
 
 
-def test_query_parameterized_measure_promotion_to_model_blocked(client, auth_headers):
+def test_query_parameterized_measure_promotion_to_model_blocked(client):
     res = client.post("/api/models/sales/measures", json={
         "name": "revenue_lag_bad", "expr": "lag(revenue, param('period_list'))",
-    }, headers=auth_headers)
+    })
     assert res.status_code == 400
     assert "parameterized measures" in res.json()["detail"]
 

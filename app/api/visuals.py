@@ -1,10 +1,11 @@
 """Saved visuals CRUD (SQLite-backed)."""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from .. import engine, measure_dsl
+from ..auth import require_role
 from ..registry import registry
 
 router = APIRouter(tags=["visuals"])
@@ -84,13 +85,13 @@ def list_visuals():
     return registry.store.list()
 
 
-@router.post("/visuals", status_code=201)
+@router.post("/visuals", status_code=201, dependencies=[Depends(require_role("author"))])
 def create_visual(v: VisualIn):
     _validate_visual_spec(v.spec)
     return registry.store.create(v.name, v.model, v.spec)
 
 
-@router.put("/visuals/{visual_id}")
+@router.put("/visuals/{visual_id}", dependencies=[Depends(require_role("author"))])
 def update_visual(visual_id: int, v: VisualIn):
     _validate_visual_spec(v.spec)
     updated = registry.store.update(visual_id, v.name, v.model, v.spec)
@@ -99,7 +100,7 @@ def update_visual(visual_id: int, v: VisualIn):
     return updated
 
 
-@router.delete("/visuals/{visual_id}", status_code=204)
+@router.delete("/visuals/{visual_id}", status_code=204, dependencies=[Depends(require_role("author"))])
 def delete_visual(visual_id: int):
     if not registry.store.delete(visual_id):
         raise HTTPException(status_code=404, detail="visual not found")

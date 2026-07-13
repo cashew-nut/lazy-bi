@@ -718,3 +718,33 @@ button.ghost.mk-new { margin-top: 2px; }
   padding: 12px; font-size: 12px; line-height: 1.55; color: var(--ink-2);
   overflow: auto; max-height: 60vh; white-space: pre;
 }
+
+/* ── auth: login view + user badge (spec 011) ──────────────── */
+#login-view {
+  position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+  background:
+    radial-gradient(ellipse at 30% 20%, rgba(0, 229, 255, 0.06), transparent 50%),
+    radial-gradient(ellipse at 70% 80%, rgba(255, 46, 210, 0.05), transparent 50%),
+    var(--bg, #0a0e17);
+  z-index: 50;
+}
+#login-view[hidden] { display: none; }
+.login-card {
+  display: flex; flex-direction: column; gap: 6px;
+  width: 320px; padding: 28px 26px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: rgba(10, 14, 23, 0.9);
+  box-shadow: 0 0 40px rgba(0, 229, 255, 0.08);
+}
+.login-card .tagline { margin-bottom: 14px; }
+.login-card .field-label { margin-top: 8px; }
+.login-card input {
+  background: rgba(0, 0, 0, 0.35); border: 1px solid var(--line); border-radius: 4px;
+  color: var(--ink); padding: 8px 10px; font: inherit; letter-spacing: 1px;
+}
+.login-card input:focus { outline: none; border-color: var(--neon); box-shadow: 0 0 8px var(--neon-dim); }
+.login-card .btn { margin-top: 14px; padding: 9px; }
+.login-error { min-height: 16px; font-size: 11px; color: var(--pink); letter-spacing: 1px; }
+
+.user-badge { display: flex; align-items: center; gap: 10px; margin-left: 14px; }
+.user-badge span { font-size: 11px; color: var(--ink-2); letter-spacing: 1px; white-space: nowrap; }

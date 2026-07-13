@@ -452,3 +452,36 @@ def _upload_local_cache(client) -> None:
     for path in sorted(cache.rglob("*.parquet")):
         key = str(path.relative_to(cache))
         client.upload_file(str(path), config.BUCKET, key)
+
+
+def seed_bootstrap_admin() -> bool:
+    """First-run only: when zero accounts exist, create the bootstrap admin
+    with a random password and announce it loudly — the demo stays
+    zero-config without ever shipping a well-known credential. Never runs
+    again once any account exists (so a production DB can't regress to a
+    printed password). Returns True if seeded."""
+    import secrets as _secrets
+
+    from . import auth
+    from .registry import registry
+
+    store = registry.auth_store
+    if store.count_users() > 0:
+        return False
+    password = _secrets.token_urlsafe(12)
+    user = store.create_user("admin", "Bootstrap Admin", "admin",
+                             auth.hash_password(password))
+    store.record_audit("bootstrap_admin_created", "system", target="admin")
+    banner = "═" * 62
+    print(f"""
+{banner}
+  BOOTSTRAP ADMIN CREATED (no accounts existed)
+
+      username: admin
+      password: {password}
+
+  This password is shown ONCE and stored only as a hash.
+  Sign in and change it (or create your own admin) immediately.
+{banner}
+""")
+    return user is not None

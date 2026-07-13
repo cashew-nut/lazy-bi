@@ -26,11 +26,12 @@ DB_PATH = Path(os.environ.get("CI_DB_PATH", PROJECT_ROOT / "cash_intel.db"))
 # Hard cap on rows returned to the browser
 MAX_ROWS = 10_000
 
-# Shared secret gating mutating model-measure endpoints (create/update/delete).
-# Empty/unset means unconfigured: those endpoints fail closed (401) until an
-# operator explicitly sets this. Minimal placeholder for a real identity
-# system later — see specs/008-safe-measure-compilation/spec.md.
-API_KEY = os.environ.get("CI_API_KEY", "")
+# Sessions — see specs/011-session-auth-rbac/. Idle/absolute lifetimes in
+# days; the cookie's Secure flag is off by default because the demo runs on
+# plain HTTP (set CI_COOKIE_SECURE=1 behind TLS).
+SESSION_IDLE_DAYS = int(os.environ.get("CI_SESSION_IDLE_DAYS", "7"))
+SESSION_MAX_DAYS = int(os.environ.get("CI_SESSION_MAX_DAYS", "30"))
+COOKIE_SECURE = os.environ.get("CI_COOKIE_SECURE", "0") == "1"
 
 
 def storage_options() -> dict:

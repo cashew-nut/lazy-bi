@@ -23,9 +23,17 @@ export const svgEl = (tag, attrs = {}) => {
 export async function api(path, opts = {}) {
   const res = await fetch(path, {
     ...opts,
-    headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
+    // X-Requested-With is the CSRF gate: the server refuses cookie-authed
+    // mutations without it, and cross-site pages cannot set it (spec 011)
+    headers: { "Content-Type": "application/json", "X-Requested-With": "fetch",
+               ...(opts.headers || {}) },
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
+  if (res.status === 401 && !path.startsWith("/api/auth/")) {
+    // session expired or revoked: reopen the login overlay without a page
+    // navigation so in-memory drafts survive re-authentication
+    window.dispatchEvent(new Event("auth-required"));
+  }
   if (res.status === 204) return null;
   const data = await res.json();
   if (!res.ok) throw new Error(data.detail || res.statusText);
