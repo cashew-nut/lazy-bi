@@ -10,10 +10,13 @@ network calls (plan.md's Testing section).
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 from . import config
+
+logger = logging.getLogger(__name__)
 
 ToolKind = Literal["propose_query", "ask_clarification", "decline"]
 
@@ -214,6 +217,12 @@ class AnthropicTranslator:
                 messages=[{"role": "user", "content": prompt}],
             )
         except anthropic.APIError as exc:
+            # The user only ever sees a generic "temporarily unavailable"
+            # message (chat.py) — log the real cause server-side so a
+            # deployer can actually diagnose a bad key / network / proxy
+            # issue instead of staring at "Connection error." with nothing
+            # in the terminal.
+            logger.warning("Anthropic API call failed: %r (cause: %r)", exc, exc.__cause__)
             raise TranslatorError(str(exc)) from exc
 
         for block in response.content:
