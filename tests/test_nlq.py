@@ -147,3 +147,81 @@ def test_resolve_stale_prior_context_model_removed_still_revalidates(models):
     ])
     decision = nlq.resolve("and last quarter?", _catalog(models), prior, VIEWER, models, translator)
     assert isinstance(decision, nlq.Decline)
+
+
+# ── filter op / grain re-validation (defense in depth alongside llm.py's
+# schema/prompt fix) — a proposal naming something outside the engine's
+# actual allowlist must decline cleanly here, never reach engine.run_query
+# and surface as a raw, unexplained QueryError ──────────────────────────
+
+def test_resolve_rejects_invalid_filter_op(models):
+    """The exact bug reported: an LLM proposing '=' instead of 'eq' must be
+    caught here as a clean Decline, not fall through to engine.run_query."""
+    translator = FakeTranslator([
+        RawToolCall("propose_query", {
+            "model": "sales", "dimensions": [], "measures": ["revenue"],
+            "filters": [{"field": "category", "op": "=", "value": "Widgets"}],
+        }),
+    ])
+    decision = nlq.resolve("revenue where category = Widgets", _catalog(models), [], VIEWER, models, translator)
+    assert isinstance(decision, nlq.Decline)
+    assert "=" in decision.reason_text
+
+
+def test_resolve_accepts_valid_filter_op(models):
+    translator = FakeTranslator([
+        RawToolCall("propose_query", {
+            "model": "sales", "dimensions": [], "measures": ["revenue"],
+            "filters": [{"field": "category", "op": "eq", "value": "Widgets"}],
+        }),
+    ])
+    decision = nlq.resolve("revenue for widgets", _catalog(models), [], VIEWER, models, translator)
+    assert isinstance(decision, nlq.ProposeQuery)
+
+
+def test_resolve_rejects_invalid_grain(models):
+    translator = FakeTranslator([
+        RawToolCall("propose_query", {
+            "model": "sales", "dimensions": [{"name": "order_date", "grain": "1qtr"}],
+            "measures": ["revenue"],
+        }),
+    ])
+    decision = nlq.resolve("revenue by quarter", _catalog(models), [], VIEWER, models, translator)
+    assert isinstance(decision, nlq.Decline)
+    assert "1qtr" in decision.reason_text
+
+
+def test_resolve_accepts_valid_grain(models):
+    translator = FakeTranslator([
+        RawToolCall("propose_query", {
+            "model": "sales", "dimensions": [{"name": "order_date", "grain": "1q"}],
+            "measures": ["revenue"],
+        }),
+    ])
+    decision = nlq.resolve("revenue by quarter", _catalog(models), [], VIEWER, models, translator)
+    assert isinstance(decision, nlq.ProposeQuery)
+
+
+# ── show_last_query ──────────────────────────────────────────────────────
+
+def test_resolve_show_last_query_returns_most_recent_prior_turn(models):
+    prior = [
+        PriorTurn(question_text="revenue by category", model="sales",
+                  dimensions=["category"], measures=["revenue"], filters=[]),
+        PriorTurn(question_text="now by date instead", model="sales",
+                  dimensions=["order_date"], measures=["revenue"], filters=[],
+                  sort={"by": "revenue", "desc": True}, limit=50),
+    ]
+    translator = FakeTranslator([RawToolCall("show_last_query", {})])
+    decision = nlq.resolve("can you show me the query you just ran?", _catalog(models), prior, VIEWER, models, translator)
+    assert isinstance(decision, nlq.ShowQuery)
+    assert decision.model == "sales"
+    assert decision.dimensions == ["order_date"]
+    assert decision.sort == {"by": "revenue", "desc": True}
+    assert decision.limit == 50
+
+
+def test_resolve_show_last_query_without_prior_context_declines(models):
+    translator = FakeTranslator([RawToolCall("show_last_query", {})])
+    decision = nlq.resolve("show me the query", _catalog(models), [], VIEWER, models, translator)
+    assert isinstance(decision, nlq.Decline)

@@ -191,3 +191,43 @@ def test_delete_conversation(viewer_client):
     conv = viewer_client.post("/api/conversations", json={}).json()
     assert viewer_client.delete(f"/api/conversations/{conv['id']}").status_code == 204
     assert viewer_client.get(f"/api/conversations/{conv['id']}").status_code == 404
+
+
+def test_ask_show_last_query_returns_prior_resolved_query_without_reasking(viewer_client, fake_translator):
+    """Regression test for the reported bug: asking to see the query used to
+    be routed through the same ambiguous NL translator as any other question
+    and could come back as a nonsense decline. show_last_query answers it
+    deterministically from the conversation's own history instead."""
+    fake_translator.responses.append(_propose_sales_by_category())
+    conv = viewer_client.post("/api/conversations", json={}).json()
+    viewer_client.post(f"/api/conversations/{conv['id']}/ask", json={"question": "revenue by category"})
+
+    fake_translator.responses.append(RawToolCall("show_last_query", {}))
+    res = viewer_client.post(f"/api/conversations/{conv['id']}/ask",
+                              json={"question": "can you return the query that you tried to me?"})
+    body = res.json()
+    assert body["response"]["outcome"] == "query_shown"
+    assert body["response"]["resolved_query"]["model"] == "sales"
+    assert body["response"]["resolved_query"]["measures"] == ["revenue"]
+    assert body["response"]["result"] is None  # no new query is executed
+
+
+def test_ask_show_last_query_with_no_prior_turns_declines(viewer_client, fake_translator):
+    fake_translator.responses.append(RawToolCall("show_last_query", {}))
+    conv = viewer_client.post("/api/conversations", json={}).json()
+    res = viewer_client.post(f"/api/conversations/{conv['id']}/ask", json={"question": "show me the query"})
+    assert res.json()["response"]["outcome"] == "declined"
+
+
+def test_ask_invalid_filter_op_declines_instead_of_raw_engine_error(viewer_client, fake_translator):
+    """Before the fix, an op outside engine.FILTER_OPS (e.g. '=') reached
+    engine.run_query and surfaced as outcome:"error" with a raw QueryError
+    message. It must now be a clean "declined" instead."""
+    fake_translator.responses.append(RawToolCall("propose_query", {
+        "model": "sales", "dimensions": [], "measures": ["revenue"],
+        "filters": [{"field": "category", "op": "=", "value": "Widgets"}],
+    }))
+    conv = viewer_client.post("/api/conversations", json={}).json()
+    res = viewer_client.post(f"/api/conversations/{conv['id']}/ask",
+                              json={"question": "revenue where category = Widgets"})
+    assert res.json()["response"]["outcome"] == "declined"

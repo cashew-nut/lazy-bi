@@ -14,11 +14,22 @@ import logging
 from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
-from . import config
+from . import config, engine
+from .semantic import TIME_GRAINS
 
 logger = logging.getLogger(__name__)
 
-ToolKind = Literal["propose_query", "ask_clarification", "decline"]
+ToolKind = Literal["propose_query", "ask_clarification", "decline", "show_last_query"]
+
+# Reused (not copied) from the engine/semantic modules that actually enforce
+# these, so the tool schema/prompt can never drift from what a proposal is
+# re-validated against (nlq._validate_propose_query) and executed against
+# (engine.run_query) — see the bug this fixes: filters[].op previously had
+# no declared vocabulary at all (the model guessed '=' instead of 'eq'), and
+# grain's only guidance was a wrong example ("1qtr" isn't a real grain).
+_FILTER_OPS = sorted(engine.FILTER_OPS)
+_GRAINS = list(TIME_GRAINS)
+_RELATIVE_DATE_KEYWORDS = list(engine.RELATIVE_DATE_KEYWORDS)
 
 
 @dataclass(frozen=True)
@@ -42,11 +53,13 @@ class PriorTurn:
     dimensions: list
     measures: list[str]
     filters: list[dict]
+    sort: dict | None = None
+    limit: int | None = None
 
 
 @dataclass(frozen=True)
 class RawToolCall:
-    """The LLM's unvalidated tool call. `kind` says which of the three tools
+    """The LLM's unvalidated tool call. `kind` says which of the four tools
     it invoked; `args` is that tool's raw input dict."""
     kind: ToolKind
     args: dict
@@ -89,7 +102,11 @@ _TOOLS = [
                                 "type": "object",
                                 "properties": {
                                     "name": {"type": "string"},
-                                    "grain": {"type": "string", "description": "e.g. 1mo, 1qtr, 1y — only for time dimensions"},
+                                    "grain": {
+                                        "type": "string",
+                                        "enum": _GRAINS,
+                                        "description": "only for time-typed dimensions.",
+                                    },
                                 },
                                 "required": ["name"],
                             },
@@ -103,16 +120,34 @@ _TOOLS = [
                         "type": "object",
                         "properties": {
                             "field": {"type": "string"},
-                            "op": {"type": "string"},
-                            "value": {},
-                            "values": {"type": "array"},
+                            "op": {
+                                "type": "string",
+                                "enum": _FILTER_OPS,
+                                "description": (
+                                    "eq/ne/gt/gte/lt/lte/contains compare against `value`; "
+                                    "in/not_in compare against `values` (a list). contains is "
+                                    "a case-insensitive substring match. Never a symbol like "
+                                    "'=' or '>', and never a SQL keyword like 'LIKE'."
+                                ),
+                            },
+                            "value": {
+                                "description": (
+                                    "for eq/ne/gt/gte/lt/lte/contains. A date/time field also "
+                                    f"accepts a relative keyword ({', '.join(_RELATIVE_DATE_KEYWORDS)}) "
+                                    "or an offset like 'today-90d' / 'today+2mo', besides an ISO date."
+                                ),
+                            },
+                            "values": {"type": "array", "description": "for in/not_in only."},
                         },
                         "required": ["field", "op"],
                     },
                 },
                 "sort": {
                     "type": ["object", "null"],
-                    "properties": {"by": {"type": "string"}, "desc": {"type": "boolean"}},
+                    "properties": {
+                        "by": {"type": "string", "description": "one of this query's own dimension or measure names."},
+                        "desc": {"type": "boolean", "description": "defaults to true (descending) when omitted."},
+                    },
                 },
                 "limit": {"type": ["integer", "null"]},
             },
@@ -136,6 +171,17 @@ _TOOLS = [
         },
     },
     {
+        "name": "show_last_query",
+        "description": (
+            "The user is asking to see, return, or repeat the actual query "
+            "(model/dimensions/measures/filters) behind a previous answer in "
+            "this conversation — not a new business question. Use this for "
+            "things like 'show me the query', 'what did you just run', or "
+            "'return the query you used'. Takes no arguments."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "decline",
         "description": (
             "The question cannot be answered from the declared catalog "
@@ -155,9 +201,24 @@ _SYSTEM_PROMPT = (
     "You are a BI assistant answering questions strictly from a declared "
     "semantic layer. You may only reference models/dimensions/measures "
     "given in the catalog below — never a raw column, another data source, "
-    "code, or SQL. You must call exactly one tool: propose_query when the "
-    "question maps unambiguously to the catalog, ask_clarification when it "
-    "could reasonably map to more than one model/dimension/measure, or "
+    "code, or SQL.\n\n"
+    "Rules for a propose_query call (violating these makes the query fail):\n"
+    f"- filters[].op must be exactly one of: {', '.join(_FILTER_OPS)} — never "
+    "a symbol like '=' or '>', and never a SQL keyword.\n"
+    "- eq/ne/gt/gte/lt/lte/contains compare against `value`; in/not_in "
+    "compare against `values` (a list). contains is a case-insensitive "
+    "substring match.\n"
+    "- A date/time filter's `value` may be an ISO date ('2025-01-31') or a "
+    f"relative keyword ({', '.join(_RELATIVE_DATE_KEYWORDS)}), or an offset "
+    "like 'today-90d' / 'today+2mo'.\n"
+    f"- A time dimension's `grain` (when given) must be one of: {', '.join(_GRAINS)}.\n"
+    "- sort.by must name one of the query's own dimensions or measures; "
+    "sort.desc defaults to true (descending) when omitted.\n\n"
+    "You must call exactly one tool: propose_query when the question maps "
+    "unambiguously to the catalog, ask_clarification when it could "
+    "reasonably map to more than one model/dimension/measure, "
+    "show_last_query when the user is asking to see/return the query used "
+    "for a previous answer rather than asking a new business question, or "
     "decline when it cannot be answered from the catalog at all."
 )
 
@@ -187,7 +248,7 @@ def _prior_context_text(prior_context: list[PriorTurn]) -> str:
 
 class AnthropicTranslator:
     """Talks to the Anthropic Messages API with forced tool-use so the
-    result is always one of the three typed decisions (research.md R1)."""
+    result is always one of the four typed decisions (research.md R1)."""
 
     def __init__(self, api_key: str | None = None, model: str | None = None):
         self.api_key = api_key or config.LLM_API_KEY

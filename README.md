@@ -631,14 +631,17 @@ user ask plain-language business questions and get back a natural-language
 answer grounded in the same semantic layer and query engine everything else
 in this app uses — the assistant never queries data directly. Every
 question is translated into a proposal (`propose_query` / `ask_clarification`
-/ `decline`), which is then **re-validated against the live model** before
-it's ever executed through `engine.run_query` — the same code path
-`POST /api/query` runs. An LLM can propose, it can never bypass the
-semantic layer: a proposal referencing an undeclared column, an unjoined
-model, or anything else outside what's already declared is rejected before
-any query runs. Conversations persist per-user (SQLite) and are strictly
-owner-scoped; asking a question requires only the **viewer** role, the same
-tier as the query builder.
+/ `show_last_query` / `decline`), which is then **re-validated against the
+live model** before it's ever executed through `engine.run_query` — the
+same code path `POST /api/query` runs. An LLM can propose, it can never
+bypass the semantic layer: a proposal referencing an undeclared column, an
+unjoined model, an out-of-vocabulary filter operator, or anything else
+outside what's already declared is rejected before any query runs.
+`show_last_query` lets a user reliably ask for the exact query behind a
+prior answer (e.g. "what query did you just run?") without that request
+being mis-translated as a new, unanswerable business question. Conversations
+persist per-user (SQLite) and are strictly owner-scoped; asking a question
+requires only the **viewer** role, the same tier as the query builder.
 
 **Off by default.** The whole feature — nav entry, API routes, everything —
 is disabled (`GET/POST /api/conversations*` return 503) unless
