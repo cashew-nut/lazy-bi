@@ -105,11 +105,11 @@
 
 ## Phase 7: Polish & Cross-Cutting
 
-- [ ] T031 [P] Update `README.md` as part of the feature (constitution workflow rule): auth section — roles, first-run bootstrap login, env vars (`CI_SESSION_*`, `CI_COOKIE_SECURE` behind TLS), personal access tokens for scripts, retired `CI_API_KEY`; refresh the architecture diagram line for auth
-- [ ] T032 [P] Amend `.specify/memory/constitution.md` Principle VI: `frame:` path and raw YAML routes now gated by the admin role of a real identity system (supersedes `X-API-Key`+`X-Author` wording); bump version + amendment date (spec "Constitution Impact")
-- [ ] T033 [P] Verify `docker-compose.yml` demo path: no new env required, bootstrap password visible in `docker compose up` output; add `CI_COOKIE_SECURE` passthrough comment
-- [ ] T034 Run quickstart.md end-to-end: full pytest suite, curl walk-through (§3), upgrade-in-place on a pre-feature DB copy (§5), SC-007 spot-check that query latency is unchanged; fix anything found
-- [ ] T035 Final browser golden path (quickstart.md §4 complete, both roles' UIs, zero console errors) — feature "done" gate per Principle IV
+- [X] T031 [P] Update `README.md` as part of the feature (constitution workflow rule): auth section — roles, first-run bootstrap login, env vars (`CI_SESSION_*`, `CI_COOKIE_SECURE` behind TLS), personal access tokens for scripts, retired `CI_API_KEY`; refresh the architecture diagram line for auth
+- [X] T032 [P] Amend `.specify/memory/constitution.md` Principle VI: `frame:` path and raw YAML routes now gated by the admin role of a real identity system (supersedes `X-API-Key`+`X-Author` wording); bump version + amendment date (spec "Constitution Impact")
+- [X] T033 [P] Verify `docker-compose.yml` demo path: no new env required, bootstrap password visible in `docker compose up` output; add `CI_COOKIE_SECURE` passthrough comment
+- [X] T034 Run quickstart.md end-to-end: full pytest suite, curl walk-through (§3), upgrade-in-place on a pre-feature DB copy (§5), SC-007 spot-check that query latency is unchanged; fix anything found
+- [X] T035 Final browser golden path (quickstart.md §4 complete, both roles' UIs, zero console errors) — feature "done" gate per Principle IV
 
 ---
 

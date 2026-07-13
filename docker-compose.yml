@@ -2,13 +2,17 @@
 #   docker compose up                      -> demo mode (embedded S3 emulator) on :8080
 #   docker compose --profile minio up      -> also starts MinIO + a second app
 #                                             on :8081 backed by it
+# First start prints the bootstrap admin's one-time password in the compose
+# output — accounts live in the app-data volume, so it never reprints.
+# Behind a TLS proxy, pass CI_COOKIE_SECURE=1 (and optionally
+# CI_SESSION_IDLE_DAYS / CI_SESSION_MAX_DAYS) via `environment:`.
 services:
   app:
     build: .
     ports:
       - "8080:8080"
     volumes:
-      - app-data:/data              # sqlite: saved visuals, dashboards, publications
+      - app-data:/data              # sqlite: visuals, dashboards, users, sessions
       - ./models:/srv/models        # edit semantic models from the host, live
       - ./data_cache:/srv/data_cache:ro  # optional big datasets (app/load_taxi.py)
 
