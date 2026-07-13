@@ -60,6 +60,7 @@ export function openLab(def = null) {
   loadSchema();
   refreshParamInsertOptions();
   updateSaveModelGuard(labDef());
+  renderLabHistory(def ? def.name : null);
   $("#lab-expr").focus();
 }
 hooks.openLab = openLab;
@@ -150,35 +151,18 @@ async function saveToVisual() {
   scheduleRun();
 }
 
-// Saving a measure to the model is an authoring action and requires the
-// minimal shared credential (see specs/008-safe-measure-compilation) — there
-// is no login system, so we just ask once per tab and cache in
-// sessionStorage, clearing it if the server ever rejects it.
-function measureCredentials() {
-  let key = sessionStorage.getItem("measureApiKey");
-  let author = sessionStorage.getItem("measureAuthor");
-  if (!key || !author) {
-    key = window.prompt("API key to save a model measure (ask your admin):", key || "") || "";
-    author = window.prompt("Your name (recorded on the measure's history):", author || "") || "";
-    sessionStorage.setItem("measureApiKey", key);
-    sessionStorage.setItem("measureAuthor", author);
-  }
-  return { key, author };
-}
-
+// Saving a measure to the model is an authoring action; identity comes from
+// the signed-in session (spec 011) and the server records it in the
+// measure's provenance history — no credentials are collected here anymore.
 async function saveToModel() {
   const def = labDef();
   if (!def.name || !def.expr) return setStatus("needs a name and an expression", true);
   if (PARAM_REF.test(def.expr)) {
     return setStatus("✗ parameterized measures can only be saved to a visual", true);
   }
-  const { key, author } = measureCredentials();
-  if (!key || !author) return setStatus("✗ saving to the model needs an API key and your name", true);
   setStatus("saving to model…");
   try {
-    await api(`/api/models/${state.model.name}/measures`, {
-      method: "POST", body: def, headers: { "X-API-Key": key, "X-Author": author },
-    });
+    await api(`/api/models/${state.model.name}/measures`, { method: "POST", body: def });
     // promoted: no longer visual-scoped
     state.inlineMeasures = state.inlineMeasures.filter((m) => m.name !== lab.editingName && m.name !== def.name);
     if (lab.editingName && lab.editingName !== def.name) {
@@ -188,12 +172,29 @@ async function saveToModel() {
     await refreshModels();   // measure now appears as a regular model measure
     closeLab(false);
   } catch (err) {
-    if (err.message.includes("API-Key") || err.message.includes("Author")) {
-      sessionStorage.removeItem("measureApiKey");
-      sessionStorage.removeItem("measureAuthor");
-    }
     setStatus("✗ " + err.message, true);
   }
+}
+
+// Compact provenance strip: when the lab's name matches a saved model
+// measure, show who wrote each version — pre-auth rows (no verified
+// account) are flagged as legacy/self-declared.
+async function renderLabHistory(name) {
+  const box = $("#lab-history");
+  box.innerHTML = "";
+  box.hidden = true;
+  if (!name || !state.model.measures.some((m) => m.name === name)) return;
+  try {
+    const rows = await api(`/api/models/${state.model.name}/measures/${name}/history`);
+    if (!rows.length) return;
+    box.hidden = false;
+    box.append(el("span", { class: "lab-hint" }, "model history: "));
+    for (const h of rows.slice(0, 4)) {
+      const who = h.verified ? h.author : `${h.author} (legacy, self-declared)`;
+      box.append(el("span", { class: "hist-entry" },
+        `v${h.version} ${h.action} · ${who} · ${String(h.created_at).slice(0, 10)}`));
+    }
+  } catch { /* the strip is informational only */ }
 }
 
 // ── completion (shared engine, polars-expression context) ────

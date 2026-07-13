@@ -278,3 +278,210 @@ def test_auth_flow_writes_audit_trail(anon_client, test_users):
     assert ("login_failed", "audit-ghost") in actions
     assert ("login", creds["username"]) in actions
     assert ("logout", creds["username"]) in actions
+
+
+# ── US2: verified provenance, legacy rows preserved ─────────
+
+def test_provenance_verified_identity_and_legacy_rows(client, author_client):
+    from app.registry import registry
+
+    yaml_text = ("name: prov_probe\nsource: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
+                 "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: count()\n")
+    assert client.post("/api/models", json={"yaml": yaml_text}).status_code == 201
+    try:
+        # a save through the session-authenticated route is verified
+        assert author_client.post("/api/models/prov_probe/measures", json={
+            "name": "prov_m", "expr": "count()"}).status_code == 201
+        # a pre-auth row (as an upgraded database would contain) stays as-is
+        registry.store.record_measure_provenance(
+            "prov_probe", "prov_m", "update", "freetext-label")
+        history = client.get("/api/models/prov_probe/measures/prov_m/history").json()
+        assert [h["version"] for h in history] == [2, 1]   # counter continuity
+        legacy, verified = history[0], history[1]
+        assert verified["verified"] is True
+        assert verified["author"] == "Author Tester" and verified["user_id"]
+        assert legacy["verified"] is False
+        assert legacy["author"] == "freetext-label" and legacy["user_id"] is None
+    finally:
+        client.delete("/api/models/prov_probe")
+
+
+# ── US3: admin user management ───────────────────────────────
+
+def test_admin_creates_users_who_operate_under_their_role(admin_client):
+    for role in ("viewer", "author", "admin"):
+        r = admin_client.post("/api/users", json={
+            "username": f"made-{role}", "display_name": f"Made {role}",
+            "role": role, "password": "made-pass-123"})
+        assert r.status_code == 201, r.text
+        assert r.json()["role"] == role and r.json()["is_active"] is True
+    # duplicates and junk are refused
+    assert admin_client.post("/api/users", json={
+        "username": "MADE-VIEWER", "role": "viewer",
+        "password": "made-pass-123"}).status_code == 409
+    assert admin_client.post("/api/users", json={
+        "username": "ok-name", "role": "root",
+        "password": "made-pass-123"}).status_code == 422
+    assert admin_client.post("/api/users", json={
+        "username": "ok-name", "role": "viewer", "password": "short"}).status_code == 422
+    # each created account signs in and the role matrix holds
+    c = _fresh_client()
+    assert c.post("/api/auth/login", json={"username": "made-viewer",
+                                           "password": "made-pass-123"}).status_code == 200
+    assert c.post("/api/visuals", json={"name": "x", "model": "sales",
+                                        "spec": {}}).status_code == 403
+
+
+def test_role_change_binds_open_sessions(admin_client):
+    admin_client.post("/api/users", json={
+        "username": "promoted", "role": "viewer", "password": "promoted-pw-1"})
+    uid = next(u["id"] for u in admin_client.get("/api/users").json()
+               if u["username"] == "promoted")
+    c = _fresh_client()
+    c.post("/api/auth/login", json={"username": "promoted", "password": "promoted-pw-1"})
+    probe = {"name": "promoted_v", "model": "sales", "spec": {"measures": []}}
+    assert c.post("/api/visuals", json=probe).status_code == 403
+    assert admin_client.patch(f"/api/users/{uid}", json={"role": "author"}).status_code == 200
+    created = c.post("/api/visuals", json=probe)     # same session, next request
+    assert created.status_code == 201
+    admin_client.delete(f"/api/visuals/{created.json()['id']}")
+
+
+def test_deactivation_ends_sessions_and_blocks_sign_in(admin_client):
+    admin_client.post("/api/users", json={
+        "username": "departed", "role": "author", "password": "departed-pw-1"})
+    uid = next(u["id"] for u in admin_client.get("/api/users").json()
+               if u["username"] == "departed")
+    c = _fresh_client()
+    c.post("/api/auth/login", json={"username": "departed", "password": "departed-pw-1"})
+    assert c.get("/api/auth/me").status_code == 200
+    assert admin_client.patch(f"/api/users/{uid}",
+                              json={"is_active": False}).status_code == 200
+    assert c.get("/api/auth/me").status_code == 401           # live session dead
+    assert _fresh_client().post("/api/auth/login", json={
+        "username": "departed", "password": "departed-pw-1"}).status_code == 401
+    # reactivation restores sign-in
+    assert admin_client.patch(f"/api/users/{uid}",
+                              json={"is_active": True}).status_code == 200
+    assert _fresh_client().post("/api/auth/login", json={
+        "username": "departed", "password": "departed-pw-1"}).status_code == 200
+
+
+def test_last_admin_cannot_be_demoted_or_deactivated(anon_client, test_users):
+    """Run against an isolated store so 'exactly one active admin' is real."""
+    import tempfile
+    from pathlib import Path
+
+    from app import auth as auth_mod
+    from app.authstore import AuthStore
+    from app.registry import registry
+
+    original = registry.auth_store
+    registry.auth_store = AuthStore(Path(tempfile.mkdtemp()) / "solo.db")
+    try:
+        registry.auth_store.create_user("solo-admin", "Solo", "admin",
+                                        auth_mod.hash_password("solo-pass-123"))
+        c = _fresh_client()
+        assert c.post("/api/auth/login", json={"username": "solo-admin",
+                                               "password": "solo-pass-123"}).status_code == 200
+        uid = registry.auth_store.get_user_by_username("solo-admin")["id"]
+        for change in ({"role": "viewer"}, {"is_active": False}):
+            r = c.patch(f"/api/users/{uid}", json=change)
+            assert r.status_code == 409
+            assert "last active admin" in r.json()["detail"]
+    finally:
+        registry.auth_store = original
+
+
+def test_password_reset_by_admin_revokes_sessions(admin_client):
+    admin_client.post("/api/users", json={
+        "username": "resetee", "role": "viewer", "password": "resetee-pw-1"})
+    uid = next(u["id"] for u in admin_client.get("/api/users").json()
+               if u["username"] == "resetee")
+    c = _fresh_client()
+    c.post("/api/auth/login", json={"username": "resetee", "password": "resetee-pw-1"})
+    assert admin_client.patch(f"/api/users/{uid}",
+                              json={"password": "resetee-pw-2"}).status_code == 200
+    assert c.get("/api/auth/me").status_code == 401
+    assert _fresh_client().post("/api/auth/login", json={
+        "username": "resetee", "password": "resetee-pw-2"}).status_code == 200
+
+
+# ── US4: personal access tokens over the API ─────────────────
+
+def _bearer(secret):
+    return {"Authorization": f"Bearer {secret}"}
+
+
+def test_token_lifecycle_and_bearer_auth(author_client, anon_client):
+    created = author_client.post("/api/tokens", json={"name": "ci script"})
+    assert created.status_code == 201
+    secret = created.json()["token"]
+    assert secret.startswith("cipat_")
+    # the secret never reappears in listings
+    listing = author_client.get("/api/tokens").json()
+    mine = next(t for t in listing if t["id"] == created.json()["id"])
+    assert "token" not in mine and "token_hash" not in mine
+
+    # bearer auth works with no session and no CSRF header (exempt)
+    me = anon_client.get("/api/auth/me", headers=_bearer(secret))
+    assert me.status_code == 200 and me.json()["role"] == "author"
+    q = anon_client.post("/api/query", headers=_bearer(secret), json={
+        "model": "sales", "dimensions": ["region"], "measures": ["revenue"]})
+    assert q.status_code == 200
+
+    # revocation stops it on the next request; other tokens keep working
+    second = author_client.post("/api/tokens", json={"name": "second"}).json()
+    assert author_client.delete(f"/api/tokens/{created.json()['id']}").status_code == 204
+    assert anon_client.get("/api/auth/me", headers=_bearer(secret)).status_code == 401
+    assert anon_client.get("/api/auth/me",
+                           headers=_bearer(second["token"])).status_code == 200
+
+
+def test_token_carries_owner_role_and_provenance(admin_client, author_client,
+                                                 viewer_client, anon_client):
+    yaml_text = ("name: token_probe\nsource: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
+                 "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: count()\n")
+    assert admin_client.post("/api/models", json={"yaml": yaml_text}).status_code == 201
+    try:
+        author_tok = author_client.post("/api/tokens", json={"name": "authoring"}).json()["token"]
+        viewer_tok = viewer_client.post("/api/tokens", json={"name": "reading"}).json()["token"]
+        # a viewer's token cannot mutate
+        assert anon_client.post("/api/models/token_probe/measures",
+                                headers=_bearer(viewer_tok),
+                                json={"name": "m1", "expr": "count()"}).status_code == 403
+        # an author's token saves, attributed to the owner (SC-005)
+        r = anon_client.post("/api/models/token_probe/measures",
+                             headers=_bearer(author_tok),
+                             json={"name": "m1", "expr": "count()"})
+        assert r.status_code == 201
+        history = admin_client.get("/api/models/token_probe/measures/m1/history").json()
+        assert history[0]["author"] == "Author Tester" and history[0]["verified"] is True
+        # a token cannot manage another user's tokens
+        other_id = author_client.get("/api/tokens").json()[0]["id"]
+        assert viewer_client.delete(f"/api/tokens/{other_id}").status_code == 404
+    finally:
+        admin_client.delete("/api/models/token_probe")
+
+
+def test_token_wins_over_cookie_when_both_present(admin_client, viewer_client):
+    """One identity, never a merge: the bearer token decides (contract §carriers)."""
+    viewer_tok = viewer_client.post("/api/tokens", json={"name": "precedence"}).json()["token"]
+    me = admin_client.get("/api/auth/me", headers=_bearer(viewer_tok))
+    assert me.status_code == 200 and me.json()["role"] == "viewer"
+    # an invalid bearer is a hard 401 — no silent cookie fallback
+    assert admin_client.get("/api/auth/me",
+                            headers=_bearer("cipat_invalid")).status_code == 401
+
+
+def test_owner_deactivation_kills_tokens(admin_client, anon_client):
+    admin_client.post("/api/users", json={
+        "username": "token-owner", "role": "author", "password": "token-pw-12"})
+    uid = next(u["id"] for u in admin_client.get("/api/users").json()
+               if u["username"] == "token-owner")
+    c = _fresh_client()
+    c.post("/api/auth/login", json={"username": "token-owner", "password": "token-pw-12"})
+    tok = c.post("/api/tokens", json={"name": "doomed"}).json()["token"]
+    assert anon_client.get("/api/auth/me", headers=_bearer(tok)).status_code == 200
+    admin_client.patch(f"/api/users/{uid}", json={"is_active": False})
+    assert anon_client.get("/api/auth/me", headers=_bearer(tok)).status_code == 401

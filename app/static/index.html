@@ -29,6 +29,7 @@
       <button data-mode="studio" class="on">STUDIO</button>
       <button data-mode="modelling">MODELLING</button>
       <button data-mode="portal">PORTAL</button>
+      <button data-mode="account">ACCOUNT</button>
     </nav>
     <div id="conn" class="conn">…</div>
     <div id="user-badge" class="user-badge" hidden>
@@ -135,6 +136,7 @@
             </select>
             <span id="lab-status"></span>
           </div>
+          <div id="lab-history" class="lab-history" hidden></div>
           <div class="lab-expr-wrap">
             <textarea id="lab-expr" rows="2" spellcheck="false" autocomplete="off"
               placeholder='mean(unit_price)'></textarea>
@@ -236,6 +238,50 @@
           <button class="btn plain" id="bf-prev">◄ BACK</button>
           <button class="btn alt" id="bf-next">NEXT ►</button>
           <button class="btn" id="bf-save" data-role="admin" hidden>SAVE COMMON MODEL</button>
+        </div>
+      </div>
+
+      <div id="account-view" class="chart-card" hidden>
+        <div class="chart-head">
+          <span class="editor-file">ACCOUNT</span>
+        </div>
+        <div class="acct-body">
+          <section class="acct-panel">
+            <div class="sec-title">Personal Access Tokens</div>
+            <div class="empty-note">tokens authenticate scripts as you, with your role — send as <code>Authorization: Bearer …</code></div>
+            <div id="token-reveal" class="token-reveal" hidden></div>
+            <div id="token-list"></div>
+            <div class="acct-row">
+              <input id="token-name" placeholder="token name (e.g. ci-script)" spellcheck="false">
+              <button class="btn alt" id="token-create">+ CREATE TOKEN</button>
+            </div>
+          </section>
+          <section class="acct-panel">
+            <div class="sec-title">Change Password</div>
+            <div class="acct-row">
+              <input id="pw-current" type="password" placeholder="current password" autocomplete="current-password">
+              <input id="pw-new" type="password" placeholder="new password (min 8)" autocomplete="new-password">
+              <button class="btn alt" id="pw-change">CHANGE</button>
+              <span id="pw-status" class="acct-meta"></span>
+            </div>
+          </section>
+          <section class="acct-panel" id="account-users-panel" hidden>
+            <div class="sec-title">Users (admin)</div>
+            <div class="empty-note">accounts are deactivated, never deleted — history stays attributable · the last active admin cannot be demoted</div>
+            <div id="user-list"></div>
+            <div class="acct-row">
+              <input id="nu-username" placeholder="username" spellcheck="false">
+              <input id="nu-display" placeholder="display name" spellcheck="false">
+              <select id="nu-role">
+                <option value="viewer">viewer</option>
+                <option value="author">author</option>
+                <option value="admin">admin</option>
+              </select>
+              <input id="nu-password" type="password" placeholder="initial password" autocomplete="new-password">
+              <button class="btn alt" id="user-create">+ CREATE USER</button>
+            </div>
+            <span id="user-status" class="acct-meta"></span>
+          </section>
         </div>
       </div>
 

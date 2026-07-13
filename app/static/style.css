@@ -748,3 +748,22 @@ button.ghost.mk-new { margin-top: 2px; }
 
 .user-badge { display: flex; align-items: center; gap: 10px; margin-left: 14px; }
 .user-badge span { font-size: 11px; color: var(--ink-2); letter-spacing: 1px; white-space: nowrap; }
+.lab-history { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 2px 0 6px; }
+.hist-entry { font-size: 10px; color: var(--ink-2); letter-spacing: 0.5px; }
+
+/* ── account view: tokens / password / user management ─────── */
+.acct-body { display: flex; flex-direction: column; gap: 22px; padding: 14px 4px; overflow-y: auto; }
+.acct-panel { display: flex; flex-direction: column; gap: 8px; max-width: 760px; }
+.acct-row { display: flex; align-items: center; gap: 10px; padding: 4px 0; flex-wrap: wrap; }
+.acct-row.dim { opacity: 0.45; }
+.acct-row input, .acct-row select {
+  background: rgba(0, 0, 0, 0.35); border: 1px solid var(--line); border-radius: 4px;
+  color: var(--ink); padding: 6px 9px; font: inherit; min-width: 150px; width: auto;
+}
+.acct-name { color: var(--neon); font-size: 12px; letter-spacing: 1px; min-width: 140px; }
+.acct-meta { color: var(--ink-2); font-size: 11px; letter-spacing: 0.5px; }
+.token-reveal {
+  border: 1px dashed var(--pink); border-radius: 4px; padding: 8px 10px;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.token-reveal code { color: var(--pink); font-size: 11px; word-break: break-all; }

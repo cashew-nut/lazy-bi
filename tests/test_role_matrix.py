@@ -18,6 +18,9 @@ MATRIX = {
     ("POST", "/api/auth/logout"): "viewer",
     ("GET", "/api/auth/me"): "viewer",
     ("POST", "/api/auth/password"): "viewer",
+    ("GET", "/api/tokens"): "viewer",
+    ("POST", "/api/tokens"): "viewer",
+    ("DELETE", "/api/tokens/{token_id}"): "viewer",
 
     ("GET", "/api/models"): "viewer",
     ("POST", "/api/models/validate"): "viewer",
@@ -54,6 +57,9 @@ MATRIX = {
     ("POST", "/api/publish"): "author",
     ("DELETE", "/api/publish/{dashboard_id}"): "author",
 
+    ("GET", "/api/users"): "admin",
+    ("POST", "/api/users"): "admin",
+    ("PATCH", "/api/users/{user_id}"): "admin",
     ("POST", "/api/models"): "admin",
     ("POST", "/api/models/reload"): "admin",
     ("PUT", "/api/models/{name}/yaml"): "admin",

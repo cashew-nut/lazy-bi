@@ -65,9 +65,9 @@
 
 **Independent test** (spec US2): authed measure save with no legacy headers succeeds and records the account; header-only request refused; old rows readable and flagged.
 
-- [ ] T020 [US2] Finish provenance plumbing in `app/api/models.py`: measure create/update/delete record `user_id=user.id, author=user.display_name`; `GET /models/{name}/measures/{m}/history` returns `verified` per row (store change landed in T004)
-- [ ] T021 [P] [US2] Surface authorship in `app/static/js/measurelab.js`: history panel shows account display name with a "legacy (self-declared)" marker for unverified rows; remove any X-Author input remnants from the UI
-- [ ] T022 [US2] Tests in `tests/test_auth.py` / `tests/test_store.py`: new rows have `user_id` + `verified:true`; pre-migration rows (insert with NULL) read back `verified:false`; version counter continuity across the upgrade; deactivated author's token/session can no longer save (ties to US3/US4 checks)
+- [X] T020 [US2] Finish provenance plumbing in `app/api/models.py`: measure create/update/delete record `user_id=user.id, author=user.display_name`; `GET /models/{name}/measures/{m}/history` returns `verified` per row (store change landed in T004)
+- [X] T021 [P] [US2] Surface authorship in `app/static/js/measurelab.js`: history panel shows account display name with a "legacy (self-declared)" marker for unverified rows; remove any X-Author input remnants from the UI
+- [X] T022 [US2] Tests in `tests/test_auth.py` / `tests/test_store.py`: new rows have `user_id` + `verified:true`; pre-migration rows (insert with NULL) read back `verified:false`; version counter continuity across the upgrade; deactivated author's token/session can no longer save (ties to US3/US4 checks)
 
 **Checkpoint**: attribution is real; spec-008 placeholder fully gone.
 
@@ -79,10 +79,10 @@
 
 **Independent test** (spec US3): admin creates one user per role and each behaves per matrix; role change binds live sessions; deactivation kills sessions/tokens; non-admin refused; last admin protected.
 
-- [ ] T023 [US3] Create `app/api/users.py` router per contract: `GET /api/users`, `POST /api/users` (409 duplicate, 422 shape), `PATCH /api/users/{id}` (subset updates; deactivate/password → revoke sessions; 409 on last-active-admin demote/deactivate; no DELETE route); admin-only via `require_role("admin")`; audit every action; register in `app/api/__init__.py`
-- [ ] T024 [US3] Tests in `tests/test_auth.py`: full US3 acceptance — create per role + sign-in; live-session role change takes effect next request; deactivation 401s existing session and blocks sign-in; last-admin 409 (incl. self-demotion); author/viewer get 403 on all `/api/users` routes
-- [ ] T025 [US3] Frontend admin panel: new `app/static/js/admin.js` (user list, create form, role select, activate/deactivate toggle, password reset) reachable from an admin-only nav entry in `app/static/index.html`; wire into `main.js` routing; style in `app/static/style.css`
-- [ ] T026 [US3] Browser-verify US3 per quickstart.md §4 step 6 + step 9 (two-window role-change/deactivation check, last-admin refusal surfaced in UI)
+- [X] T023 [US3] Create `app/api/users.py` router per contract: `GET /api/users`, `POST /api/users` (409 duplicate, 422 shape), `PATCH /api/users/{id}` (subset updates; deactivate/password → revoke sessions; 409 on last-active-admin demote/deactivate; no DELETE route); admin-only via `require_role("admin")`; audit every action; register in `app/api/__init__.py`
+- [X] T024 [US3] Tests in `tests/test_auth.py`: full US3 acceptance — create per role + sign-in; live-session role change takes effect next request; deactivation 401s existing session and blocks sign-in; last-admin 409 (incl. self-demotion); author/viewer get 403 on all `/api/users` routes
+- [X] T025 [US3] Frontend admin panel: new `app/static/js/admin.js` (user list, create form, role select, activate/deactivate toggle, password reset) reachable from an admin-only nav entry in `app/static/index.html`; wire into `main.js` routing; style in `app/static/style.css`
+- [X] T026 [US3] Browser-verify US3 per quickstart.md §4 step 6 + step 9 (two-window role-change/deactivation check, last-admin refusal surfaced in UI)
 
 **Checkpoint**: a team can actually be onboarded.
 
@@ -94,10 +94,10 @@
 
 **Independent test** (spec US4): author token saves a measure with correct attribution; revocation stops it next request; viewer token cannot mutate; secret shown once.
 
-- [ ] T027 [US4] Add token endpoints to `app/api/users.py` per contract: `GET /api/tokens` (own, no secret), `POST /api/tokens` (secret in response only once), `DELETE /api/tokens/{id}` (own only, 404 otherwise); audit `token_created`/`token_revoked` (bearer resolution already lives in middleware from T006)
-- [ ] T028 [US4] Tests in `tests/test_auth.py`: bearer auth on API routes; CSRF exemption for bearer; token-vs-cookie precedence (token wins); revoked token 401; owner deactivation kills tokens; viewer token 403 on mutations; provenance attributed to token owner (SC-005)
-- [ ] T029 [US4] Frontend account panel in `app/static/js/admin.js` (or `auth.js`): "My tokens" list/create/revoke with one-time secret display + copy button; reachable for every role
-- [ ] T030 [US4] Browser-verify US4 per quickstart.md §4 step 7 (create token, secret shown once, revoke)
+- [X] T027 [US4] Add token endpoints to `app/api/users.py` per contract: `GET /api/tokens` (own, no secret), `POST /api/tokens` (secret in response only once), `DELETE /api/tokens/{id}` (own only, 404 otherwise); audit `token_created`/`token_revoked` (bearer resolution already lives in middleware from T006)
+- [X] T028 [US4] Tests in `tests/test_auth.py`: bearer auth on API routes; CSRF exemption for bearer; token-vs-cookie precedence (token wins); revoked token 401; owner deactivation kills tokens; viewer token 403 on mutations; provenance attributed to token owner (SC-005)
+- [X] T029 [US4] Frontend account panel in `app/static/js/admin.js` (or `auth.js`): "My tokens" list/create/revoke with one-time secret display + copy button; reachable for every role
+- [X] T030 [US4] Browser-verify US4 per quickstart.md §4 step 7 (create token, secret shown once, revoke)
 
 **Checkpoint**: all four stories delivered.
 
