@@ -1,0 +1,155 @@
+"""NL-to-semantic-query translation core (specs/012-conversational-
+analytics/). Model-agnostic entry point future features (3.2 prompt-to-
+dashboard, 3.3 dashboard-analyst) can call directly — see contracts/
+chat-api.md's internal contract.
+
+The one rule this module exists to enforce (Constitution Principle I): an
+LLM's output is never trusted as an already-safe query. `resolve()` always
+re-validates a `propose_query` tool call against the *live* semantic model
+before it can become a `ProposeQuery` decision — anything that doesn't
+resolve cleanly downgrades to `Decline`, it never raises past this module
+into an executed query.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Union
+
+from . import semantic
+from .auth import User
+from .llm import ModelCatalogEntry, PriorTurn, Translator, TranslatorError
+
+__all__ = [
+    "ProposeQuery", "AskClarification", "Decline", "Decision",
+    "build_catalog", "resolve",
+]
+
+
+@dataclass(frozen=True)
+class ProposeQuery:
+    model: str
+    dimensions: list
+    measures: list[str]
+    filters: list[dict] = field(default_factory=list)
+    sort: dict | None = None
+    limit: int | None = None
+
+
+@dataclass(frozen=True)
+class AskClarification:
+    question_text: str
+    candidates: list[str]
+
+
+@dataclass(frozen=True)
+class Decline:
+    reason_text: str
+
+
+Decision = Union[ProposeQuery, AskClarification, Decline]
+
+
+def build_catalog(models: dict[str, semantic.Model], scope: list[str]) -> list[ModelCatalogEntry]:
+    """The catalog shown to the LLM, built live from the loaded models
+    (research.md R4) — never cached, so a model rename/reload can never make
+    the assistant propose against a stale schema. `scope` (research.md R6),
+    when non-empty, restricts the catalog to just those model names."""
+    names = scope if scope else list(models.keys())
+    entries = []
+    for name in names:
+        model = models.get(name)
+        if model is None:  # a pinned scope named a model that no longer exists
+            continue
+        entries.append(ModelCatalogEntry(
+            name=model.name,
+            label=model.label,
+            description=model.description,
+            dimensions=[
+                {"name": d.name, "label": d.label, "type": d.type, "description": d.description}
+                for d in model.dimensions.values()
+            ],
+            measures=[
+                {"name": m.name, "label": m.label, "description": m.description}
+                for m in model.measures.values()
+            ],
+        ))
+    return entries
+
+
+def _dim_name(entry) -> str:
+    return entry if isinstance(entry, str) else entry.get("name", "")
+
+
+def _validate_propose_query(args: dict, models: dict[str, semantic.Model],
+                             scope: list[str]) -> ProposeQuery | Decline:
+    model_name = args.get("model")
+    model = models.get(model_name)
+    if model is None:
+        return Decline(f"'{model_name}' is not a model this conversation can query.")
+    if scope and model_name not in scope:
+        return Decline(f"'{model_name}' is outside this conversation's selected model scope.")
+
+    dimensions = args.get("dimensions") or []
+    measures = args.get("measures") or []
+    filters = args.get("filters") or []
+    try:
+        for entry in dimensions:
+            model.dimension(_dim_name(entry))
+        for m in measures:
+            model.measure(m)
+        for f in filters:
+            model.dimension(f.get("field", ""))
+    except semantic.ModelError as exc:
+        return Decline(f"can't answer that from the declared '{model_name}' model: {exc}")
+
+    if not measures:
+        return Decline(f"the question doesn't map to any declared measure in '{model_name}'.")
+
+    sort = args.get("sort")
+    if sort and sort.get("by") not in measures:
+        try:
+            model.dimension(sort.get("by", ""))
+        except semantic.ModelError:
+            return Decline(f"can't sort by an undeclared field in '{model_name}'.")
+
+    return ProposeQuery(
+        model=model_name, dimensions=dimensions, measures=measures,
+        filters=filters, sort=sort, limit=args.get("limit"),
+    )
+
+
+def _validate_ask_clarification(args: dict, catalog: list[ModelCatalogEntry]) -> AskClarification | Decline:
+    known = {m.name for m in catalog}
+    for m in catalog:
+        known.update(d["name"] for d in m.dimensions)
+        known.update(meas["name"] for meas in m.measures)
+    candidates = [c for c in (args.get("candidates") or []) if c in known]
+    if not candidates:
+        return Decline("that's ambiguous and no valid candidates could be identified from the declared models.")
+    return AskClarification(question_text=args.get("question_text", ""), candidates=candidates)
+
+
+def resolve(
+    question: str,
+    catalog: list[ModelCatalogEntry],
+    prior_context: list[PriorTurn],
+    user: User,
+    models: dict[str, semantic.Model],
+    translator: Translator,
+    scope: list[str] | None = None,
+) -> Decision:
+    """Translate `question` into a Decision. Raises TranslatorError only for
+    the LLM call itself failing (network/timeout) — every other failure mode
+    (bad/unsafe proposal) resolves to a Decline, never an exception, so a
+    caller only needs to catch TranslatorError for the "assistant is
+    unreachable" case (contracts/chat-api.md's 503)."""
+    raw = translator.translate(question, catalog, prior_context)
+    scope = scope or []
+
+    if raw.kind == "decline":
+        return Decline(reason_text=raw.args.get("reason_text", "I can't answer that from the declared models."))
+    if raw.kind == "ask_clarification":
+        return _validate_ask_clarification(raw.args, catalog)
+    if raw.kind == "propose_query":
+        return _validate_propose_query(raw.args, models, scope)
+    return Decline(f"unrecognized response type '{raw.kind}'.")

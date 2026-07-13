@@ -1,7 +1,7 @@
 """API routers, aggregated under /api by the app factory."""
 from fastapi import APIRouter
 
-from . import auth, dashboards, datasets, dimensions, explorer, models, query, users, visuals
+from . import auth, chat, dashboards, datasets, dimensions, explorer, models, query, users, visuals
 
 api_router = APIRouter()
 api_router.include_router(auth.router)
@@ -13,3 +13,4 @@ api_router.include_router(visuals.router)
 api_router.include_router(dashboards.router)
 api_router.include_router(explorer.router)
 api_router.include_router(datasets.router)
+api_router.include_router(chat.router)

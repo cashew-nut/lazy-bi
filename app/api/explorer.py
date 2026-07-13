@@ -65,4 +65,9 @@ def explorer():
 
 @router.get("/health")
 def health():
-    return {"ok": True, "models": list(registry.models), "s3_endpoint": config.S3_ENDPOINT}
+    return {
+        "ok": True, "models": list(registry.models), "s3_endpoint": config.S3_ENDPOINT,
+        "llm_enabled": config.LLM_ENABLED,
+        "llm_models": config.LLM_MODEL_CHOICES if config.LLM_ENABLED else [],
+        "llm_default_model": config.LLM_MODEL,
+    }

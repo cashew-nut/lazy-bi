@@ -42,6 +42,12 @@ MATRIX = {
     ("GET", "/api/explorer"): "viewer",
     ("GET", "/api/datasets"): "viewer",
     ("GET", "/api/datasets/schema"): "viewer",
+    ("GET", "/api/conversations"): "viewer",
+    ("POST", "/api/conversations"): "viewer",
+    ("GET", "/api/conversations/{conversation_id}"): "viewer",
+    ("PATCH", "/api/conversations/{conversation_id}"): "viewer",
+    ("DELETE", "/api/conversations/{conversation_id}"): "viewer",
+    ("POST", "/api/conversations/{conversation_id}/ask"): "viewer",
 
     ("POST", "/api/models/generate"): "author",
     ("POST", "/api/dimensions/generate"): "author",
