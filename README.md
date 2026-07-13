@@ -647,8 +647,15 @@ is disabled (`GET/POST /api/conversations*` return 503) unless
 
 ```bash
 export CI_LLM_API_KEY=sk-ant-...
-export CI_LLM_MODEL=claude-sonnet-5   # optional
+export CI_LLM_MODEL=claude-sonnet-5   # optional: the default a new conversation starts with
 ```
+
+`CI_LLM_MODEL` only sets the *default* — each conversation can also pick its
+own model in the CHAT header (`claude-opus-4-8` / `claude-sonnet-5` /
+`claude-haiku-4-5-20251001`, `app/config.py`'s `LLM_MODEL_CHOICES`), a
+trade-off between answer quality and cost/latency. The picker is populated
+from `GET /api/health`, so it always reflects what the server actually
+allows — never hardcoded per deployment.
 
 **What leaves the deployment, and to whom, when enabled:** every question
 sends the question text and a catalog of the declared model/dimension/

@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     user_id INTEGER NOT NULL,
     title TEXT NOT NULL DEFAULT '',
     model_scope TEXT NOT NULL DEFAULT '[]',
+    llm_model TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -45,6 +46,12 @@ class ConversationStore:
         self.db_path = db_path
         with self._conn() as conn:
             conn.executescript(SCHEMA)
+            # guarded so a database created before per-conversation model
+            # selection upgrades in place, same pattern as store.py's
+            # measure_provenance.user_id migration
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(conversations)")}
+            if "llm_model" not in cols:
+                conn.execute("ALTER TABLE conversations ADD COLUMN llm_model TEXT")
 
     def _conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -83,6 +90,7 @@ class ConversationStore:
             "user_id": row["user_id"],
             "title": row["title"],
             "model_scope": json.loads(row["model_scope"]),
+            "llm_model": row["llm_model"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
@@ -111,19 +119,21 @@ class ConversationStore:
             ).fetchone()
             return self._conversation_to_dict(conn, row) if row else None
 
-    def create(self, user_id: int, model_scope: Optional[list[str]] = None) -> dict:
+    def create(self, user_id: int, model_scope: Optional[list[str]] = None,
+               llm_model: Optional[str] = None) -> dict:
         now = self._now()
         with self._conn() as conn:
             cur = conn.execute(
-                "INSERT INTO conversations (user_id, title, model_scope, created_at, updated_at) "
-                "VALUES (?, '', ?, ?, ?)",
-                (user_id, json.dumps(model_scope or []), now, now),
+                "INSERT INTO conversations (user_id, title, model_scope, llm_model, created_at, updated_at) "
+                "VALUES (?, '', ?, ?, ?, ?)",
+                (user_id, json.dumps(model_scope or []), llm_model, now, now),
             )
             row = conn.execute("SELECT * FROM conversations WHERE id = ?", (cur.lastrowid,)).fetchone()
             return self._conversation_to_dict(conn, row)
 
     def update(self, conversation_id: int, user_id: int, *,
-               title: Optional[str] = None, model_scope: Optional[list[str]] = None) -> Optional[dict]:
+               title: Optional[str] = None, model_scope: Optional[list[str]] = None,
+               llm_model: Optional[str] = None) -> Optional[dict]:
         if not self.get(conversation_id, user_id):
             return None
         fields, params = [], []
@@ -133,6 +143,9 @@ class ConversationStore:
         if model_scope is not None:
             fields.append("model_scope = ?")
             params.append(json.dumps(model_scope))
+        if llm_model is not None:
+            fields.append("llm_model = ?")
+            params.append(llm_model)
         if fields:
             fields.append("updated_at = ?")
             params.append(self._now())

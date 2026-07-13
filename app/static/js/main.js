@@ -62,7 +62,7 @@ async function init() {
 
     attachAccount();  // tokens / password / user-management wiring
     attachChat();     // conversational analytics wiring
-    probeChatAvailability();  // shows the CHAT nav entry only if the server has it configured
+    probeChatAvailability(health);  // shows the CHAT nav entry only if the server has it configured
 
     // ── semantic editor + guided forms (opened from Modelling) ──
     attachEditor();   // input/keydown/completion/dataset-picker/revert/beforeunload

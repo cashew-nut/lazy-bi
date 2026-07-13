@@ -39,6 +39,10 @@ COOKIE_SECURE = os.environ.get("CI_COOKIE_SECURE", "0") == "1"
 LLM_API_KEY = os.environ.get("CI_LLM_API_KEY", "")
 LLM_MODEL = os.environ.get("CI_LLM_MODEL", "claude-sonnet-5")
 LLM_ENABLED = bool(LLM_API_KEY)
+# User-selectable per conversation (app/api/chat.py); CI_LLM_MODEL above is
+# just the default a new conversation starts with. Keep in sync with the
+# id's actually valid for the configured provider.
+LLM_MODEL_CHOICES = ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001"]
 
 
 def storage_options() -> dict:

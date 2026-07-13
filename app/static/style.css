@@ -770,6 +770,7 @@ button.ghost.mk-new { margin-top: 2px; }
 
 /* ── conversational analytics ────────────────────────────────── */
 #chat-scope { min-width: 160px; }
+#chat-model { min-width: 150px; height: 28px; }
 .chat-body { display: flex; flex: 1; min-height: 0; gap: 0; }
 .chat-conv-list {
   width: 210px; flex: none; border-right: 1px solid var(--line);

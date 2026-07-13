@@ -12,18 +12,20 @@ import { state } from "./state.js";
 
 const chat = {
   enabled: false,
+  llmModels: [],       // selectable model ids, from GET /api/health (config.LLM_MODEL_CHOICES)
+  defaultModel: "",
   conversations: [],
-  current: null,   // full conversation {id, title, model_scope, messages}
+  current: null,   // full conversation {id, title, model_scope, llm_model, messages}
 };
 
-export async function probeChatAvailability() {
-  try {
-    chat.conversations = await api("/api/conversations");
-    chat.enabled = true;
-    $("#chat-nav-btn").hidden = false;
-  } catch {
-    chat.enabled = false;   // 503 (not configured) or any other failure: stay hidden
-  }
+// GET /api/health already tells us whether the feature is configured server-
+// side and which models are selectable — no need for a second round trip
+// (and no error-shaped 503 to catch) just to decide whether to show the nav.
+export function probeChatAvailability(health) {
+  chat.enabled = !!health.llm_enabled;
+  chat.llmModels = health.llm_models || [];
+  chat.defaultModel = health.llm_default_model || "";
+  $("#chat-nav-btn").hidden = !chat.enabled;
 }
 
 export async function loadChat() {
@@ -34,6 +36,7 @@ export async function loadChat() {
     return;
   }
   renderScopeSelect();
+  renderModelSelect();
   await refreshConvList();
   if (!chat.current && chat.conversations.length) await openConversation(chat.conversations[0].id);
   else renderThread();
@@ -50,6 +53,17 @@ function renderScopeSelect() {
   }
 }
 
+function renderModelSelect() {
+  const sel = $("#chat-model");
+  const current = (chat.current && chat.current.llm_model) || chat.defaultModel;
+  sel.innerHTML = "";
+  for (const id of chat.llmModels) {
+    const opt = el("option", { value: id }, id === chat.defaultModel ? `${id} (default)` : id);
+    opt.selected = id === current;
+    sel.append(opt);
+  }
+}
+
 async function refreshConvList() {
   chat.conversations = await api("/api/conversations");
   renderConvList();
@@ -61,7 +75,8 @@ function renderConvList() {
   for (const c of chat.conversations) {
     const item = el("div", { class: "chat-conv" + (chat.current && chat.current.id === c.id ? " on" : "") },
       el("div", { class: "nm" }, c.title || "untitled conversation"),
-      el("div", { class: "sub" }, (c.model_scope || []).join(", ") || "auto"));
+      el("div", { class: "sub" },
+        `${(c.model_scope || []).join(", ") || "auto"} · ${c.llm_model || chat.defaultModel}`));
     item.addEventListener("click", () => openConversation(c.id));
     box.append(item);
   }
@@ -73,13 +88,17 @@ function renderConvList() {
 export async function openConversation(id) {
   chat.current = await api(`/api/conversations/${id}`);
   renderScopeSelect();
+  renderModelSelect();
   renderConvList();
   renderThread();
 }
 
 export async function newConversation() {
   const scope = [...$("#chat-scope").selectedOptions].map((o) => o.value);
-  const created = await api("/api/conversations", { method: "POST", body: { model_scope: scope } });
+  const llmModel = $("#chat-model").value || undefined;
+  const created = await api("/api/conversations", {
+    method: "POST", body: { model_scope: scope, llm_model: llmModel },
+  });
   chat.conversations.unshift(created);
   await openConversation(created.id);
 }
@@ -144,6 +163,12 @@ export function attachChat() {
     if (!chat.current) return;
     const scope = [...$("#chat-scope").selectedOptions].map((o) => o.value);
     chat.current = await api(`/api/conversations/${chat.current.id}`, { method: "PATCH", body: { model_scope: scope } });
+    renderConvList();
+  });
+  $("#chat-model").addEventListener("change", async (e) => {
+    if (!chat.current) return;
+    chat.current = await api(`/api/conversations/${chat.current.id}`,
+      { method: "PATCH", body: { llm_model: e.target.value } });
     renderConvList();
   });
   $("#chat-form").addEventListener("submit", async (e) => {

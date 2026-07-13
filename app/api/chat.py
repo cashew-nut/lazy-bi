@@ -20,7 +20,9 @@ from ..registry import registry
 
 router = APIRouter(tags=["chat"])
 
-# One translator instance is enough — it's a thin, stateless API client.
+# The default translator (server-configured model) — a thin, stateless API
+# client, so one instance is enough. A conversation that picks a non-default
+# model gets its own instance from _translator_for() below.
 _translator = AnthropicTranslator()
 
 # How many prior turns feed into follow-up context (research.md R5).
@@ -29,11 +31,13 @@ _PRIOR_CONTEXT_TURNS = 5
 
 class ConversationIn(BaseModel):
     model_scope: list[str] = []
+    llm_model: Optional[str] = None
 
 
 class ConversationPatch(BaseModel):
     title: Optional[str] = None
     model_scope: Optional[list[str]] = None
+    llm_model: Optional[str] = None
 
 
 class AskIn(BaseModel):
@@ -51,6 +55,25 @@ def _validate_scope(model_scope: list[str]) -> None:
         raise HTTPException(status_code=400, detail=f"unknown model(s) in model_scope: {unknown}")
 
 
+def _validate_llm_model(llm_model: Optional[str]) -> None:
+    if llm_model is not None and llm_model not in config.LLM_MODEL_CHOICES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown llm_model '{llm_model}' (choose one of {config.LLM_MODEL_CHOICES})",
+        )
+
+
+def _translator_for(llm_model: Optional[str]):
+    """The default `_translator` already targets config.LLM_MODEL — only
+    spin up a dedicated client when a conversation picked something else,
+    so the common case (no per-conversation override) stays a single
+    reused instance, and tests that monkeypatch `_translator` keep working
+    unmodified."""
+    if not llm_model or llm_model == config.LLM_MODEL:
+        return _translator
+    return AnthropicTranslator(model=llm_model)
+
+
 def _get_owned(conversation_id: int, user: User) -> dict:
     conv = registry.conversation_store.get(conversation_id, user.id)
     if not conv:
@@ -66,7 +89,8 @@ def list_conversations(user: User = Depends(require_role("viewer"))):
 @router.post("/conversations", status_code=201, dependencies=[Depends(_require_enabled)])
 def create_conversation(body: ConversationIn, user: User = Depends(require_role("viewer"))):
     _validate_scope(body.model_scope)
-    return registry.conversation_store.create(user.id, body.model_scope)
+    _validate_llm_model(body.llm_model)
+    return registry.conversation_store.create(user.id, body.model_scope, body.llm_model)
 
 
 @router.get("/conversations/{conversation_id}", dependencies=[Depends(_require_enabled)])
@@ -80,8 +104,11 @@ def update_conversation(conversation_id: int, body: ConversationPatch,
     _get_owned(conversation_id, user)
     if body.model_scope is not None:
         _validate_scope(body.model_scope)
+    if body.llm_model is not None:
+        _validate_llm_model(body.llm_model)
     updated = registry.conversation_store.update(
-        conversation_id, user.id, title=body.title, model_scope=body.model_scope)
+        conversation_id, user.id, title=body.title, model_scope=body.model_scope,
+        llm_model=body.llm_model)
     if not updated:
         raise HTTPException(status_code=404, detail="conversation not found")
     return updated
@@ -139,10 +166,11 @@ def ask(conversation_id: int, body: AskIn, user: User = Depends(require_role("vi
 
     catalog = nlq.build_catalog(registry.models, conv["model_scope"])
     prior_context = _prior_turns(conv)
+    translator = _translator_for(conv.get("llm_model"))
 
     try:
         decision = nlq.resolve(
-            body.question, catalog, prior_context, user, registry.models, _translator,
+            body.question, catalog, prior_context, user, registry.models, translator,
             scope=conv["model_scope"],
         )
     except TranslatorError as exc:

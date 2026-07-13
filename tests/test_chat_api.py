@@ -147,6 +147,46 @@ def test_conversation_scope_validation(viewer_client):
     assert ok.json()["model_scope"] == ["sales"]
 
 
+def test_conversation_llm_model_validation_and_roundtrip(viewer_client):
+    bad = viewer_client.post("/api/conversations", json={"llm_model": "not-a-real-model"})
+    assert bad.status_code == 400
+
+    ok = viewer_client.post("/api/conversations", json={"llm_model": "claude-opus-4-8"})
+    assert ok.status_code == 201
+    assert ok.json()["llm_model"] == "claude-opus-4-8"
+
+    conv_id = ok.json()["id"]
+    patched = viewer_client.patch(f"/api/conversations/{conv_id}", json={"llm_model": "claude-haiku-4-5-20251001"})
+    assert patched.status_code == 200
+    assert patched.json()["llm_model"] == "claude-haiku-4-5-20251001"
+
+    bad_patch = viewer_client.patch(f"/api/conversations/{conv_id}", json={"llm_model": "nope"})
+    assert bad_patch.status_code == 400
+
+
+def test_ask_uses_a_dedicated_translator_for_a_non_default_model(viewer_client, monkeypatch):
+    from app import config as app_config
+
+    calls = []
+    made = []
+
+    class Spy(FakeTranslator):
+        def translate(self, *args, **kwargs):
+            calls.append(True)
+            return super().translate(*args, **kwargs)
+
+    def fake_make(model):
+        t = Spy([_propose_sales_by_category()])
+        made.append(model)
+        return t
+
+    monkeypatch.setattr(chat_api, "AnthropicTranslator", lambda model=None: fake_make(model))
+    conv = viewer_client.post("/api/conversations", json={"llm_model": "claude-opus-4-8"}).json()
+    res = viewer_client.post(f"/api/conversations/{conv['id']}/ask", json={"question": "revenue by category"})
+    assert res.json()["response"]["outcome"] == "answered"
+    assert made == ["claude-opus-4-8"]
+
+
 def test_delete_conversation(viewer_client):
     conv = viewer_client.post("/api/conversations", json={}).json()
     assert viewer_client.delete(f"/api/conversations/{conv['id']}").status_code == 204
