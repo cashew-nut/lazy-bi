@@ -8,13 +8,16 @@ measures the builder works with; saved visuals and **dashboards** persist in
 SQLite.
 
 ```
-browser (query builder + dashboards + SVG charts)
+browser (login + query builder + dashboards + SVG charts)
    │  POST /api/query {dimensions, measures, filters, sort, limit}
+   │  session cookie or bearer token on every request
    ▼
-FastAPI ──► semantic layer (models/*.yaml) ──► polars LazyFrame scan (+ lazy joins)
-   │                                              │ predicate/projection pushdown
-   ▼                                              ▼
-SQLite (visuals + dashboards)             S3 (moto emulator in demo mode)
+FastAPI (auth middleware: viewer/author/admin roles)
+   └──► semantic layer (models/*.yaml) ──► polars LazyFrame scan (+ lazy joins)
+   │                                          │ predicate/projection pushdown
+   ▼                                          ▼
+SQLite (visuals + dashboards +            S3 (moto emulator in demo mode)
+        users/sessions/audit)
 ```
 
 ## Run the demo
@@ -63,25 +66,38 @@ To point at a real bucket or an external emulator (MinIO, LocalStack), set
 `CI_S3_ENDPOINT` (this also disables the embedded moto server) plus the usual
 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, and `CI_BUCKET`.
 
-Set `CI_API_KEY` to enable saving/editing/deleting model measures (unset =
-those mutations are always rejected — see "Authoring model measures" below).
+**Signing in**: everything requires an account (there is no anonymous mode —
+the demo exercises the same auth path as a real deployment). On first start
+with no accounts, a bootstrap `admin` is created and its **random password is
+printed once in the startup log** — sign in with it, then create your own
+accounts under **ACCOUNT**. Three nested roles: **viewer** (query + read),
+**author** (save visuals/dashboards/model measures), **admin** (raw model
+YAML, user management). Sessions are cookie-based (7-day idle / 30-day
+absolute by default — `CI_SESSION_IDLE_DAYS` / `CI_SESSION_MAX_DAYS`); set
+`CI_COOKIE_SECURE=1` when serving over TLS. Scripts authenticate with
+per-user tokens instead (see "Authoring model measures" below). The old
+shared `CI_API_KEY` secret is retired and grants nothing.
 
 ## Project layout
 
 ```
 app/
-  config.py            env-driven settings (endpoints, paths, bucket)
-  main.py              app factory + lifecycle (emulator, seed, registry)
-  registry.py          runtime state: loaded models + store
+  config.py            env-driven settings (endpoints, paths, bucket, sessions)
+  main.py              app factory + lifecycle + AuthMiddleware (default-deny /api)
+  registry.py          runtime state: loaded models + stores
+  auth.py              identity core: principal, argon2id, sessions/tokens, roles
+  authstore.py         sqlite persistence: users, sessions, api tokens, audit
   semantic.py          semantic layer: yaml -> Model/Dimension/Measure/Join/Spine/Geo/
                        DimensionBundle/Import
   engine.py            query engine: semantic query -> polars lazy scan
   store.py             sqlite persistence: visuals, dashboards, publications
   emulator.py, s3.py, seed.py, load_taxi.py
-  api/                 one router per resource: models, dimensions, datasets, query,
-                       visuals, dashboards (+publish/portal), explorer (+health)
-  static/js/           ES modules: lib, state, filters, builder, dashboard,
-                       portal, modelling, editor, completion, measurelab, main
+  api/                 one router per resource: auth, users (+tokens), models,
+                       dimensions, datasets, query, visuals, dashboards
+                       (+publish/portal), explorer (+health)
+  static/js/           ES modules: lib, state, auth, admin, filters, builder,
+                       dashboard, portal, modelling, editor, completion,
+                       measurelab, main
   static/js/charts/    one renderer per chart + shared frame/pivot/dispatch
 models/*.yaml          semantic models (the editable contract)
 dimensions/*.yaml      dimension bundles shared across models (see below)
@@ -266,9 +282,10 @@ same pre-DSL polars-expression syntax, since it's reading columns the frame
 itself produces, not the base schema):
 
 This is a deliberate, narrow carve-out: it is **only ever available through
-the authenticated model-measure save endpoint** (`X-API-Key` + `X-Author`,
-see below) — never as an inline/visual-scoped measure, regardless of
-credentials. A `frame` submitted inline on `/api/query` is rejected outright.
+the authenticated model-measure save endpoint, and only to the admin role**
+(see "Authoring model measures" below) — never as an inline/visual-scoped
+measure, regardless of credentials. A `frame` submitted inline on
+`/api/query` is rejected outright.
 
 ```yaml
 measures:
@@ -498,20 +515,27 @@ section in the sidebar) at the cursor.
 
 ### Authoring model measures (auth + provenance)
 
-Creating, updating, or deleting a saved model measure requires a shared
-secret: set `CI_API_KEY` in the environment (unset = every mutation is
-rejected with 401 — fail closed by default) and send it as `X-API-Key`,
-alongside a self-declared `X-Author` label recorded on the change. This is a
-minimal placeholder for real auth, not a claim of strong per-user identity —
-swap it for something stronger when the app grows beyond a single shared
-secret. Reading/querying a saved measure never requires it.
+Creating, updating, or deleting a saved model measure requires a signed-in
+account with the **author** role (a `frame:` measure escalates to **admin**
+— see the carve-out above). Identity comes from the session; in the app you
+just click SAVE TO MODEL. From a script, create a **personal access token**
+under ACCOUNT and send it as `Authorization: Bearer cipat_…` — it acts as
+you, with your role, and can be revoked individually. The spec-008
+`X-API-Key`/`X-Author` headers are retired; requests presenting only them
+get 401.
 
-| Route | Auth | What it does |
+| Route | Min role | What it does |
 |---|---|---|
-| `POST /api/models/{m}/measures` | required | create a measure (validated, then appended to the yaml) |
-| `PUT /api/models/{m}/measures/{name}` | required | update a measure in place |
-| `DELETE /api/models/{m}/measures/{name}` | required | remove a measure |
-| `GET /api/models/{m}/measures/{name}/history` | — | append-only provenance: author, version, expression snapshot per save |
+| `POST /api/models/{m}/measures` | author | create a measure (validated, then appended to the yaml) |
+| `PUT /api/models/{m}/measures/{name}` | author | update a measure in place |
+| `DELETE /api/models/{m}/measures/{name}` | author | remove a measure |
+| same, with a `frame:`/`frame_emits` payload | **admin** | the eval-based carve-out stays behind the highest trust level |
+| `GET /api/models/{m}/measures/{name}/history` | viewer | append-only provenance: author, version, expression snapshot per save |
+
+Provenance now records the **verified account** (display name + user id) —
+rows written before the auth feature keep their self-declared label and are
+flagged `verified: false` ("legacy") in history responses and the measure
+lab's history strip.
 
 Every create/update is validated (the safe DSL, or `validate_frame` for a
 `frame:` measure) before anything is written — an invalid measure is refused,
@@ -521,8 +545,20 @@ file remains the sole executable source of truth, the table is the audit log.
 
 ## API
 
+Every route requires a signed-in identity — a session cookie from
+`POST /api/auth/login`, or `Authorization: Bearer <token>` — except login
+itself and `GET /api/health`. Cookie-authenticated mutations must also send
+`X-Requested-With: fetch` (CSRF gate; bearer requests are exempt). Reads
+need any role; the role column below is for mutations. The full
+route-by-route matrix lives in
+`specs/011-session-auth-rbac/contracts/auth-api.md` and is enforced by
+`tests/test_role_matrix.py`.
+
 | Route | What it does |
 |---|---|
+| `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`, `POST /api/auth/password` | session lifecycle (login is the only public route besides `/api/health`) |
+| `GET/POST /api/users`, `PATCH /api/users/{id}` | **admin**: create accounts, change roles, deactivate/reactivate, reset passwords — no self-signup, no hard delete |
+| `GET/POST /api/tokens`, `DELETE /api/tokens/{id}` | your personal access tokens — the secret is shown once at creation |
 | `GET /api/models` | models with their dimensions + measures |
 | `POST /api/models/reload` | re-read `models/*.yaml` |
 | `GET /api/models/{m}/dimensions/{d}/values` | distinct values (filter pickers) |
@@ -530,7 +566,7 @@ file remains the sole executable source of truth, the table is the audit log.
 | `POST /api/models/validate` | parse-check YAML + introspect source columns |
 | `POST /api/models`, `DELETE /api/models/{m}` | create a model file / delete one |
 | `GET /api/datasets` | bucket objects grouped into pickable datasets (source picker) |
-| `POST/PUT/DELETE /api/models/{m}/measures[/{name}]` | create/update/delete a model measure (**requires `X-API-Key` + `X-Author`** — see "Authoring model measures" above) |
+| `POST/PUT/DELETE /api/models/{m}/measures[/{name}]` | create/update/delete a model measure (**author** role; `frame:` payloads **admin** — see "Authoring model measures" above) |
 | `GET /api/models/{m}/measures/{name}/history` | append-only provenance for a saved measure |
 | `POST /api/query` | run a semantic query, returns columns + rows + timing |
 | `GET/POST /api/visuals`, `PUT/DELETE /api/visuals/{id}` | saved visuals (SQLite: `cash_intel.db`) |
@@ -563,9 +599,10 @@ of the wrong type) rejects the whole query before anything runs. A
 dashboard view's saved `parameters: {name: value}` map (alongside its
 `filters`) is what a dashboard tile's query pulls this from.
 
-## Studio, Modelling, Portal
+## Studio, Modelling, Portal, Account
 
-The header nav splits the app into three surfaces:
+The header nav splits the app into four surfaces (what each shows follows
+your role — viewers see no authoring controls at all):
 
 - **STUDIO** — the query builder: pick a model, add dimensions/measures/filters,
   chart it, save visuals, and edit dashboards. Model *authoring* no longer lives

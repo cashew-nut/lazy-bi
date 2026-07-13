@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Optional
 
 from . import config, semantic
+from .authstore import AuthStore
 from .store import VisualStore
 
 
@@ -15,10 +16,16 @@ class Registry:
         self.models: dict[str, semantic.Model] = {}
         self.dimension_bundles: dict[str, semantic.DimensionBundle] = {}
         self.store: Optional[VisualStore] = None
+        self.auth_store: Optional[AuthStore] = None
 
     def init(self) -> None:
         self.reload_all()
         self.store = VisualStore(config.DB_PATH)
+        self.auth_store = AuthStore(
+            config.DB_PATH,
+            idle_days=config.SESSION_IDLE_DAYS,
+            max_days=config.SESSION_MAX_DAYS,
+        )
 
     def reload_all(self) -> None:
         """Reload dimension bundles, then models, then resolve each model's

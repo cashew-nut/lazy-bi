@@ -61,12 +61,20 @@ boundary is now three-way, not one flat trust level:
   multi-step derived-frame Python snippet — see "Measures over an
   intermediary frame" in the README) keeps the pre-existing `eval`/`exec`
   path, at application-code trust level, exactly as this principle
-  originally described. It is reachable **only** through the authenticated
-  model-measure save endpoint (`X-API-Key` + `X-Author`) — never inline,
-  never from a query-time request body, regardless of credentials.
+  originally described. **Amended by the session-auth feature** (see
+  `specs/011-session-auth-rbac/`): the gate is no longer the spec-008
+  shared secret (`X-API-Key` + `X-Author`, now retired) but the **admin
+  role of the real identity system** — a `frame:` save requires an
+  authenticated admin account, whether it arrives via the measure endpoint
+  or a raw model-YAML write. Never inline, never from a query-time request
+  body, regardless of credentials.
 - **Model YAML itself** (dimensions, joins, structure — everything but a
-  measure's scalar expression) remains trusted, single-user, developer-authored
-  configuration, unchanged from this principle's original scope.
+  measure's scalar expression) remains trusted, developer-authored
+  configuration — but "trusted" is now enforced, not assumed: the raw
+  model/dimension YAML routes, which spec 008 left open and which could
+  smuggle a `frame:` block past the measure gate, require the admin role
+  (spec 011 closed this gap). The set of actors who can influence
+  eval-capable configuration therefore *narrowed* with this amendment.
 
 Any future change widening who may reach the `frame:` path, or introducing
 a new eval-based construct, must re-open this principle explicitly, exactly
@@ -115,4 +123,4 @@ consistent with these principles; where a feature genuinely needs to violate
 one (e.g. Principle II for a use case that cannot be pushed down), say so
 explicitly in that feature's spec rather than quietly drifting.
 
-**Version**: 1.1.0 | **Ratified**: 2026-07-10 | **Last Amended**: 2026-07-12
+**Version**: 1.2.0 | **Ratified**: 2026-07-10 | **Last Amended**: 2026-07-13

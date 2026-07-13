@@ -49,14 +49,15 @@ export const pubFor = (dashId) => state.publications.find((p) => p.dashboard_id 
 
 export function showView(view) {
   state.view = view;
-  for (const v of ["builder", "dashboard", "editor", "portal", "modelling", "modelform", "bundleform"]) {
+  for (const v of ["builder", "dashboard", "editor", "portal", "modelling", "modelform", "bundleform", "account"]) {
     $(`#${v}-view`).hidden = view !== v;
   }
   if (view !== "dashboard") { state.dash = null; state.tileCtxs = []; }
   const authoring = ["editor", "modelling", "modelform", "bundleform"];
   if (view === "builder" || authoring.includes(view)) state.portal = false;
   const mode = view === "portal" || (view === "dashboard" && state.portal) ? "portal"
-    : authoring.includes(view) ? "modelling" : "studio";
+    : authoring.includes(view) ? "modelling"
+    : view === "account" ? "account" : "studio";
   document.body.dataset.mode = mode;
   document.body.classList.toggle("portal-dash", view === "dashboard" && state.portal);
   for (const btn of document.querySelectorAll("#mode-nav button")) {

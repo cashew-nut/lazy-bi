@@ -1,10 +1,11 @@
 """Dashboards CRUD plus publishing to the portal's folder tree."""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from .. import engine
+from ..auth import require_role
 from ..registry import registry
 
 router = APIRouter(tags=["dashboards"])
@@ -93,13 +94,13 @@ def get_dashboard(dash_id: int):
     return dash
 
 
-@router.post("/dashboards", status_code=201)
+@router.post("/dashboards", status_code=201, dependencies=[Depends(require_role("author"))])
 def create_dashboard(d: DashboardIn):
     _check_param_conflicts(d.items)
     return registry.store.create_dashboard(d.name, d.items, d.views, d.active_view)
 
 
-@router.put("/dashboards/{dash_id}")
+@router.put("/dashboards/{dash_id}", dependencies=[Depends(require_role("author"))])
 def update_dashboard(dash_id: int, d: DashboardIn):
     _check_param_conflicts(d.items)
     updated = registry.store.update_dashboard(dash_id, d.name, d.items, d.views, d.active_view)
@@ -108,13 +109,13 @@ def update_dashboard(dash_id: int, d: DashboardIn):
     return updated
 
 
-@router.delete("/dashboards/{dash_id}", status_code=204)
+@router.delete("/dashboards/{dash_id}", status_code=204, dependencies=[Depends(require_role("author"))])
 def delete_dashboard(dash_id: int):
     if not registry.store.delete_dashboard(dash_id):
         raise HTTPException(status_code=404, detail="dashboard not found")
 
 
-@router.post("/publish")
+@router.post("/publish", dependencies=[Depends(require_role("author"))])
 def publish(p: PublishIn):
     result = registry.store.publish(p.dashboard_id, _norm_folder(p.folder))
     if not result:
@@ -122,7 +123,7 @@ def publish(p: PublishIn):
     return result
 
 
-@router.delete("/publish/{dashboard_id}", status_code=204)
+@router.delete("/publish/{dashboard_id}", status_code=204, dependencies=[Depends(require_role("author"))])
 def unpublish(dashboard_id: int):
     if not registry.store.unpublish(dashboard_id):
         raise HTTPException(status_code=404, detail="not published")

@@ -8,7 +8,20 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%230a0e17'/><path d='M3 10h2v3H3zM7 6h2v7H7zM11 3h2v10h-2z' fill='%2300e5ff'/></svg>">
 </head>
 <body>
-<div id="app">
+<div id="login-view" hidden>
+  <form id="login-form" class="login-card" autocomplete="on">
+    <div class="logo">CASH<b>_</b>INTELLIGENCE</div>
+    <div class="tagline">// authorization required</div>
+    <label class="field-label" for="login-user">OPERATOR</label>
+    <input id="login-user" name="username" autocomplete="username" spellcheck="false" required>
+    <label class="field-label" for="login-password">PASSCODE</label>
+    <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+    <div id="login-error" class="login-error"></div>
+    <button class="btn" type="submit">JACK IN</button>
+    <div class="empty-note" style="margin-top:10px">first run? the bootstrap admin password is printed in the server log</div>
+  </form>
+</div>
+<div id="app" hidden>
   <header>
     <div class="logo">CASH<b>_</b>INTELLIGENCE</div>
     <div class="tagline">// lazy polars over s3 · semantic layer · night city build v1</div>
@@ -16,8 +29,13 @@
       <button data-mode="studio" class="on">STUDIO</button>
       <button data-mode="modelling">MODELLING</button>
       <button data-mode="portal">PORTAL</button>
+      <button data-mode="account">ACCOUNT</button>
     </nav>
     <div id="conn" class="conn">…</div>
+    <div id="user-badge" class="user-badge" hidden>
+      <span id="user-name"></span>
+      <button class="btn plain" id="logout">SIGN OUT</button>
+    </div>
   </header>
 
   <div class="layout">
@@ -90,7 +108,7 @@
       <section>
         <div class="sec-title">Dashboards</div>
         <div id="dash-list"></div>
-        <button class="ghost" id="new-dash">+ new dashboard</button>
+        <button class="ghost" id="new-dash" data-role="author">+ new dashboard</button>
       </section>
     </aside>
 
@@ -99,8 +117,8 @@
         <div class="chart-head">
           <input id="visual-name" placeholder="untitled_visual" spellcheck="false">
           <button class="btn plain" id="toggle-table">TABLE VIEW</button>
-          <button class="btn alt" id="save-as">SAVE AS NEW</button>
-          <button class="btn" id="save">SAVE</button>
+          <button class="btn alt" id="save-as" data-role="author">SAVE AS NEW</button>
+          <button class="btn" id="save" data-role="author">SAVE</button>
         </div>
         <div id="meta"></div>
         <div id="param-toggle-bar" hidden></div>
@@ -118,6 +136,7 @@
             </select>
             <span id="lab-status"></span>
           </div>
+          <div id="lab-history" class="lab-history" hidden></div>
           <div class="lab-expr-wrap">
             <textarea id="lab-expr" rows="2" spellcheck="false" autocomplete="off"
               placeholder='mean(unit_price)'></textarea>
@@ -125,8 +144,8 @@
           </div>
           <div class="lab-row lab-actions">
             <span class="lab-hint">visual measures travel with the visual · model measures append to the yaml</span>
-            <button class="btn alt" id="lab-save-visual">SAVE TO VISUAL</button>
-            <button class="btn" id="lab-save-model">SAVE TO MODEL</button>
+            <button class="btn alt" id="lab-save-visual" data-role="author">SAVE TO VISUAL</button>
+            <button class="btn" id="lab-save-model" data-role="author">SAVE TO MODEL</button>
             <button class="btn plain" id="lab-cancel">CANCEL</button>
           </div>
         </div>
@@ -140,9 +159,9 @@
           <span id="editor-file" class="editor-file">model.yaml</span>
           <span id="editor-status"></span>
           <button class="btn plain" id="editor-pick-dataset">◇ DATASET</button>
-          <button class="btn plain" id="editor-delete">DELETE MODEL</button>
+          <button class="btn plain" id="editor-delete" data-role="admin">DELETE MODEL</button>
           <button class="btn plain" id="editor-revert">REVERT</button>
-          <button class="btn alt" id="editor-save">SAVE + RELOAD</button>
+          <button class="btn alt" id="editor-save" data-role="admin">SAVE + RELOAD</button>
           <button class="btn" id="editor-back">◄ MODELLING</button>
         </div>
         <div class="editor-body">
@@ -174,8 +193,8 @@
         <div class="chart-head">
           <span class="editor-file">MODELLING</span>
           <span id="modelling-bucket" class="crumbs"></span>
-          <button class="btn alt" id="mk-new-model">+ MODEL</button>
-          <button class="btn alt" id="mk-new-bundle">+ COMMON MODEL</button>
+          <button class="btn alt" id="mk-new-model" data-role="admin">+ MODEL</button>
+          <button class="btn alt" id="mk-new-bundle" data-role="admin">+ COMMON MODEL</button>
           <button class="btn plain" id="modelling-refresh">REFRESH</button>
         </div>
         <div class="explorer-body">
@@ -199,7 +218,7 @@
           <span id="mf-hint" class="mf-hint"></span>
           <button class="btn plain" id="mf-prev">◄ BACK</button>
           <button class="btn alt" id="mf-next">NEXT ►</button>
-          <button class="btn" id="mf-save" hidden>SAVE MODEL</button>
+          <button class="btn" id="mf-save" data-role="admin" hidden>SAVE MODEL</button>
         </div>
       </div>
 
@@ -218,7 +237,51 @@
           <span id="bf-hint" class="mf-hint"></span>
           <button class="btn plain" id="bf-prev">◄ BACK</button>
           <button class="btn alt" id="bf-next">NEXT ►</button>
-          <button class="btn" id="bf-save" hidden>SAVE COMMON MODEL</button>
+          <button class="btn" id="bf-save" data-role="admin" hidden>SAVE COMMON MODEL</button>
+        </div>
+      </div>
+
+      <div id="account-view" class="chart-card" hidden>
+        <div class="chart-head">
+          <span class="editor-file">ACCOUNT</span>
+        </div>
+        <div class="acct-body">
+          <section class="acct-panel">
+            <div class="sec-title">Personal Access Tokens</div>
+            <div class="empty-note">tokens authenticate scripts as you, with your role — send as <code>Authorization: Bearer …</code></div>
+            <div id="token-reveal" class="token-reveal" hidden></div>
+            <div id="token-list"></div>
+            <div class="acct-row">
+              <input id="token-name" placeholder="token name (e.g. ci-script)" spellcheck="false">
+              <button class="btn alt" id="token-create">+ CREATE TOKEN</button>
+            </div>
+          </section>
+          <section class="acct-panel">
+            <div class="sec-title">Change Password</div>
+            <div class="acct-row">
+              <input id="pw-current" type="password" placeholder="current password" autocomplete="current-password">
+              <input id="pw-new" type="password" placeholder="new password (min 8)" autocomplete="new-password">
+              <button class="btn alt" id="pw-change">CHANGE</button>
+              <span id="pw-status" class="acct-meta"></span>
+            </div>
+          </section>
+          <section class="acct-panel" id="account-users-panel" hidden>
+            <div class="sec-title">Users (admin)</div>
+            <div class="empty-note">accounts are deactivated, never deleted — history stays attributable · the last active admin cannot be demoted</div>
+            <div id="user-list"></div>
+            <div class="acct-row">
+              <input id="nu-username" placeholder="username" spellcheck="false">
+              <input id="nu-display" placeholder="display name" spellcheck="false">
+              <select id="nu-role">
+                <option value="viewer">viewer</option>
+                <option value="author">author</option>
+                <option value="admin">admin</option>
+              </select>
+              <input id="nu-password" type="password" placeholder="initial password" autocomplete="new-password">
+              <button class="btn alt" id="user-create">+ CREATE USER</button>
+            </div>
+            <span id="user-status" class="acct-meta"></span>
+          </section>
         </div>
       </div>
 
@@ -228,9 +291,9 @@
           <span id="pub-status" class="pub-status"></span>
           <select id="dash-add-select"></select>
           <button class="btn alt" id="dash-add">+ ADD</button>
-          <button class="btn alt" id="dash-publish">PUBLISH</button>
+          <button class="btn alt" id="dash-publish" data-role="author">PUBLISH</button>
           <button class="btn plain" id="dash-refresh">REFRESH</button>
-          <button class="btn plain" id="dash-delete">DELETE</button>
+          <button class="btn plain" id="dash-delete" data-role="author">DELETE</button>
           <button class="btn" id="dash-back">◄ BUILDER</button>
         </div>
         <div class="dash-views-bar">

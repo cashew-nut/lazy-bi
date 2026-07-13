@@ -14,13 +14,59 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from starlette.responses import Response
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse, Response
 
-from . import config, emulator, seed
+from . import auth, config, emulator, seed
 from .api import api_router
 from .registry import registry
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+# The only /api requests answerable without an identity: signing in, and a
+# liveness probe. Everything else is default-deny — a route cannot opt out
+# by forgetting a dependency (specs/011-session-auth-rbac/research.md R3).
+PUBLIC_API = {("POST", "/api/auth/login"), ("GET", "/api/health")}
+
+
+class AuthMiddleware(BaseHTTPMiddleware):
+    """Authenticates every /api request (401 otherwise) and stashes the
+    principal on request.state.user; routes layer authorization on top via
+    auth.require_role. Static assets and the SPA shell stay public — they
+    are code, not data; the SPA renders its login view when /api/auth/me
+    says 401.
+
+    Credential precedence: an Authorization: Bearer header is used
+    exclusively when present (no cookie fallback — one identity, never a
+    merge). Cookie-authenticated mutations must carry the CSRF header
+    X-Requested-With: fetch; bearer requests are exempt because cross-site
+    pages cannot set an Authorization header.
+    """
+
+    async def dispatch(self, request, call_next):
+        path = request.url.path
+        if not path.startswith("/api") or (request.method, path) in PUBLIC_API:
+            return await call_next(request)
+        store = registry.auth_store
+        if store is None:
+            return JSONResponse({"detail": "authentication not ready"}, status_code=503)
+        user, via_cookie = None, False
+        authz = request.headers.get("authorization", "")
+        if authz.lower().startswith("bearer "):
+            user = auth.resolve_token(store, authz[7:].strip())
+        else:
+            cookie = request.cookies.get(auth.COOKIE_NAME)
+            if cookie:
+                user = auth.resolve_session(store, cookie)
+                via_cookie = user is not None
+        if user is None:
+            return JSONResponse({"detail": "authentication required"}, status_code=401)
+        if (via_cookie and request.method not in ("GET", "HEAD")
+                and request.headers.get(auth.CSRF_HEADER) != "fetch"):
+            return JSONResponse(
+                {"detail": "missing X-Requested-With: fetch header"}, status_code=403)
+        request.state.user = user
+        return await call_next(request)
 
 
 class NoCacheStaticFiles(StaticFiles):
@@ -47,12 +93,14 @@ async def lifespan(app: FastAPI):
         print(f"[cash-intel] seeded demo data into s3://{config.BUCKET}")
     registry.init()
     print(f"[cash-intel] loaded models: {', '.join(registry.models) or '(none)'}")
+    seed.seed_bootstrap_admin()
     yield
     emulator.stop()
 
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Cash Intelligence", lifespan=lifespan)
+    app.add_middleware(AuthMiddleware)
     app.include_router(api_router, prefix="/api")
 
     @app.get("/", include_in_schema=False)

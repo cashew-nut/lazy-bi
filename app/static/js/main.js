@@ -12,6 +12,8 @@ import {
   paramConflictMessage, publishCurrent, refreshDashList, renderDashboard, renderDashFilters,
   renderFocusFilters, saveDash,
 } from "./dashboard.js";
+import { attachAccount, loadAccount } from "./admin.js";
+import { initAuth } from "./auth.js";
 import { attachBundleForm, confirmLeaveBundleForm, openBundleForm } from "./bundleform.js";
 import { attachEditor, confirmLeaveEditor, deleteEditorItem, saveEditor } from "./editor.js";
 import { $, api } from "./lib.js";
@@ -23,6 +25,7 @@ import { refreshPubs, showView, state } from "./state.js";
 
 async function init() {
   try {
+    await initAuth();   // renders the login view first when no session exists
     const [health, models] = await Promise.all([api("/api/health"), api("/api/models")]);
     $("#conn").innerHTML = `<span class="dot">◉</span> S3 ${health.s3_endpoint.replace(/^https?:\/\//, "")} · POLARS ONLINE`;
     state.models = models;
@@ -55,6 +58,8 @@ async function init() {
       $("#toggle-table").classList.toggle("on", state.showTable);
       renderBuilderViz();
     });
+
+    attachAccount();  // tokens / password / user-management wiring
 
     // ── semantic editor + guided forms (opened from Modelling) ──
     attachEditor();   // input/keydown/completion/dataset-picker/revert/beforeunload
@@ -176,6 +181,7 @@ async function init() {
         const m = btn.dataset.mode;
         if (m === "studio") showView("builder");
         else if (m === "modelling") { showView("modelling"); loadModelling(); }
+        else if (m === "account") { showView("account"); loadAccount(); }
         else { state.portalFolder = ""; showView("portal"); loadPortal(); }
       });
     }

@@ -11,6 +11,7 @@ import {
   FILTER_OPS, filterReady, filterValueControl, normalizeCategoricalOp,
   opsForDim, resetFilterForField, toApiFilter,
 } from "./filters.js";
+import { canAuthor } from "./auth.js";
 import { $, api, el } from "./lib.js";
 import { hooks, modelByName, pubFor, refreshPubs, showView, state } from "./state.js";
 
@@ -85,6 +86,7 @@ export const activeView = () => state.dash.views[state.dash.active_view];
 export async function saveDash() {
   if (!state.dash) return;
   if (state.portal) return;  // consumption mode: view/grain choices stay local
+  if (!canAuthor()) return;  // viewers get the same consumption mode: edits stay local
   const saved = await api(`/api/dashboards/${state.dash.id}`, {
     method: "PUT",
     body: {

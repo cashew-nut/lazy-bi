@@ -10,11 +10,17 @@ from pydantic import BaseModel
 _MEASURE_NAME = re.compile(r"^[a-z_][a-z0-9_]*$")
 
 from .. import config, engine, measure_dsl, semantic
-from ..auth import require_measure_author
+from ..auth import User, require_role
 from ..registry import registry
 from .deps import get_model
 
 router = APIRouter(tags=["models"])
+
+# Route roles (specs/011-session-auth-rbac/contracts/auth-api.md): raw
+# model YAML (which can carry frame: blocks — application-code trust,
+# Principle VI) is admin; scalar measure authoring is author, with framed
+# measures escalating to admin; reads and dry-run validation are open to
+# any authenticated user (the middleware guarantees at least that).
 
 
 class YamlIn(BaseModel):
@@ -53,11 +59,11 @@ class MeasureSpec(BaseModel):
     format: str = "number"
     description: str = ""
     # framed measures (multi-step derived-frame logic) round-trip through the
-    # guided form like any other spec field — MeasureIn's auth gate governs
-    # who may *save* one via the measure-lab path, not whether the form can
-    # see/edit one that already exists on the model (see spec 008 §edge
-    # cases: "hand-edits outside the API" are out of scope to reconcile, and
-    # the whole-model yaml save routes below have never required auth).
+    # guided form like any other spec field — the measure-lab save path gates
+    # who may *save* one (admin, via _require_frame_privilege), not whether
+    # the form can see/edit one that already exists on the model. The
+    # whole-model yaml save routes that could smuggle a frame in are
+    # admin-gated for the same reason (spec 011, Principle VI).
     frame: Optional[str] = None
     frame_emits: list[str] = []
 
@@ -128,7 +134,7 @@ def list_models():
     return [m.to_public() for m in registry.models.values()]
 
 
-@router.post("/models/reload")
+@router.post("/models/reload", dependencies=[Depends(require_role("admin"))])
 def reload_models():
     _reload_or_400()
     return {"loaded": list(registry.models)}
@@ -157,7 +163,7 @@ def validate_model(body: YamlIn):
     return out
 
 
-@router.post("/models/generate")
+@router.post("/models/generate", dependencies=[Depends(require_role("author"))])
 def generate_model_yaml(spec: ModelSpec):
     """Render the guided form's structured spec to canonical YAML, then run the
     same parse + schema introspection as /models/validate so the form gets the
@@ -194,7 +200,7 @@ def get_model_spec(name: str):
     return {"name": name, "file": model.origin.name, "spec": semantic.model_to_spec(parsed)}
 
 
-@router.post("/models", status_code=201)
+@router.post("/models", status_code=201, dependencies=[Depends(require_role("admin"))])
 def create_model(body: YamlIn):
     parsed = _parse_or_400(body.yaml)
     path = config.MODELS_DIR / f"{parsed.name}.yaml"
@@ -211,7 +217,7 @@ def get_model_yaml(name: str):
     return {"name": name, "file": model.origin.name, "yaml": model.origin.read_text()}
 
 
-@router.put("/models/{name}/yaml")
+@router.put("/models/{name}/yaml", dependencies=[Depends(require_role("admin"))])
 def put_model_yaml(name: str, body: YamlIn):
     model = get_model(name)
     parsed = _parse_or_400(body.yaml)
@@ -223,7 +229,8 @@ def put_model_yaml(name: str, body: YamlIn):
     return registry.models[parsed.name].to_public()
 
 
-@router.delete("/models/{name}", status_code=204)
+@router.delete("/models/{name}", status_code=204,
+               dependencies=[Depends(require_role("admin"))])
 def delete_model(name: str):
     model = get_model(name)
     model.origin.unlink()
@@ -343,10 +350,19 @@ def _measure_entry(m: MeasureIn) -> dict:
     return entry
 
 
+def _require_frame_privilege(user: User, m: MeasureIn) -> None:
+    """The frame: escape hatch is eval-based, application-code trust —
+    saving one requires the admin role, not just author (Principle VI)."""
+    if (m.frame or m.frame_emits) and not user.has_role("admin"):
+        raise HTTPException(status_code=403,
+                            detail="framed measures require the admin role")
+
+
 @router.post("/models/{name}/measures", status_code=201)
-def add_measure(name: str, m: MeasureIn, author: str = Depends(require_measure_author)):
+def add_measure(name: str, m: MeasureIn, user: User = Depends(require_role("author"))):
     """Append a measure to the model's yaml file (comment-preserving) and
     hot-reload — the 'save to model' path of the measure lab."""
+    _require_frame_privilege(user, m)
     model = get_model(name)
     if not _MEASURE_NAME.match(m.name):
         raise HTTPException(status_code=400, detail="measure name must be snake_case (a-z, 0-9, _)")
@@ -362,14 +378,17 @@ def add_measure(name: str, m: MeasureIn, author: str = Depends(require_measure_a
     model.origin.write_text(new_text)
     _reload_or_400()
     registry.store.record_measure_provenance(
-        name, m.name, "create", author, expr=m.expr, frame=m.frame, frame_emits=m.frame_emits or None,
+        name, m.name, "create", user.display_name, expr=m.expr,
+        frame=m.frame, frame_emits=m.frame_emits or None, user_id=user.id,
     )
     return registry.models[name].to_public()
 
 
 @router.put("/models/{name}/measures/{measure_name}")
-def update_measure(name: str, measure_name: str, m: MeasureIn, author: str = Depends(require_measure_author)):
+def update_measure(name: str, measure_name: str, m: MeasureIn,
+                   user: User = Depends(require_role("author"))):
     """Rewrite an existing measure's yaml block in place and hot-reload."""
+    _require_frame_privilege(user, m)
     model = get_model(name)
     if measure_name not in model.measures:
         raise HTTPException(status_code=404, detail=f"unknown measure '{measure_name}' on model '{name}'")
@@ -385,13 +404,15 @@ def update_measure(name: str, measure_name: str, m: MeasureIn, author: str = Dep
     model.origin.write_text(new_text)
     _reload_or_400()
     registry.store.record_measure_provenance(
-        name, m.name, "update", author, expr=m.expr, frame=m.frame, frame_emits=m.frame_emits or None,
+        name, m.name, "update", user.display_name, expr=m.expr,
+        frame=m.frame, frame_emits=m.frame_emits or None, user_id=user.id,
     )
     return registry.models[name].to_public()
 
 
 @router.delete("/models/{name}/measures/{measure_name}", status_code=204)
-def delete_measure(name: str, measure_name: str, author: str = Depends(require_measure_author)):
+def delete_measure(name: str, measure_name: str,
+                   user: User = Depends(require_role("author"))):
     model = get_model(name)
     if measure_name not in model.measures:
         raise HTTPException(status_code=404, detail=f"unknown measure '{measure_name}' on model '{name}'")
@@ -399,7 +420,8 @@ def delete_measure(name: str, measure_name: str, author: str = Depends(require_m
     _parse_or_400(new_text)  # belt and braces before touching disk
     model.origin.write_text(new_text)
     _reload_or_400()
-    registry.store.record_measure_provenance(name, measure_name, "delete", author)
+    registry.store.record_measure_provenance(
+        name, measure_name, "delete", user.display_name, user_id=user.id)
 
 
 @router.get("/models/{name}/measures/{measure_name}/history")

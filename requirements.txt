@@ -5,3 +5,4 @@ PyYAML==6.0.3
 boto3==1.43.41
 moto[server]==5.2.2
 deltalake==1.6.1
+argon2-cffi==25.1.0
