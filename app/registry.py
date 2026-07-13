@@ -8,6 +8,7 @@ from typing import Optional
 
 from . import config, semantic
 from .authstore import AuthStore
+from .conversationstore import ConversationStore
 from .store import VisualStore
 
 
@@ -17,6 +18,7 @@ class Registry:
         self.dimension_bundles: dict[str, semantic.DimensionBundle] = {}
         self.store: Optional[VisualStore] = None
         self.auth_store: Optional[AuthStore] = None
+        self.conversation_store: Optional[ConversationStore] = None
 
     def init(self) -> None:
         self.reload_all()
@@ -26,6 +28,7 @@ class Registry:
             idle_days=config.SESSION_IDLE_DAYS,
             max_days=config.SESSION_MAX_DAYS,
         )
+        self.conversation_store = ConversationStore(config.DB_PATH)
 
     def reload_all(self) -> None:
         """Reload dimension bundles, then models, then resolve each model's

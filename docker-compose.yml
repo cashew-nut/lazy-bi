@@ -6,6 +6,10 @@
 # output — accounts live in the app-data volume, so it never reprints.
 # Behind a TLS proxy, pass CI_COOKIE_SECURE=1 (and optionally
 # CI_SESSION_IDLE_DAYS / CI_SESSION_MAX_DAYS) via `environment:`.
+# Conversational analytics (specs/012-conversational-analytics/) is off
+# unless CI_LLM_API_KEY is set — pass it (and optionally CI_LLM_MODEL) via
+# `environment:` to enable it. See the README's "Conversational analytics"
+# section for exactly what that sends to the configured LLM provider.
 services:
   app:
     build: .

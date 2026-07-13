@@ -571,6 +571,7 @@ route-by-route matrix lives in
 | `POST /api/query` | run a semantic query, returns columns + rows + timing |
 | `GET/POST /api/visuals`, `PUT/DELETE /api/visuals/{id}` | saved visuals (SQLite: `cash_intel.db`) |
 | `GET/POST /api/dashboards`, `GET/PUT/DELETE /api/dashboards/{id}` | dashboards — ordered tiles `{visual_id, w:1\|2}`; GET by id resolves tile visuals; create/update reject a tile set where two visuals declare a same-named, differently-defined parameter (see "Visual parameters" above) |
+| `GET/POST /api/conversations`, `GET/PATCH/DELETE /api/conversations/{id}`, `POST /api/conversations/{id}/ask` | conversational analytics (SQLite: `cash_intel.db`) — strictly owner-scoped; 503 unless `CI_LLM_API_KEY` is set (see "Conversational analytics" below) |
 
 Query shape:
 
@@ -622,6 +623,43 @@ your role — viewers see no authoring controls at all):
   a model chip jumps to it in the builder; files no model reads are flagged as
   unmapped. This is where authoring — the dataset picker, guided common-model
   import, and expression intellisense described above — lives.
+
+## Conversational analytics
+
+A **CHAT** surface (specs/012-conversational-analytics/) lets a signed-in
+user ask plain-language business questions and get back a natural-language
+answer grounded in the same semantic layer and query engine everything else
+in this app uses — the assistant never queries data directly. Every
+question is translated into a proposal (`propose_query` / `ask_clarification`
+/ `decline`), which is then **re-validated against the live model** before
+it's ever executed through `engine.run_query` — the same code path
+`POST /api/query` runs. An LLM can propose, it can never bypass the
+semantic layer: a proposal referencing an undeclared column, an unjoined
+model, or anything else outside what's already declared is rejected before
+any query runs. Conversations persist per-user (SQLite) and are strictly
+owner-scoped; asking a question requires only the **viewer** role, the same
+tier as the query builder.
+
+**Off by default.** The whole feature — nav entry, API routes, everything —
+is disabled (`GET/POST /api/conversations*` return 503) unless
+`CI_LLM_API_KEY` is set. Set it (and optionally `CI_LLM_MODEL`, default
+`claude-sonnet-5`) to enable:
+
+```bash
+export CI_LLM_API_KEY=sk-ant-...
+export CI_LLM_MODEL=claude-sonnet-5   # optional
+```
+
+**What leaves the deployment, and to whom, when enabled:** every question
+sends the question text and a catalog of the declared model/dimension/
+measure *names and descriptions* (never raw source data, file paths, or
+credentials) to the Anthropic Messages API over HTTPS, so it can propose a
+query or ask a clarifying question. Once a proposal is validated and run,
+the resulting *result rows* (capped at `MAX_ROWS`, same cap the query
+builder uses) are also sent, so the assistant can generate the
+natural-language answer text. Nothing is sent to any third party unless
+`CI_LLM_API_KEY` is configured — there is no separate feature flag to
+forget, the key's presence is the flag.
 
 ## Frontend notes
 

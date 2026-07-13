@@ -15,6 +15,7 @@ import {
 import { attachAccount, loadAccount } from "./admin.js";
 import { initAuth } from "./auth.js";
 import { attachBundleForm, confirmLeaveBundleForm, openBundleForm } from "./bundleform.js";
+import { attachChat, loadChat, probeChatAvailability } from "./chat.js";
 import { attachEditor, confirmLeaveEditor, deleteEditorItem, saveEditor } from "./editor.js";
 import { $, api } from "./lib.js";
 import { initMeasureLab } from "./measurelab.js";
@@ -60,6 +61,8 @@ async function init() {
     });
 
     attachAccount();  // tokens / password / user-management wiring
+    attachChat();     // conversational analytics wiring
+    probeChatAvailability();  // shows the CHAT nav entry only if the server has it configured
 
     // ── semantic editor + guided forms (opened from Modelling) ──
     attachEditor();   // input/keydown/completion/dataset-picker/revert/beforeunload
@@ -182,6 +185,7 @@ async function init() {
         if (m === "studio") showView("builder");
         else if (m === "modelling") { showView("modelling"); loadModelling(); }
         else if (m === "account") { showView("account"); loadAccount(); }
+        else if (m === "chat") { showView("chat"); loadChat(); }
         else { state.portalFolder = ""; showView("portal"); loadPortal(); }
       });
     }

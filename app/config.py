@@ -33,6 +33,13 @@ SESSION_IDLE_DAYS = int(os.environ.get("CI_SESSION_IDLE_DAYS", "7"))
 SESSION_MAX_DAYS = int(os.environ.get("CI_SESSION_MAX_DAYS", "30"))
 COOKIE_SECURE = os.environ.get("CI_COOKIE_SECURE", "0") == "1"
 
+# Conversational analytics (specs/012-conversational-analytics/) — off unless
+# an API key is configured, so an unconfigured deployment never sends
+# question text/schema/results to a third party (research.md R7).
+LLM_API_KEY = os.environ.get("CI_LLM_API_KEY", "")
+LLM_MODEL = os.environ.get("CI_LLM_MODEL", "claude-sonnet-5")
+LLM_ENABLED = bool(LLM_API_KEY)
+
 
 def storage_options() -> dict:
     """storage_options passed to polars scan_* for the S3 object store."""

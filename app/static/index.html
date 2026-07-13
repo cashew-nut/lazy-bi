@@ -29,6 +29,7 @@
       <button data-mode="studio" class="on">STUDIO</button>
       <button data-mode="modelling">MODELLING</button>
       <button data-mode="portal">PORTAL</button>
+      <button data-mode="chat" id="chat-nav-btn" hidden>CHAT</button>
       <button data-mode="account">ACCOUNT</button>
     </nav>
     <div id="conn" class="conn">…</div>
@@ -319,6 +320,26 @@
           <span id="cross-chip"></span>
         </div>
         <div id="dash-grid"></div>
+      </div>
+
+      <div id="chat-view" class="chart-card" hidden>
+        <div class="chart-head">
+          <span class="editor-file">CHAT</span>
+          <select id="chat-scope" multiple size="3" title="pin to specific models — empty means the assistant infers which model to use"></select>
+          <button class="btn plain" id="chat-new">+ NEW CONVERSATION</button>
+        </div>
+        <div class="chat-body">
+          <div class="chat-conv-list" id="chat-conv-list"></div>
+          <div class="chat-main">
+            <div id="chat-thread" class="chat-thread">
+              <div class="empty-note">ask a question about your data, in plain language</div>
+            </div>
+            <form id="chat-form" class="chat-input-row">
+              <input id="chat-input" placeholder="e.g. revenue by category last quarter" spellcheck="false" autocomplete="off">
+              <button class="btn alt" id="chat-send" type="submit">ASK</button>
+            </form>
+          </div>
+        </div>
       </div>
     </main>
   </div>
