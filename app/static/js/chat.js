@@ -152,6 +152,69 @@ function fmtFilter(f) {
   return `${f.field} ${f.op} ${f.value}`;
 }
 
+// Labels for the live bubble's tag, keyed by which of the four tools the
+// model picked (chat.py's "tool_name" SSE event) — shown only while a
+// question is in flight, replaced by the real outcome tag once "response"
+// arrives and renderMessage() takes over.
+const TOOL_LABELS = {
+  propose_query: "BUILDING A QUERY…",
+  ask_clarification: "ASKING A CLARIFYING QUESTION…",
+  show_last_query: "LOOKING UP THE LAST QUERY…",
+  decline: "WORKING OUT HOW TO RESPOND…",
+};
+
+// The query as it's being built, from a "tool_input" event's accumulated-
+// so-far (and possibly incomplete) args — best-effort formatting of
+// whatever fields have landed already, never throwing on a partial shape.
+function fmtPartialQuery(input) {
+  if (!input || typeof input !== "object") return "";
+  const parts = [];
+  if (input.model) parts.push(`model: ${input.model}`);
+  if (Array.isArray(input.dimensions) && input.dimensions.length) {
+    parts.push(`dimensions: ${input.dimensions.map(fieldName).join(", ")}`);
+  }
+  if (Array.isArray(input.measures) && input.measures.length) {
+    parts.push(`measures: ${input.measures.join(", ")}`);
+  }
+  if (Array.isArray(input.filters) && input.filters.length) {
+    const complete = input.filters.filter((f) => f && f.field && f.op);
+    if (complete.length) parts.push(`filters: ${complete.map(fmtFilter).join("; ")}`);
+  }
+  if (input.sort && input.sort.by) {
+    parts.push(`sort: ${input.sort.by} ${input.sort.desc === false ? "asc" : "desc"}`);
+  }
+  if (input.limit != null) parts.push(`limit: ${input.limit}`);
+  if (input.reason_text) parts.push(input.reason_text);
+  if (input.question_text) parts.push(input.question_text);
+  return parts.join(" · ");
+}
+
+// Reads a fetch() response body shaped as Server-Sent Events (chat.py's
+// _sse()) — not EventSource, which is GET-only and can't carry the
+// X-Requested-With CSRF header this app requires for cookie-authed POSTs.
+async function* parseSSE(response) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf("\n\n")) !== -1) {
+      const chunk = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      let eventName = "message";
+      let data = "";
+      for (const line of chunk.split("\n")) {
+        if (line.startsWith("event: ")) eventName = line.slice(7);
+        else if (line.startsWith("data: ")) data += line.slice(6);
+      }
+      if (data) yield { event: eventName, data: JSON.parse(data) };
+    }
+  }
+}
+
 // The full resolved query (model/dimensions/measures/filters/sort/limit),
 // not just model/dimensions/measures — every answered turn is independently
 // verifiable this way, and it's what a "query_shown" message (the assistant
@@ -167,10 +230,12 @@ function renderMessage(msg) {
     const q = msg.resolved_query;
     const filterText = (q.filters || []).map(fmtFilter).join("; ") || "—";
     const sortText = q.sort && q.sort.by ? `${q.sort.by} ${q.sort.desc === false ? "asc" : "desc"}` : "—";
-    bubble.append(el("div", { class: "meta" },
-      `model: ${q.model} · dimensions: ${(q.dimensions || []).map(fieldName).join(", ") || "—"} `
-      + `· measures: ${(q.measures || []).join(", ") || "—"} · filters: ${filterText} `
-      + `· sort: ${sortText} · limit: ${q.limit ?? "—"}`));
+    bubble.append(el("details", { class: "meta" },
+      el("summary", {}, "query"),
+      el("div", { class: "meta-body" },
+        `model: ${q.model} · dimensions: ${(q.dimensions || []).map(fieldName).join(", ") || "—"} `
+        + `· measures: ${(q.measures || []).join(", ") || "—"} · filters: ${filterText} `
+        + `· sort: ${sortText} · limit: ${q.limit ?? "—"}`)));
   }
   if (msg.result && msg.result.rows && msg.result.rows.length) {
     bubble.append(renderGroundingTable(msg.result));
@@ -212,14 +277,53 @@ export function attachChat() {
     if (!chat.current) await newConversation();
     input.value = "";
     input.disabled = true;
+    const thread = $("#chat-thread");
+    let live = null;
+
     try {
-      await api(`/api/conversations/${chat.current.id}/ask`, { method: "POST", body: { question } });
-      chat.current = await api(`/api/conversations/${chat.current.id}`);
-      renderThread();
+      const res = await fetch(`/api/conversations/${chat.current.id}/ask/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Requested-With": "fetch" },
+        body: JSON.stringify({ question }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || res.statusText);
+      }
+
+      let thinkingText = "";
+      for await (const { event, data } of parseSSE(res)) {
+        if (event === "question") {
+          const note = thread.querySelector(".empty-note");
+          if (note) note.remove();
+          chat.current.messages.push(data.question);
+          thread.append(renderMessage(data.question));
+          live = el("div", { class: "chat-msg live" },
+            el("span", { class: "tag" }, "THINKING…"),
+            el("div", { class: "live-thinking" }),
+            el("div", { class: "live-query" }));
+          thread.append(live);
+        } else if (event === "thinking") {
+          thinkingText += data.text;
+          live.querySelector(".live-thinking").textContent = thinkingText;
+        } else if (event === "tool_name") {
+          live.querySelector(".tag").textContent = TOOL_LABELS[data.tool_name] || data.tool_name;
+        } else if (event === "tool_input") {
+          live.querySelector(".live-query").textContent = fmtPartialQuery(data.tool_input);
+        } else if (event === "response") {
+          chat.current.messages.push(data.response);
+          live.replaceWith(renderMessage(data.response));
+          live = null;
+        }
+        thread.scrollTop = thread.scrollHeight;
+      }
       await refreshConvList();
     } catch (err) {
-      chat.current.messages.push({ role: "assistant", outcome: "error", answer_text: err.message });
-      renderThread();
+      if (live) live.remove();
+      const errMsg = { role: "assistant", outcome: "error", answer_text: err.message };
+      chat.current.messages.push(errMsg);
+      thread.append(renderMessage(errMsg));
+      thread.scrollTop = thread.scrollHeight;
     } finally {
       input.disabled = false;
       input.focus();

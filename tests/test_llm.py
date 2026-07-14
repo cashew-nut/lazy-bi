@@ -51,6 +51,13 @@ def test_all_four_tool_kinds_present():
     }
 
 
+def test_all_tools_have_eager_input_streaming_enabled():
+    """Lets AnthropicTranslator.translate_streaming() show a tool's args
+    taking shape live (input_json events), instead of only ever seeing the
+    whole JSON blob appear at once at the end."""
+    assert all(t.get("eager_input_streaming") is True for t in llm._TOOLS)
+
+
 # ── measure formula ground truth (a name/description alone isn't always
 # enough to disambiguate measures — see nlq._measure_catalog_entry) ───────
 

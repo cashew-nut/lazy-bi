@@ -8,14 +8,16 @@ this (research.md R7).
 """
 from __future__ import annotations
 
+import json
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from .. import config, engine, nlq, semantic
 from ..auth import User, require_role
-from ..llm import AnthropicTranslator, PriorTurn, TranslatorError
+from ..llm import AnthropicTranslator, PriorTurn, StreamEvent, TranslatorError
 from ..registry import registry
 
 router = APIRouter(tags=["chat"])
@@ -159,6 +161,82 @@ def _summarize(resolved: dict, result: dict) -> str:
             f"{', '.join(dim_cols)}. Top row — {headline}.")
 
 
+def _handle_translator_error(conversation_id: int, user: User, question_msg: dict,
+                              question: str, exc: TranslatorError) -> dict:
+    store = registry.conversation_store
+    response_msg = store.add_message(
+        conversation_id, "assistant", outcome="error",
+        answer_text=f"the assistant is temporarily unavailable: {exc}",
+    )
+    registry.auth_store.record_audit(
+        "chat_ask", user.username, actor_user_id=user.id,
+        target=f"conversation:{conversation_id} outcome:error question:{question!r}",
+    )
+    return {"question": question_msg, "response": response_msg}
+
+
+def _handle_decision(conversation_id: int, user: User, question_msg: dict,
+                      question: str, decision: nlq.Decision) -> dict:
+    """Persist `decision` as the assistant's turn (executing a ProposeQuery
+    against the live engine first) and audit-log the outcome. Shared by
+    ask() and ask_stream() — a decision is handled identically regardless of
+    whether it was reached via a streamed or a plain translate() call."""
+    store = registry.conversation_store
+    if isinstance(decision, nlq.Decline):
+        response_msg = store.add_message(
+            conversation_id, "assistant", outcome="declined", answer_text=decision.reason_text)
+        audit_target = f"conversation:{conversation_id} outcome:declined question:{question!r}"
+    elif isinstance(decision, nlq.AskClarification):
+        answer_text = decision.question_text
+        if decision.candidates:
+            answer_text += f" (options: {', '.join(decision.candidates)})"
+        response_msg = store.add_message(
+            conversation_id, "clarification", outcome="clarification", answer_text=answer_text)
+        audit_target = (f"conversation:{conversation_id} outcome:clarification "
+                         f"question:{question!r} candidates:{decision.candidates}")
+    elif isinstance(decision, nlq.ShowQuery):
+        resolved_query = {
+            "model": decision.model, "dimensions": decision.dimensions,
+            "measures": decision.measures, "filters": decision.filters,
+            "sort": decision.sort, "limit": decision.limit,
+        }
+        response_msg = store.add_message(
+            conversation_id, "assistant", outcome="query_shown", resolved_query=resolved_query,
+            answer_text=f"Here's the query behind “{decision.question_text}”.",
+        )
+        audit_target = f"conversation:{conversation_id} outcome:query_shown question:{question!r}"
+    else:
+        model = registry.models[decision.model]
+        resolved_query = {
+            "model": decision.model, "dimensions": decision.dimensions,
+            "measures": decision.measures, "filters": decision.filters,
+            "sort": decision.sort, "limit": decision.limit,
+        }
+        try:
+            result = engine.run_query(model, resolved_query)
+        except (semantic.ModelError, engine.QueryError) as exc:
+            response_msg = store.add_message(
+                conversation_id, "assistant", outcome="error", answer_text=f"query failed: {exc}")
+            registry.auth_store.record_audit(
+                "chat_ask", user.username, actor_user_id=user.id,
+                target=f"conversation:{conversation_id} outcome:error question:{question!r}",
+            )
+            return {"question": question_msg, "response": response_msg}
+        outcome = "answered_empty" if result["row_count"] == 0 else "answered"
+        response_msg = store.add_message(
+            conversation_id, "assistant", outcome=outcome,
+            resolved_query=resolved_query, result=result,
+            answer_text=_summarize(resolved_query, result),
+        )
+        audit_target = (f"conversation:{conversation_id} outcome:{outcome} question:{question!r} "
+                         f"model:{decision.model} dimensions:{decision.dimensions} measures:{decision.measures}")
+
+    registry.auth_store.record_audit(
+        "chat_ask", user.username, actor_user_id=user.id, target=audit_target,
+    )
+    return {"question": question_msg, "response": response_msg}
+
+
 @router.post("/conversations/{conversation_id}/ask", dependencies=[Depends(_require_enabled)])
 def ask(conversation_id: int, body: AskIn, user: User = Depends(require_role("viewer"))):
     conv = _get_owned(conversation_id, user)
@@ -175,66 +253,57 @@ def ask(conversation_id: int, body: AskIn, user: User = Depends(require_role("vi
             scope=conv["model_scope"],
         )
     except TranslatorError as exc:
-        response_msg = store.add_message(
-            conversation_id, "assistant", outcome="error",
-            answer_text=f"the assistant is temporarily unavailable: {exc}",
-        )
-        registry.auth_store.record_audit(
-            "chat_ask", user.username, actor_user_id=user.id,
-            target=f"conversation:{conversation_id} outcome:error question:{body.question!r}",
-        )
-        return {"question": question_msg, "response": response_msg}
+        return _handle_translator_error(conversation_id, user, question_msg, body.question, exc)
 
-    if isinstance(decision, nlq.Decline):
-        response_msg = store.add_message(
-            conversation_id, "assistant", outcome="declined", answer_text=decision.reason_text)
-        audit_target = f"conversation:{conversation_id} outcome:declined question:{body.question!r}"
-    elif isinstance(decision, nlq.AskClarification):
-        answer_text = decision.question_text
-        if decision.candidates:
-            answer_text += f" (options: {', '.join(decision.candidates)})"
-        response_msg = store.add_message(
-            conversation_id, "clarification", outcome="clarification", answer_text=answer_text)
-        audit_target = (f"conversation:{conversation_id} outcome:clarification "
-                         f"question:{body.question!r} candidates:{decision.candidates}")
-    elif isinstance(decision, nlq.ShowQuery):
-        resolved_query = {
-            "model": decision.model, "dimensions": decision.dimensions,
-            "measures": decision.measures, "filters": decision.filters,
-            "sort": decision.sort, "limit": decision.limit,
-        }
-        response_msg = store.add_message(
-            conversation_id, "assistant", outcome="query_shown", resolved_query=resolved_query,
-            answer_text=f"Here's the query behind “{decision.question_text}”.",
-        )
-        audit_target = f"conversation:{conversation_id} outcome:query_shown question:{body.question!r}"
-    else:
-        model = registry.models[decision.model]
-        resolved_query = {
-            "model": decision.model, "dimensions": decision.dimensions,
-            "measures": decision.measures, "filters": decision.filters,
-            "sort": decision.sort, "limit": decision.limit,
-        }
+    return _handle_decision(conversation_id, user, question_msg, body.question, decision)
+
+
+def _sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+@router.post("/conversations/{conversation_id}/ask/stream", dependencies=[Depends(_require_enabled)])
+def ask_stream(conversation_id: int, body: AskIn, user: User = Depends(require_role("viewer"))):
+    """Same behavior as POST .../ask (identical persisted messages, audit
+    log, and re-validation), but as Server-Sent Events: "thinking"/
+    "tool_name"/"tool_input" events let a caller show progress live before
+    the final "response" event — which carries exactly the same
+    {question, response} body ask() returns outright, so a client can
+    render it with the same code path either way. Not EventSource-based
+    (its GET-only, no-custom-headers API can't carry the CSRF header this
+    app requires for cookie-authed mutations) — a caller reads this with
+    fetch() + a ReadableStream reader instead."""
+    conv = _get_owned(conversation_id, user)
+    store = registry.conversation_store
+    question_msg = store.add_message(conversation_id, "user", question_text=body.question)
+
+    catalog = nlq.build_catalog(registry.models, conv["model_scope"])
+    prior_context = _prior_turns(conv)
+    translator = _translator_for(conv.get("llm_model"))
+
+    def gen():
+        yield _sse("question", {"question": question_msg})
+        decision = None
         try:
-            result = engine.run_query(model, resolved_query)
-        except (semantic.ModelError, engine.QueryError) as exc:
-            response_msg = store.add_message(
-                conversation_id, "assistant", outcome="error", answer_text=f"query failed: {exc}")
-            registry.auth_store.record_audit(
-                "chat_ask", user.username, actor_user_id=user.id,
-                target=f"conversation:{conversation_id} outcome:error question:{body.question!r}",
-            )
-            return {"question": question_msg, "response": response_msg}
-        outcome = "answered_empty" if result["row_count"] == 0 else "answered"
-        response_msg = store.add_message(
-            conversation_id, "assistant", outcome=outcome,
-            resolved_query=resolved_query, result=result,
-            answer_text=_summarize(resolved_query, result),
-        )
-        audit_target = (f"conversation:{conversation_id} outcome:{outcome} question:{body.question!r} "
-                         f"model:{decision.model} dimensions:{decision.dimensions} measures:{decision.measures}")
+            for item in nlq.resolve_streaming(
+                body.question, catalog, prior_context, user, registry.models, translator,
+                scope=conv["model_scope"],
+            ):
+                if not isinstance(item, StreamEvent):
+                    decision = item
+                    continue
+                if item.kind == "thinking":
+                    yield _sse("thinking", {"text": item.text})
+                elif item.kind == "tool_name":
+                    yield _sse("tool_name", {"tool_name": item.tool_name})
+                elif item.kind == "tool_input":
+                    yield _sse("tool_input", {"tool_input": item.tool_input})
+        except TranslatorError as exc:
+            yield _sse("response", _handle_translator_error(conversation_id, user, question_msg, body.question, exc))
+            return
+        yield _sse("response", _handle_decision(conversation_id, user, question_msg, body.question, decision))
 
-    registry.auth_store.record_audit(
-        "chat_ask", user.username, actor_user_id=user.id, target=audit_target,
+    return StreamingResponse(
+        gen(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
-    return {"question": question_msg, "response": response_msg}

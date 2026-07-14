@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Literal, Protocol
+from typing import Iterator, Literal, Protocol
 
 from . import config, engine
 from .semantic import TIME_GRAINS
@@ -78,6 +78,20 @@ class RawToolCall:
     args: dict
 
 
+@dataclass(frozen=True)
+class StreamEvent:
+    """One incremental update from Translator.translate_streaming(), for a
+    caller that wants to show live progress before the final decision is
+    ready. Every kind but "done" is display-only — nlq.resolve_streaming
+    still re-validates only the final RawToolCall (`final`), identical to
+    the non-streaming path, so streaming can never change what's trusted."""
+    kind: Literal["thinking", "tool_name", "tool_input", "done"]
+    text: str = ""                      # kind="thinking": the thinking delta
+    tool_name: str | None = None        # kind="tool_name": which of the four tools was called
+    tool_input: dict | None = None      # kind="tool_input": accumulated partial args so far
+    final: RawToolCall | None = None    # kind="done": what translate() would have returned outright
+
+
 class TranslatorError(Exception):
     """The LLM call itself failed (network/timeout/API error) — distinct
     from the model producing a bad *proposal*, which is nlq.resolve()'s
@@ -92,10 +106,18 @@ class Translator(Protocol):
         prior_context: list[PriorTurn],
     ) -> RawToolCall: ...
 
+    def translate_streaming(
+        self,
+        question: str,
+        catalog: list[ModelCatalogEntry],
+        prior_context: list[PriorTurn],
+    ) -> Iterator[StreamEvent]: ...
+
 
 _TOOLS = [
     {
         "name": "propose_query",
+        "eager_input_streaming": True,
         "description": (
             "Answer the question with a semantic query against exactly one "
             "declared model. Every dimension/measure named MUST be one of "
@@ -169,6 +191,7 @@ _TOOLS = [
     },
     {
         "name": "ask_clarification",
+        "eager_input_streaming": True,
         "description": (
             "The question is ambiguous between more than one real model, "
             "dimension, or measure. Ask the user which they meant, naming "
@@ -185,6 +208,7 @@ _TOOLS = [
     },
     {
         "name": "show_last_query",
+        "eager_input_streaming": True,
         "description": (
             "The user is asking to see, return, or repeat the actual query "
             "(model/dimensions/measures/filters) behind a previous answer in "
@@ -196,6 +220,7 @@ _TOOLS = [
     },
     {
         "name": "decline",
+        "eager_input_streaming": True,
         "description": (
             "The question cannot be answered from the declared catalog "
             "(needs a raw column, an undeclared cross-model join, "
@@ -283,6 +308,14 @@ def _prior_context_text(prior_context: list[PriorTurn]) -> str:
     return "\n".join(lines)
 
 
+def _build_prompt(question: str, catalog: list[ModelCatalogEntry], prior_context: list[PriorTurn]) -> str:
+    return (
+        f"Catalog:\n{_catalog_text(catalog)}\n\n"
+        f"Prior turns in this conversation:\n{_prior_context_text(prior_context)}\n\n"
+        f"Question: {question}"
+    )
+
+
 class AnthropicTranslator:
     """Talks to the Anthropic Messages API with forced tool-use so the
     result is always one of the four typed decisions (research.md R1)."""
@@ -300,11 +333,7 @@ class AnthropicTranslator:
         import anthropic
 
         client = anthropic.Anthropic(api_key=self.api_key)
-        prompt = (
-            f"Catalog:\n{_catalog_text(catalog)}\n\n"
-            f"Prior turns in this conversation:\n{_prior_context_text(prior_context)}\n\n"
-            f"Question: {question}"
-        )
+        prompt = _build_prompt(question, catalog, prior_context)
         try:
             response = client.messages.create(
                 model=self.model,
@@ -326,4 +355,52 @@ class AnthropicTranslator:
         for block in response.content:
             if block.type == "tool_use":
                 return RawToolCall(kind=block.name, args=block.input)
+        raise TranslatorError("model did not call any tool")
+
+    def translate_streaming(
+        self,
+        question: str,
+        catalog: list[ModelCatalogEntry],
+        prior_context: list[PriorTurn],
+    ) -> Iterator[StreamEvent]:
+        """Same call as translate(), but yields StreamEvents for live display
+        (adaptive thinking, and the tool call's args as they're built —
+        eager_input_streaming on every _TOOLS entry means `event.snapshot`
+        below is already a parsed partial dict, not just a raw JSON
+        fragment) as it goes, ending with a "done" event carrying exactly
+        what translate() would have returned outright. A caller that only
+        wants the final decision can skip every event but "done" — nothing
+        here is trusted any more than translate()'s return value is; the
+        re-validation in nlq.py is unchanged."""
+        import anthropic
+
+        client = anthropic.Anthropic(api_key=self.api_key)
+        prompt = _build_prompt(question, catalog, prior_context)
+        try:
+            with client.messages.stream(
+                model=self.model,
+                max_tokens=1024,
+                system=_SYSTEM_PROMPT,
+                tools=_TOOLS,
+                tool_choice={"type": "any"},
+                thinking={"type": "adaptive", "display": "summarized"},
+                messages=[{"role": "user", "content": prompt}],
+            ) as stream:
+                for event in stream:
+                    if event.type == "thinking":
+                        yield StreamEvent(kind="thinking", text=event.thinking)
+                    elif event.type == "content_block_start" and event.content_block.type == "tool_use":
+                        yield StreamEvent(kind="tool_name", tool_name=event.content_block.name)
+                    elif event.type == "input_json":
+                        snapshot = event.snapshot if isinstance(event.snapshot, dict) else {}
+                        yield StreamEvent(kind="tool_input", tool_input=snapshot)
+                message = stream.get_final_message()
+        except anthropic.APIError as exc:
+            logger.warning("Anthropic API call failed: %r (cause: %r)", exc, exc.__cause__)
+            raise TranslatorError(str(exc)) from exc
+
+        for block in message.content:
+            if block.type == "tool_use":
+                yield StreamEvent(kind="done", final=RawToolCall(kind=block.name, args=block.input))
+                return
         raise TranslatorError("model did not call any tool")
