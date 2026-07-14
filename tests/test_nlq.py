@@ -4,19 +4,27 @@ Foundational phase T009-T011, US1 T010-T011, US4 T021-T022, US3 T026,
 US2 T030-T031)."""
 from __future__ import annotations
 
+import pytest
+
 from app import nlq
 from app.auth import User
-from app.llm import PriorTurn, RawToolCall
+from app.llm import PriorTurn, RawToolCall, StreamEvent, TranslatorError
 
 VIEWER = User(id=1, username="viewer", display_name="Viewer", role="viewer")
 
 
 class FakeTranslator:
     """Scripted Translator: returns queued RawToolCall/Exception values in
-    order, and records every call for assertions."""
+    order, and records every call for assertions. translate_streaming()
+    replays the same queue — each response may be preceded by a scripted
+    list of display-only StreamEvents (`stream_events`, one list per queued
+    response; omitted/exhausted just means "no live progress events, go
+    straight to the final decision") so resolve_streaming() can be exercised
+    with zero network calls too."""
 
-    def __init__(self, responses):
+    def __init__(self, responses, stream_events=None):
         self.responses = list(responses)
+        self.stream_events = list(stream_events or [])
         self.calls = []
 
     def translate(self, question, catalog, prior_context):
@@ -26,6 +34,16 @@ class FakeTranslator:
         if isinstance(resp, Exception):
             raise resp
         return resp
+
+    def translate_streaming(self, question, catalog, prior_context):
+        self.calls.append((question, catalog, prior_context))
+        assert self.responses, "FakeTranslator ran out of scripted responses"
+        resp = self.responses.pop(0)
+        events = self.stream_events.pop(0) if self.stream_events else []
+        yield from events
+        if isinstance(resp, Exception):
+            raise resp
+        yield StreamEvent(kind="done", final=resp)
 
 
 def _catalog(models):
@@ -262,3 +280,65 @@ def test_resolve_show_last_query_without_prior_context_declines(models):
     translator = FakeTranslator([RawToolCall("show_last_query", {})])
     decision = nlq.resolve("show me the query", _catalog(models), [], VIEWER, models, translator)
     assert isinstance(decision, nlq.Decline)
+
+
+# ── resolve_streaming (streaming twin of resolve() — same re-validation) ───
+
+def test_resolve_streaming_yields_events_then_a_decision(models):
+    translator = FakeTranslator(
+        [RawToolCall("propose_query", {
+            "model": "sales", "dimensions": ["category"], "measures": ["revenue"],
+        })],
+        stream_events=[[
+            StreamEvent(kind="thinking", text="considering the question"),
+            StreamEvent(kind="tool_name", tool_name="propose_query"),
+            StreamEvent(kind="tool_input", tool_input={"model": "sales"}),
+        ]],
+    )
+    items = list(nlq.resolve_streaming("revenue by category", _catalog(models), [], VIEWER, models, translator))
+    *events, decision = items
+    assert [e.kind for e in events] == ["thinking", "tool_name", "tool_input"]
+    assert events[0].text == "considering the question"
+    assert events[1].tool_name == "propose_query"
+    assert events[2].tool_input == {"model": "sales"}
+    assert isinstance(decision, nlq.ProposeQuery)
+    assert decision.model == "sales"
+
+
+def test_resolve_streaming_still_revalidates_like_resolve(models):
+    """The exact re-validation resolve() does (the reported bug: an invalid
+    filter op) must still apply when the same RawToolCall arrives via the
+    streaming path — every event but the final one is display-only."""
+    translator = FakeTranslator([
+        RawToolCall("propose_query", {
+            "model": "sales", "dimensions": [], "measures": ["revenue"],
+            "filters": [{"field": "category", "op": "=", "value": "Widgets"}],
+        }),
+    ])
+    items = list(nlq.resolve_streaming(
+        "revenue where category = Widgets", _catalog(models), [], VIEWER, models, translator))
+    decision = items[-1]
+    assert isinstance(decision, nlq.Decline)
+    assert "=" in decision.reason_text
+
+
+def test_resolve_streaming_with_no_display_events_still_yields_a_decision(models):
+    """A translator that scripts no intermediate StreamEvents at all (the
+    common case in most of these tests) still ends in exactly one Decision —
+    proves the "done" event alone is enough to drive resolve_streaming."""
+    translator = FakeTranslator([RawToolCall("decline", {"reason_text": "not in the model"})])
+    items = list(nlq.resolve_streaming("bogus", _catalog(models), [], VIEWER, models, translator))
+    assert len(items) == 1
+    assert isinstance(items[0], nlq.Decline)
+
+
+def test_resolve_streaming_propagates_translator_error(models):
+    class ErrorTranslator:
+        def translate(self, *args, **kwargs):
+            raise TranslatorError("boom")
+
+        def translate_streaming(self, *args, **kwargs):
+            raise TranslatorError("boom")
+
+    with pytest.raises(TranslatorError):
+        list(nlq.resolve_streaming("revenue", _catalog(models), [], VIEWER, models, ErrorTranslator()))

@@ -48,6 +48,7 @@ MATRIX = {
     ("PATCH", "/api/conversations/{conversation_id}"): "viewer",
     ("DELETE", "/api/conversations/{conversation_id}"): "viewer",
     ("POST", "/api/conversations/{conversation_id}/ask"): "viewer",
+    ("POST", "/api/conversations/{conversation_id}/ask/stream"): "viewer",
 
     ("POST", "/api/models/generate"): "author",
     ("POST", "/api/dimensions/generate"): "author",

@@ -13,15 +13,15 @@ into an executed query.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Union
+from typing import Iterator, Union
 
 from . import engine, semantic
 from .auth import User
-from .llm import ModelCatalogEntry, PriorTurn, Translator, TranslatorError
+from .llm import ModelCatalogEntry, PriorTurn, RawToolCall, StreamEvent, Translator, TranslatorError
 
 __all__ = [
     "ProposeQuery", "AskClarification", "Decline", "ShowQuery", "Decision",
-    "build_catalog", "resolve",
+    "build_catalog", "resolve", "resolve_streaming",
 ]
 
 
@@ -196,6 +196,28 @@ def _validate_show_last_query(prior_context: list[PriorTurn]) -> ShowQuery | Dec
     )
 
 
+def _dispatch(
+    raw: RawToolCall,
+    catalog: list[ModelCatalogEntry],
+    prior_context: list[PriorTurn],
+    models: dict[str, semantic.Model],
+    scope: list[str],
+) -> Decision:
+    """The re-validation switch shared by resolve() and resolve_streaming():
+    turns one already-produced RawToolCall into a Decision. Takes no
+    translator and makes no network call — same rules regardless of
+    whether `raw` came from a streamed or a plain translate() call."""
+    if raw.kind == "decline":
+        return Decline(reason_text=raw.args.get("reason_text", "I can't answer that from the declared models."))
+    if raw.kind == "ask_clarification":
+        return _validate_ask_clarification(raw.args, catalog)
+    if raw.kind == "show_last_query":
+        return _validate_show_last_query(prior_context)
+    if raw.kind == "propose_query":
+        return _validate_propose_query(raw.args, models, scope)
+    return Decline(f"unrecognized response type '{raw.kind}'.")
+
+
 def resolve(
     question: str,
     catalog: list[ModelCatalogEntry],
@@ -211,14 +233,33 @@ def resolve(
     caller only needs to catch TranslatorError for the "assistant is
     unreachable" case (contracts/chat-api.md's 503)."""
     raw = translator.translate(question, catalog, prior_context)
-    scope = scope or []
+    return _dispatch(raw, catalog, prior_context, models, scope or [])
 
-    if raw.kind == "decline":
-        return Decline(reason_text=raw.args.get("reason_text", "I can't answer that from the declared models."))
-    if raw.kind == "ask_clarification":
-        return _validate_ask_clarification(raw.args, catalog)
-    if raw.kind == "show_last_query":
-        return _validate_show_last_query(prior_context)
-    if raw.kind == "propose_query":
-        return _validate_propose_query(raw.args, models, scope)
-    return Decline(f"unrecognized response type '{raw.kind}'.")
+
+def resolve_streaming(
+    question: str,
+    catalog: list[ModelCatalogEntry],
+    prior_context: list[PriorTurn],
+    user: User,
+    models: dict[str, semantic.Model],
+    translator: Translator,
+    scope: list[str] | None = None,
+) -> Iterator[StreamEvent | Decision]:
+    """Streaming twin of resolve(): yields every StreamEvent from
+    translator.translate_streaming() verbatim, for a caller to render live
+    (thinking, and the proposed query taking shape), then yields exactly one
+    Decision as the last item — re-validated by the very same _dispatch()
+    resolve() uses, so streaming can never make a caller trust anything
+    resolve() wouldn't. Raises TranslatorError only for the LLM call itself
+    failing, exactly like resolve()."""
+    scope = scope or []
+    raw = None
+    for event in translator.translate_streaming(question, catalog, prior_context):
+        if event.kind == "done":
+            raw = event.final
+        else:
+            yield event
+    if raw is None:
+        yield Decline("the assistant did not return a usable response.")
+        return
+    yield _dispatch(raw, catalog, prior_context, models, scope)

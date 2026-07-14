@@ -5,10 +5,12 @@ FakeTranslator on app.api.chat._translator for the duration of each test —
 no network calls, deterministic scripted decisions."""
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from app.api import chat as chat_api
-from app.llm import RawToolCall
+from app.llm import RawToolCall, StreamEvent, TranslatorError
 
 from .test_nlq import FakeTranslator
 
@@ -30,6 +32,25 @@ def _propose_sales_by_category():
         "model": "sales", "dimensions": ["category"], "measures": ["revenue"],
         "filters": [], "sort": None, "limit": None,
     })
+
+
+def _parse_sse(text: str) -> list[tuple[str, dict]]:
+    """Mirrors chat.js's parseSSE() exactly — both read the same wire format
+    chat.py's _sse() writes, so a test failure here would also mean the real
+    frontend can't parse the response either."""
+    events = []
+    for chunk in text.strip("\n").split("\n\n"):
+        if not chunk.strip():
+            continue
+        event_name, data = "message", ""
+        for line in chunk.split("\n"):
+            if line.startswith("event: "):
+                event_name = line[len("event: "):]
+            elif line.startswith("data: "):
+                data += line[len("data: "):]
+        if data:
+            events.append((event_name, json.loads(data)))
+    return events
 
 
 def test_ask_unambiguous_question_matches_direct_query(viewer_client, fake_translator):
@@ -231,3 +252,114 @@ def test_ask_invalid_filter_op_declines_instead_of_raw_engine_error(viewer_clien
     res = viewer_client.post(f"/api/conversations/{conv['id']}/ask",
                               json={"question": "revenue where category = Widgets"})
     assert res.json()["response"]["outcome"] == "declined"
+
+
+# ── POST .../ask/stream (SSE — same persisted outcome as .../ask, plus live
+# progress events) ──────────────────────────────────────────────────────────
+
+def test_ask_stream_matches_direct_query_and_ends_with_a_response_event(viewer_client, fake_translator):
+    fake_translator.responses.append(_propose_sales_by_category())
+    conv = viewer_client.post("/api/conversations", json={}).json()
+
+    res = viewer_client.post(f"/api/conversations/{conv['id']}/ask/stream",
+                              json={"question": "revenue by category"})
+    assert res.status_code == 200
+    assert res.headers["content-type"].startswith("text/event-stream")
+    events = _parse_sse(res.text)
+
+    assert events[0][0] == "question"
+    assert events[0][1]["question"]["question_text"] == "revenue by category"
+    assert events[-1][0] == "response"
+    body = events[-1][1]
+    assert body["response"]["outcome"] == "answered"
+    assert body["response"]["resolved_query"]["model"] == "sales"
+
+    direct = viewer_client.post("/api/query", json={
+        "model": "sales", "dimensions": ["category"], "measures": ["revenue"]}).json()
+    assert body["response"]["result"]["rows"] == direct["rows"]
+    assert body["response"]["result"]["row_count"] == direct["row_count"]
+
+
+def test_ask_stream_emits_thinking_tool_name_and_tool_input_events_in_order(viewer_client, fake_translator):
+    fake_translator.stream_events.append([
+        StreamEvent(kind="thinking", text="looking at the question"),
+        StreamEvent(kind="tool_name", tool_name="propose_query"),
+        StreamEvent(kind="tool_input", tool_input={"model": "sales"}),
+    ])
+    fake_translator.responses.append(_propose_sales_by_category())
+    conv = viewer_client.post("/api/conversations", json={}).json()
+
+    res = viewer_client.post(f"/api/conversations/{conv['id']}/ask/stream",
+                              json={"question": "revenue by category"})
+    events = _parse_sse(res.text)
+    assert [name for name, _ in events] == ["question", "thinking", "tool_name", "tool_input", "response"]
+    assert events[1][1] == {"text": "looking at the question"}
+    assert events[2][1] == {"tool_name": "propose_query"}
+    assert events[3][1] == {"tool_input": {"model": "sales"}}
+
+
+def test_ask_stream_decline_never_executes_a_query(viewer_client, fake_translator, monkeypatch):
+    called = {"hit": False}
+    real_run_query = chat_api.engine.run_query
+
+    def spy(*args, **kwargs):
+        called["hit"] = True
+        return real_run_query(*args, **kwargs)
+
+    monkeypatch.setattr(chat_api.engine, "run_query", spy)
+    fake_translator.responses.append(RawToolCall("decline", {"reason_text": "not in the semantic layer"}))
+
+    conv = viewer_client.post("/api/conversations", json={}).json()
+    res = viewer_client.post(f"/api/conversations/{conv['id']}/ask/stream", json={"question": "raw sql please"})
+    body = _parse_sse(res.text)[-1][1]
+    assert body["response"]["outcome"] == "declined"
+    assert body["response"]["resolved_query"] is None
+    assert called["hit"] is False
+
+
+def test_ask_stream_translator_error_surfaces_as_an_error_response_event(viewer_client, fake_translator):
+    """Headers (and the "question" event) are already sent by the time an
+    Anthropic call can fail, so this can never become a different HTTP
+    status — the failure has to travel as an ordinary "response" event with
+    outcome:"error", exactly like ask()'s non-streaming 200-with-error-
+    outcome behavior for the same case."""
+    fake_translator.responses.append(TranslatorError("api is down"))
+    conv = viewer_client.post("/api/conversations", json={}).json()
+
+    res = viewer_client.post(f"/api/conversations/{conv['id']}/ask/stream", json={"question": "revenue"})
+    assert res.status_code == 200
+    events = _parse_sse(res.text)
+    assert events[0][0] == "question"
+    assert events[-1][0] == "response"
+    assert events[-1][1]["response"]["outcome"] == "error"
+
+
+def test_ask_stream_persists_the_same_messages_as_non_streaming_ask(viewer_client, fake_translator):
+    fake_translator.responses.append(_propose_sales_by_category())
+    conv = viewer_client.post("/api/conversations", json={}).json()
+    viewer_client.post(f"/api/conversations/{conv['id']}/ask/stream", json={"question": "revenue by category"})
+
+    reread = viewer_client.get(f"/api/conversations/{conv['id']}").json()
+    assert len(reread["messages"]) == 2
+    assert reread["messages"][0]["role"] == "user"
+    assert reread["messages"][1]["outcome"] == "answered"
+    assert reread["title"] == "revenue by category"
+
+
+def test_ask_stream_show_last_query(viewer_client, fake_translator):
+    fake_translator.responses.append(_propose_sales_by_category())
+    conv = viewer_client.post("/api/conversations", json={}).json()
+    viewer_client.post(f"/api/conversations/{conv['id']}/ask/stream", json={"question": "revenue by category"})
+
+    fake_translator.responses.append(RawToolCall("show_last_query", {}))
+    res = viewer_client.post(f"/api/conversations/{conv['id']}/ask/stream",
+                              json={"question": "can you return the query that you tried to me?"})
+    body = _parse_sse(res.text)[-1][1]
+    assert body["response"]["outcome"] == "query_shown"
+    assert body["response"]["resolved_query"]["model"] == "sales"
+
+
+def test_ask_stream_disabled_without_llm_key(viewer_client, monkeypatch):
+    monkeypatch.setattr(chat_api.config, "LLM_ENABLED", False)
+    conv_id = 1  # never reached — _require_enabled short-circuits first
+    assert viewer_client.post(f"/api/conversations/{conv_id}/ask/stream", json={"question": "x"}).status_code == 503
