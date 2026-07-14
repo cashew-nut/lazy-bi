@@ -235,6 +235,36 @@ _TOOLS = [
     },
 ]
 
+
+def _tools_for_catalog(catalog: list[ModelCatalogEntry]) -> list[dict]:
+    """_TOOLS, with propose_query's `model` constrained to this request's
+    actual catalog — the same defense-in-depth reasoning as the filters[].op
+    and dimensions[].grain enums above (both sourced from the engine/semantic
+    modules rather than hand-copied): `model` previously had no declared
+    vocabulary at all, so the LLM could omit it (or invent one) with nothing
+    in the schema to ground it — most visible with a single-model scope,
+    where there's no real ambiguity to resolve. That surfaced as nlq.py's
+    _validate_propose_query declining with the confusing "'None' is not a
+    model this conversation can query." An empty catalog (nothing this
+    conversation can query at all) leaves `model` unconstrained since an
+    empty enum would be meaningless; nlq.py's re-validation is unchanged
+    either way — this only narrows what the LLM is likely to produce."""
+    if not catalog:
+        return _TOOLS
+    names = [m.name for m in catalog]
+    tools = [dict(t) for t in _TOOLS]
+    for t in tools:
+        if t["name"] == "propose_query":
+            t["input_schema"] = {
+                **t["input_schema"],
+                "properties": {
+                    **t["input_schema"]["properties"],
+                    "model": {"type": "string", "enum": names},
+                },
+            }
+    return tools
+
+
 _SYSTEM_PROMPT = (
     "You are a BI assistant answering questions strictly from a declared "
     "semantic layer. You may only reference models/dimensions/measures "
@@ -316,6 +346,24 @@ def _build_prompt(question: str, catalog: list[ModelCatalogEntry], prior_context
     )
 
 
+# Subset of config.LLM_MODEL_CHOICES that supports Anthropic's "adaptive"
+# extended-thinking mode. Haiku doesn't, and requesting it there 400s with
+# "adaptive thinking is not supported on this model" — the bug this fixes.
+# Keep in sync with LLM_MODEL_CHOICES the same way that list's own comment
+# asks: add an entry here whenever a newly-added choice supports adaptive
+# thinking.
+_ADAPTIVE_THINKING_MODELS = {"claude-opus-4-8", "claude-sonnet-5"}
+
+
+def _thinking_kwargs(model: str) -> dict:
+    """The `thinking` kwarg for messages.stream(), omitted entirely for a
+    model that doesn't support adaptive thinking rather than sent
+    unconditionally and left to 400."""
+    if model in _ADAPTIVE_THINKING_MODELS:
+        return {"thinking": {"type": "adaptive", "display": "summarized"}}
+    return {}
+
+
 class AnthropicTranslator:
     """Talks to the Anthropic Messages API with forced tool-use so the
     result is always one of the four typed decisions (research.md R1)."""
@@ -339,7 +387,7 @@ class AnthropicTranslator:
                 model=self.model,
                 max_tokens=1024,
                 system=_SYSTEM_PROMPT,
-                tools=_TOOLS,
+                tools=_tools_for_catalog(catalog),
                 tool_choice={"type": "any"},
                 messages=[{"role": "user", "content": prompt}],
             )
@@ -364,14 +412,15 @@ class AnthropicTranslator:
         prior_context: list[PriorTurn],
     ) -> Iterator[StreamEvent]:
         """Same call as translate(), but yields StreamEvents for live display
-        (adaptive thinking, and the tool call's args as they're built —
-        eager_input_streaming on every _TOOLS entry means `event.snapshot`
-        below is already a parsed partial dict, not just a raw JSON
-        fragment) as it goes, ending with a "done" event carrying exactly
-        what translate() would have returned outright. A caller that only
-        wants the final decision can skip every event but "done" — nothing
-        here is trusted any more than translate()'s return value is; the
-        re-validation in nlq.py is unchanged."""
+        (adaptive thinking on models that support it — _thinking_kwargs — and
+        the tool call's args as they're built — eager_input_streaming on
+        every _TOOLS entry means `event.snapshot` below is already a parsed
+        partial dict, not just a raw JSON fragment) as it goes, ending with a
+        "done" event carrying exactly what translate() would have returned
+        outright. A caller that only wants the final decision can skip every
+        event but "done" — nothing here is trusted any more than
+        translate()'s return value is; the re-validation in nlq.py is
+        unchanged."""
         import anthropic
 
         client = anthropic.Anthropic(api_key=self.api_key)
@@ -381,10 +430,10 @@ class AnthropicTranslator:
                 model=self.model,
                 max_tokens=1024,
                 system=_SYSTEM_PROMPT,
-                tools=_TOOLS,
+                tools=_tools_for_catalog(catalog),
                 tool_choice={"type": "any"},
-                thinking={"type": "adaptive", "display": "summarized"},
                 messages=[{"role": "user", "content": prompt}],
+                **_thinking_kwargs(self.model),
             ) as stream:
                 for event in stream:
                     if event.type == "thinking":

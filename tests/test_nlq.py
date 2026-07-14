@@ -142,6 +142,20 @@ def test_resolve_rejects_unknown_model(models):
     assert isinstance(decision, nlq.Decline)
 
 
+def test_resolve_missing_model_declines_with_a_clear_message(models):
+    """Regression test for the reported bug: a propose_query call with no
+    `model` at all used to decline with the confusing "'None' is not a
+    model this conversation can query." (Python's None rendered into the
+    f-string) — now a plain, non-technical message instead."""
+    translator = FakeTranslator([
+        RawToolCall("propose_query", {"dimensions": [], "measures": ["revenue"]}),
+    ])
+    decision = nlq.resolve("bogus", _catalog(models), [], VIEWER, models, translator)
+    assert isinstance(decision, nlq.Decline)
+    assert "None" not in decision.reason_text
+    assert decision.reason_text == "the assistant didn't specify which model to use for that."
+
+
 def test_resolve_rejects_model_outside_scope(models):
     translator = FakeTranslator([
         RawToolCall("propose_query", {"model": "sales", "dimensions": [], "measures": ["revenue"]}),
