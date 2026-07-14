@@ -63,6 +63,11 @@ function toSpec() {
       .map((m) => ({
         name: m.name, label: m.label, expr: m.expr, format: m.format, description: m.description,
         ...(hasFrame(m) ? { frame: m.frame, frame_emits: m.frame_emits || [] } : {}),
+        // no dedicated UI for this yet (author it via the raw yaml editor) —
+        // carried through untouched so opening+saving a model via the form
+        // never silently strips synonyms, same regression class this form
+        // already had for frame/frame_emits before they got a proper row
+        ...(m.synonyms && m.synonyms.length ? { synonyms: m.synonyms } : {}),
       })),
   };
 }

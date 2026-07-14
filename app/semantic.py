@@ -145,6 +145,11 @@ class Dimension:
     description: str = ""
     spine: Optional[Spine] = None
     geo: Optional[Geo] = None
+    # alternate business vocabulary a question might use instead of the
+    # declared name/label (e.g. "date" for order_date) — advisory only, never
+    # a second valid identifier: Model.dimension() still resolves by `name`
+    # alone (see app/nlq.py's catalog, the one consumer that reads this)
+    synonyms: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -161,6 +166,9 @@ class Measure:
     # a per-entity milestone date): excluded from `dims` during the step, and
     # grouped — time grains included — on the frame's output afterwards
     frame_emits: list[str] = field(default_factory=list)
+    # see Dimension.synonyms — same advisory-only contract, never a second
+    # valid identifier for Model.measure()
+    synonyms: list[str] = field(default_factory=list)
 
     def expr(self, schema: Optional["pl.Schema"] = None) -> pl.Expr:
         # framed measures keep the pre-existing eval-based path (authenticated-
@@ -266,13 +274,15 @@ class Model:
             ],
             "dimensions": [
                 {"name": d.name, "label": d.label, "type": d.type,
-                 "description": d.description, "spine": bool(d.spine), "geo": bool(d.geo)}
+                 "description": d.description, "spine": bool(d.spine), "geo": bool(d.geo),
+                 "synonyms": d.synonyms}
                 for d in self.dimensions.values()
             ],
             "measures": [
                 {"name": m.name, "label": m.label, "format": m.format,
                  "description": m.description, "expr": m.expr_source,
-                 "frame": m.frame_source, "frame_emits": m.frame_emits}
+                 "frame": m.frame_source, "frame_emits": m.frame_emits,
+                 "synonyms": m.synonyms}
                 for m in self.measures.values()
             ],
         }
@@ -318,6 +328,7 @@ def _parse_dimensions(raw_list: list, owner: str) -> dict[str, Dimension]:
             description=d.get("description", ""),
             spine=Spine(start=spine_raw["start"], end=spine_raw["end"]) if spine_raw else None,
             geo=Geo(lat=geo_raw["lat"], lon=geo_raw["lon"]) if geo_raw else None,
+            synonyms=_as_list(d["synonyms"]) if d.get("synonyms") else [],
         )
         if dim.spine and dim.type != "time":
             raise ModelError(f"{owner}: spine dimension '{dim.name}' must have type: time")
@@ -363,6 +374,7 @@ def _parse_model(raw: dict, origin: Path) -> Model:
                 description=m.get("description", ""),
                 frame_source=m.get("frame"),
                 frame_emits=_as_list(m["frame_emits"]) if m.get("frame_emits") else [],
+                synonyms=_as_list(m["synonyms"]) if m.get("synonyms") else [],
             )
             if meas.frame_source:
                 validate_frame(meas.frame_source, f"measure '{meas.name}'")
@@ -630,6 +642,7 @@ def _dimension_to_spec(d: Dimension) -> dict:
         "description": d.description,
         "spine": {"start": d.spine.start, "end": d.spine.end} if d.spine else None,
         "geo": {"lat": d.geo.lat, "lon": d.geo.lon} if d.geo else None,
+        "synonyms": list(d.synonyms),
     }
 
 
@@ -656,7 +669,8 @@ def model_to_spec(model: Model) -> dict:
         "measures": [
             {"name": m.name, "label": m.label, "expr": m.expr_source,
              "format": m.format, "description": m.description,
-             "frame": m.frame_source, "frame_emits": m.frame_emits}
+             "frame": m.frame_source, "frame_emits": m.frame_emits,
+             "synonyms": list(m.synonyms)}
             for m in model.measures.values()
         ],
     }
@@ -697,6 +711,8 @@ def _spec_dimension_entries(dims: list[dict]) -> list[dict]:
             entry["spine"] = {"start": d["spine"]["start"], "end": d["spine"]["end"]}
         if d.get("geo"):
             entry["geo"] = {"lat": d["geo"]["lat"], "lon": d["geo"]["lon"]}
+        if d.get("synonyms"):
+            entry["synonyms"] = list(d["synonyms"])
         out.append(entry)
     return out
 
@@ -760,6 +776,8 @@ def spec_to_yaml(spec: dict) -> str:
             entry["frame"] = m["frame"]
         if m.get("frame_emits"):
             entry["frame_emits"] = list(m["frame_emits"])
+        if m.get("synonyms"):
+            entry["synonyms"] = list(m["synonyms"])
         entry["expr"] = m["expr"]
         measures.append(entry)
     doc["measures"] = measures

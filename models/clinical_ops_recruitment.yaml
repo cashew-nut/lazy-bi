@@ -44,6 +44,7 @@ measures:
   - name: randomised_actual
     label: Randomised (Actual)
     description: Patients actually randomised.
+    synonyms: [enrolled, enrollment, randomization count]
     expr: sum(where(event_count, event_type == "randomised" and scenario == "actual"))
   - name: randomised_baseline
     label: Randomised (Baseline)

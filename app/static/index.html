@@ -325,12 +325,19 @@
       <div id="chat-view" class="chart-card" hidden>
         <div class="chart-head">
           <span class="editor-file">CHAT</span>
-          <select id="chat-scope" multiple size="3" title="pin to specific models — empty means the assistant infers which model to use"></select>
           <select id="chat-model" title="which model answers this conversation"></select>
           <button class="btn plain" id="chat-new">+ NEW CONVERSATION</button>
         </div>
         <div class="chat-body">
-          <div class="chat-conv-list" id="chat-conv-list"></div>
+          <div class="chat-sidebar">
+            <div class="chat-scope-panel">
+              <div class="views-label">MODELS IN SCOPE</div>
+              <div id="chat-scope-chips" class="chip-list"></div>
+              <div class="chat-scope-hint" id="chat-scope-hint"></div>
+            </div>
+            <div class="views-label chat-conv-label">CONVERSATIONS</div>
+            <div class="chat-conv-list" id="chat-conv-list"></div>
+          </div>
           <div class="chat-main">
             <div id="chat-thread" class="chat-thread">
               <div class="empty-note">ask a question about your data, in plain language</div>

@@ -25,6 +25,55 @@ def test_parse_minimal_model():
     assert m.measures["rows"].expr() is not None
 
 
+# --- Synonyms (alternate business vocabulary for dimensions/measures) ------
+
+def test_synonyms_default_to_empty_list():
+    m = semantic.parse_model_text(VALID)
+    assert m.dimensions["region"].synonyms == []
+    assert m.measures["rows"].synonyms == []
+
+
+def test_dimension_and_measure_synonyms_parse():
+    text = VALID.replace(
+        "  - name: region", "  - name: region\n    synonyms: [area, territory]"
+    ).replace(
+        "    expr: count()", "    synonyms: [row count, record count]\n    expr: count()"
+    )
+    m = semantic.parse_model_text(text)
+    assert m.dimensions["region"].synonyms == ["area", "territory"]
+    assert m.measures["rows"].synonyms == ["row count", "record count"]
+
+
+def test_synonyms_scalar_coerced_to_list():
+    """A single bare synonym (not a yaml list) is accepted, same shorthand
+    already supported for frame_emits."""
+    text = VALID.replace("  - name: region", "  - name: region\n    synonyms: area")
+    m = semantic.parse_model_text(text)
+    assert m.dimensions["region"].synonyms == ["area"]
+
+
+def test_synonyms_survive_spec_yaml_roundtrip():
+    text = VALID.replace(
+        "  - name: region", "  - name: region\n    synonyms: [area, territory]"
+    ).replace(
+        "    expr: count()", "    synonyms: [row count]\n    expr: count()"
+    )
+    model = semantic.parse_model_text(text)
+    rendered = semantic.spec_to_yaml(semantic.model_to_spec(model))
+    assert "synonyms:" in rendered
+    again = semantic.parse_model_text(rendered)
+    assert again.dimensions["region"].synonyms == ["area", "territory"]
+    assert again.measures["rows"].synonyms == ["row count"]
+
+
+def test_synonyms_omitted_from_yaml_when_absent():
+    """Terse-output contract (like every other optional field): a dimension/
+    measure with no synonyms must not grow an empty `synonyms: []` line."""
+    model = semantic.parse_model_text(VALID)
+    rendered = semantic.spec_to_yaml(semantic.model_to_spec(model))
+    assert "synonyms:" not in rendered
+
+
 def test_invalid_yaml_rejected():
     with pytest.raises(semantic.ModelError):
         semantic.parse_model_text("name: [unclosed")

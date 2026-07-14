@@ -631,14 +631,17 @@ user ask plain-language business questions and get back a natural-language
 answer grounded in the same semantic layer and query engine everything else
 in this app uses — the assistant never queries data directly. Every
 question is translated into a proposal (`propose_query` / `ask_clarification`
-/ `decline`), which is then **re-validated against the live model** before
-it's ever executed through `engine.run_query` — the same code path
-`POST /api/query` runs. An LLM can propose, it can never bypass the
-semantic layer: a proposal referencing an undeclared column, an unjoined
-model, or anything else outside what's already declared is rejected before
-any query runs. Conversations persist per-user (SQLite) and are strictly
-owner-scoped; asking a question requires only the **viewer** role, the same
-tier as the query builder.
+/ `show_last_query` / `decline`), which is then **re-validated against the
+live model** before it's ever executed through `engine.run_query` — the
+same code path `POST /api/query` runs. An LLM can propose, it can never
+bypass the semantic layer: a proposal referencing an undeclared column, an
+unjoined model, an out-of-vocabulary filter operator, or anything else
+outside what's already declared is rejected before any query runs.
+`show_last_query` lets a user reliably ask for the exact query behind a
+prior answer (e.g. "what query did you just run?") without that request
+being mis-translated as a new, unanswerable business question. Conversations
+persist per-user (SQLite) and are strictly owner-scoped; asking a question
+requires only the **viewer** role, the same tier as the query builder.
 
 **Off by default.** The whole feature — nav entry, API routes, everything —
 is disabled (`GET/POST /api/conversations*` return 503) unless
@@ -659,9 +662,21 @@ allows — never hardcoded per deployment.
 
 **What leaves the deployment, and to whom, when enabled:** every question
 sends the question text and a catalog of the declared model/dimension/
-measure *names and descriptions* (never raw source data, file paths, or
-credentials) to the Anthropic Messages API over HTTPS, so it can propose a
-query or ask a clarifying question. Once a proposal is validated and run,
+measure names and descriptions to the Anthropic Messages API over HTTPS, so
+it can propose a query or ask a clarifying question. A name and description
+alone are often not enough to pick the right measure (e.g. an unweighted
+average vs. a revenue-weighted one, or a measure with no description at
+all) — so the catalog also includes each non-framed measure's DSL formula
+(e.g. `sum(unit_price * quantity)`), the same text already visible to any
+authenticated user via `GET /api/models`/the modelling workspace. A formula
+may name a raw source column that's otherwise never sent (dimensions,
+filters, and sort only ever use declared names) — this is schema text, not
+row data, and a raw column named in a formula still can't be used anywhere
+in a proposal (the existing re-validation rejects it), but it is a
+deliberate, documented widening of what reaches the third party. Framed
+measures (the rarer `frame:`-based ones) are exempt: their DSL fragment
+isn't self-contained without that frame's context, so only their name/
+description is sent, same as before. Once a proposal is validated and run,
 the resulting *result rows* (capped at `MAX_ROWS`, same cap the query
 builder uses) are also sent, so the assistant can generate the
 natural-language answer text. Nothing is sent to any third party unless

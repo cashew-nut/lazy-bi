@@ -136,6 +136,7 @@ def _prior_turns(conv: dict) -> list[PriorTurn]:
                 question_text=last_question,
                 model=rq.get("model"), dimensions=rq.get("dimensions", []),
                 measures=rq.get("measures", []), filters=rq.get("filters", []),
+                sort=rq.get("sort"), limit=rq.get("limit"),
             ))
     return turns[-_PRIOR_CONTEXT_TURNS:]
 
@@ -196,6 +197,17 @@ def ask(conversation_id: int, body: AskIn, user: User = Depends(require_role("vi
             conversation_id, "clarification", outcome="clarification", answer_text=answer_text)
         audit_target = (f"conversation:{conversation_id} outcome:clarification "
                          f"question:{body.question!r} candidates:{decision.candidates}")
+    elif isinstance(decision, nlq.ShowQuery):
+        resolved_query = {
+            "model": decision.model, "dimensions": decision.dimensions,
+            "measures": decision.measures, "filters": decision.filters,
+            "sort": decision.sort, "limit": decision.limit,
+        }
+        response_msg = store.add_message(
+            conversation_id, "assistant", outcome="query_shown", resolved_query=resolved_query,
+            answer_text=f"Here's the query behind “{decision.question_text}”.",
+        )
+        audit_target = f"conversation:{conversation_id} outcome:query_shown question:{body.question!r}"
     else:
         model = registry.models[decision.model]
         resolved_query = {

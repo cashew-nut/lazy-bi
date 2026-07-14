@@ -32,6 +32,7 @@ dimensions:
     column: order_date
     label: Order Date
     type: time
+    synonyms: [date, purchase date]
   - name: channel
     label: Sales Channel
   - name: segment
@@ -51,6 +52,7 @@ measures:
   - name: revenue
     label: Revenue
     format: currency
+    synonyms: [sales, turnover, income]
     expr: sum(unit_price * quantity)
   - name: cost
     label: Cost
@@ -74,6 +76,7 @@ measures:
   - name: aov
     label: Avg Order Value
     format: currency
+    synonyms: [average order value, basket size]
     expr: sum(unit_price * quantity) / count_distinct(order_id)
   - name: avg_unit_price
     label: Avg Unit Price

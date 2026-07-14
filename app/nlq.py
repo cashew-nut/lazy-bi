@@ -15,12 +15,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Union
 
-from . import semantic
+from . import engine, semantic
 from .auth import User
 from .llm import ModelCatalogEntry, PriorTurn, Translator, TranslatorError
 
 __all__ = [
-    "ProposeQuery", "AskClarification", "Decline", "Decision",
+    "ProposeQuery", "AskClarification", "Decline", "ShowQuery", "Decision",
     "build_catalog", "resolve",
 ]
 
@@ -46,7 +46,21 @@ class Decline:
     reason_text: str
 
 
-Decision = Union[ProposeQuery, AskClarification, Decline]
+@dataclass(frozen=True)
+class ShowQuery:
+    """The previous turn's already-validated resolved query, surfaced
+    verbatim on request (e.g. "can you show me the query you ran?") instead
+    of being re-guessed as a fresh semantic query."""
+    question_text: str
+    model: str | None
+    dimensions: list
+    measures: list[str]
+    filters: list[dict] = field(default_factory=list)
+    sort: dict | None = None
+    limit: int | None = None
+
+
+Decision = Union[ProposeQuery, AskClarification, Decline, ShowQuery]
 
 
 def build_catalog(models: dict[str, semantic.Model], scope: list[str]) -> list[ModelCatalogEntry]:
@@ -65,15 +79,38 @@ def build_catalog(models: dict[str, semantic.Model], scope: list[str]) -> list[M
             label=model.label,
             description=model.description,
             dimensions=[
-                {"name": d.name, "label": d.label, "type": d.type, "description": d.description}
+                {"name": d.name, "label": d.label, "type": d.type, "description": d.description,
+                 "synonyms": list(d.synonyms)}
                 for d in model.dimensions.values()
             ],
-            measures=[
-                {"name": m.name, "label": m.label, "description": m.description}
-                for m in model.measures.values()
-            ],
+            measures=[_measure_catalog_entry(m) for m in model.measures.values()],
         ))
     return entries
+
+
+def _measure_catalog_entry(m: semantic.Measure) -> dict:
+    """A name/description alone often isn't enough to pick the right measure
+    (e.g. 'avg_unit_price' = mean(unit_price) vs. 'aov' = revenue per order —
+    indistinguishable by name, and roughly half of this project's demo
+    measures carry no description at all): `synonyms` (declared vocabulary,
+    e.g. 'sales' for a measure named 'revenue') helps the LLM recognize a
+    question's phrasing, and the measure's actual DSL formula is included as
+    ground truth it can read directly rather than only infer from a label.
+    Framed measures (m.frame_source is set) are the one exception for the
+    formula: their expr_source is a fragment over an intermediary frame (see
+    semantic.Measure) and is meaningless without that frame's context, so
+    it's omitted rather than shown dangling — the description is relied on
+    for those instead. Note the formula puts the measure's raw source-column
+    references (e.g. `unit_price`, never a declared dimension) in front of
+    the LLM, which is new relative to the rest of the catalog — see README's
+    "Conversational analytics" section (FR-015)."""
+    entry = {"name": m.name, "label": m.label, "description": m.description, "synonyms": list(m.synonyms)}
+    if m.frame_source is None:
+        # YAML's `>` folded block style (used by some multi-line measures)
+        # keeps a trailing newline in expr_source; strip it so it doesn't
+        # leak a stray blank line into the middle of the LLM's prompt text
+        entry["expr"] = m.expr_source.strip()
+    return entry
 
 
 def _dim_name(entry) -> str:
@@ -92,15 +129,31 @@ def _validate_propose_query(args: dict, models: dict[str, semantic.Model],
     dimensions = args.get("dimensions") or []
     measures = args.get("measures") or []
     filters = args.get("filters") or []
+
+    def bad(reason: str) -> Decline:
+        return Decline(f"can't answer that from the declared '{model_name}' model: {reason}")
+
     try:
         for entry in dimensions:
             model.dimension(_dim_name(entry))
+            grain = entry.get("grain") if isinstance(entry, dict) else None
+            if grain and grain not in semantic.TIME_GRAINS:
+                return bad(f"'{grain}' isn't a supported time grain "
+                           f"(use one of {', '.join(semantic.TIME_GRAINS)})")
         for m in measures:
             model.measure(m)
         for f in filters:
             model.dimension(f.get("field", ""))
+            op = f.get("op")
+            # defense in depth alongside llm.py's schema/prompt: a proposal
+            # that still names an op outside engine.FILTER_OPS (e.g. '='
+            # instead of 'eq') declines cleanly here rather than reaching
+            # engine.run_query and surfacing as a raw, unexplained QueryError
+            if op not in engine.FILTER_OPS:
+                return bad(f"filter op '{op}' isn't supported "
+                           f"(use one of {', '.join(sorted(engine.FILTER_OPS))})")
     except semantic.ModelError as exc:
-        return Decline(f"can't answer that from the declared '{model_name}' model: {exc}")
+        return bad(str(exc))
 
     if not measures:
         return Decline(f"the question doesn't map to any declared measure in '{model_name}'.")
@@ -129,6 +182,20 @@ def _validate_ask_clarification(args: dict, catalog: list[ModelCatalogEntry]) ->
     return AskClarification(question_text=args.get("question_text", ""), candidates=candidates)
 
 
+def _validate_show_last_query(prior_context: list[PriorTurn]) -> ShowQuery | Decline:
+    """The most recent prior turn was already re-validated when it was first
+    proposed (it only ever entered prior_context via a successful
+    ProposeQuery) — showing it verbatim needs no re-check against the live
+    model, only that one actually exists to show."""
+    if not prior_context:
+        return Decline("there's no prior query yet in this conversation to show.")
+    last = prior_context[-1]
+    return ShowQuery(
+        question_text=last.question_text, model=last.model, dimensions=last.dimensions,
+        measures=last.measures, filters=last.filters, sort=last.sort, limit=last.limit,
+    )
+
+
 def resolve(
     question: str,
     catalog: list[ModelCatalogEntry],
@@ -150,6 +217,8 @@ def resolve(
         return Decline(reason_text=raw.args.get("reason_text", "I can't answer that from the declared models."))
     if raw.kind == "ask_clarification":
         return _validate_ask_clarification(raw.args, catalog)
+    if raw.kind == "show_last_query":
+        return _validate_show_last_query(prior_context)
     if raw.kind == "propose_query":
         return _validate_propose_query(raw.args, models, scope)
     return Decline(f"unrecognized response type '{raw.kind}'.")

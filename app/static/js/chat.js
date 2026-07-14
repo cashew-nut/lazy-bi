@@ -8,7 +8,7 @@
 "use strict";
 
 import { $, el, api, fmtMeasure } from "./lib.js";
-import { state } from "./state.js";
+import { state, modelByName } from "./state.js";
 
 const chat = {
   enabled: false,
@@ -16,6 +16,9 @@ const chat = {
   defaultModel: "",
   conversations: [],
   current: null,   // full conversation {id, title, model_scope, llm_model, messages}
+  scopeSelection: new Set(),   // model names ticked in the scope picker — mirrors
+                                // chat.current.model_scope when a conversation is
+                                // open, or the pending scope for a new one
 };
 
 // GET /api/health already tells us whether the feature is configured server-
@@ -35,21 +38,43 @@ export async function loadChat() {
       "conversational analytics isn't configured on this server."));
     return;
   }
-  renderScopeSelect();
+  renderScopeChips();
   renderModelSelect();
   await refreshConvList();
   if (!chat.current && chat.conversations.length) await openConversation(chat.conversations[0].id);
   else renderThread();
 }
 
-function renderScopeSelect() {
-  const sel = $("#chat-scope");
-  const selected = chat.current ? new Set(chat.current.model_scope || []) : new Set();
-  sel.innerHTML = "";
+// Clear chip-toggle picker (not a cramped <select multiple>) so it's obvious
+// at a glance which models a conversation is pinned to — clicking a chip
+// toggles it in chat.scopeSelection and, if a conversation is open, PATCHes
+// its model_scope immediately; an empty selection means "auto-infer across
+// every model" (research.md R6), which the hint below the chips spells out.
+function renderScopeChips() {
+  const box = $("#chat-scope-chips");
+  box.innerHTML = "";
   for (const m of state.models) {
-    const opt = el("option", { value: m.name }, m.label || m.name);
-    opt.selected = selected.has(m.name);
-    sel.append(opt);
+    const on = chat.scopeSelection.has(m.name);
+    const tooltip = m.name + (m.description ? ` — ${m.description}` : "");
+    const chip = el("div", { class: "chip" + (on ? " on" : ""), title: tooltip },
+      el("span", { class: "tick" }, on ? "◈" : "◇"),
+      el("span", { class: "lbl" }, m.label || m.name));
+    chip.addEventListener("click", () => toggleScope(m.name));
+    box.append(chip);
+  }
+  $("#chat-scope-hint").textContent = chat.scopeSelection.size
+    ? `only ${[...chat.scopeSelection].length} pinned model(s) will be considered — click a chip to unpin.`
+    : "no models pinned — the assistant infers which one to use from everything you can access.";
+}
+
+async function toggleScope(name) {
+  if (chat.scopeSelection.has(name)) chat.scopeSelection.delete(name);
+  else chat.scopeSelection.add(name);
+  renderScopeChips();
+  if (chat.current) {
+    chat.current = await api(`/api/conversations/${chat.current.id}`,
+      { method: "PATCH", body: { model_scope: [...chat.scopeSelection] } });
+    renderConvList();
   }
 }
 
@@ -73,10 +98,10 @@ function renderConvList() {
   const box = $("#chat-conv-list");
   box.innerHTML = "";
   for (const c of chat.conversations) {
+    const scopeLabel = (c.model_scope || []).map((n) => (modelByName(n) || { label: n }).label).join(", ") || "all models";
     const item = el("div", { class: "chat-conv" + (chat.current && chat.current.id === c.id ? " on" : "") },
       el("div", { class: "nm" }, c.title || "untitled conversation"),
-      el("div", { class: "sub" },
-        `${(c.model_scope || []).join(", ") || "auto"} · ${c.llm_model || chat.defaultModel}`));
+      el("div", { class: "sub" }, `${scopeLabel} · ${c.llm_model || chat.defaultModel}`));
     item.addEventListener("click", () => openConversation(c.id));
     box.append(item);
   }
@@ -87,14 +112,15 @@ function renderConvList() {
 
 export async function openConversation(id) {
   chat.current = await api(`/api/conversations/${id}`);
-  renderScopeSelect();
+  chat.scopeSelection = new Set(chat.current.model_scope || []);
+  renderScopeChips();
   renderModelSelect();
   renderConvList();
   renderThread();
 }
 
 export async function newConversation() {
-  const scope = [...$("#chat-scope").selectedOptions].map((o) => o.value);
+  const scope = [...chat.scopeSelection];
   const llmModel = $("#chat-model").value || undefined;
   const created = await api("/api/conversations", {
     method: "POST", body: { model_scope: scope, llm_model: llmModel },
@@ -121,6 +147,15 @@ function fieldName(entry) {
   return typeof entry === "string" ? entry : entry.name;
 }
 
+function fmtFilter(f) {
+  if (f.op === "in" || f.op === "not_in") return `${f.field} ${f.op} [${(f.values || []).join(", ")}]`;
+  return `${f.field} ${f.op} ${f.value}`;
+}
+
+// The full resolved query (model/dimensions/measures/filters/sort/limit),
+// not just model/dimensions/measures — every answered turn is independently
+// verifiable this way, and it's what a "query_shown" message (the assistant
+// answering "show me the query") actually shows.
 function renderMessage(msg) {
   if (msg.role === "user") {
     return el("div", { class: "chat-msg user" }, msg.question_text);
@@ -130,9 +165,12 @@ function renderMessage(msg) {
     el("div", {}, msg.answer_text || ""));
   if (msg.resolved_query) {
     const q = msg.resolved_query;
+    const filterText = (q.filters || []).map(fmtFilter).join("; ") || "—";
+    const sortText = q.sort && q.sort.by ? `${q.sort.by} ${q.sort.desc === false ? "asc" : "desc"}` : "—";
     bubble.append(el("div", { class: "meta" },
       `model: ${q.model} · dimensions: ${(q.dimensions || []).map(fieldName).join(", ") || "—"} `
-      + `· measures: ${(q.measures || []).join(", ") || "—"}`));
+      + `· measures: ${(q.measures || []).join(", ") || "—"} · filters: ${filterText} `
+      + `· sort: ${sortText} · limit: ${q.limit ?? "—"}`));
   }
   if (msg.result && msg.result.rows && msg.result.rows.length) {
     bubble.append(renderGroundingTable(msg.result));
@@ -159,12 +197,6 @@ function renderGroundingTable(result) {
 
 export function attachChat() {
   $("#chat-new").addEventListener("click", () => newConversation());
-  $("#chat-scope").addEventListener("change", async () => {
-    if (!chat.current) return;
-    const scope = [...$("#chat-scope").selectedOptions].map((o) => o.value);
-    chat.current = await api(`/api/conversations/${chat.current.id}`, { method: "PATCH", body: { model_scope: scope } });
-    renderConvList();
-  });
   $("#chat-model").addEventListener("change", async (e) => {
     if (!chat.current) return;
     chat.current = await api(`/api/conversations/${chat.current.id}`,
