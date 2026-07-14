@@ -122,6 +122,8 @@ def _validate_propose_query(args: dict, models: dict[str, semantic.Model],
     model_name = args.get("model")
     model = models.get(model_name)
     if model is None:
+        if not model_name:
+            return Decline("the assistant didn't specify which model to use for that.")
         return Decline(f"'{model_name}' is not a model this conversation can query.")
     if scope and model_name not in scope:
         return Decline(f"'{model_name}' is outside this conversation's selected model scope.")
