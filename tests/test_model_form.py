@@ -185,6 +185,50 @@ def test_clinical_ops_generate_round_trips_frame(client):
     assert check["ok"] is True, check.get("error")
 
 
+# ── synonyms survive the guided form (same regression class as frame/
+#    frame_emits above: toSpec()'s measures .map() used to reconstruct a
+#    plain object with an explicit field allowlist, which would silently
+#    drop any field — like synonyms — it doesn't know about) ─────────────
+
+def test_sales_spec_includes_dimension_and_measure_synonyms(client):
+    spec = client.get("/api/models/sales/spec").json()["spec"]
+    order_date = next(d for d in spec["dimensions"] if d["name"] == "order_date")
+    assert set(order_date["synonyms"]) == {"date", "purchase date"}
+    revenue = next(m for m in spec["measures"] if m["name"] == "revenue")
+    assert set(revenue["synonyms"]) == {"sales", "turnover", "income"}
+
+
+def test_sales_generate_round_trips_synonyms(client):
+    """GET .../spec -> POST /models/generate must keep declared synonyms —
+    proves the backend spec models AND modelform.js's toSpec() (mirrored
+    here by posting the spec straight back) don't drop the field."""
+    spec = client.get("/api/models/sales/spec").json()["spec"]
+    body = client.post("/api/models/generate", json=spec).json()
+    assert body["ok"] is True, body.get("error")
+    assert "synonyms:" in body["yaml"]
+    assert "turnover" in body["yaml"]
+    check = client.post("/api/models/validate", json={"yaml": body["yaml"]}).json()
+    assert check["ok"] is True, check.get("error")
+
+
+def test_generate_without_synonyms_key_still_works(client):
+    """A hand-built spec that predates this feature (no 'synonyms' key at
+    all, like a caller that never saw the new field) must still be accepted
+    — synonyms is optional, not required."""
+    spec = {
+        "name": "form_smoke_no_synonyms", "label": "", "description": "",
+        "source": {"path": "s3://cash-intel/marketing/spend.parquet", "format": "parquet"},
+        "joins": [], "dimension_imports": [],
+        "dimensions": [{"name": "channel", "column": "channel", "label": "Channel",
+                        "type": "categorical", "description": "", "spine": None, "geo": None}],
+        "measures": [{"name": "rows", "expr": "count()", "label": "Rows",
+                      "format": "number", "description": ""}],
+    }
+    body = client.post("/api/models/generate", json=spec).json()
+    assert body["ok"] is True, body.get("error")
+    assert "synonyms:" not in body["yaml"]
+
+
 # ── /api/measures/check: the form's live per-row validation ─────
 
 def test_measure_check_valid_dsl(client):

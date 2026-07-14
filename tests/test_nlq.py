@@ -56,6 +56,19 @@ def test_build_catalog_includes_measure_formula_for_plain_measures(models):
     assert "unit_price" in revenue["expr"]
 
 
+def test_build_catalog_includes_synonyms(models):
+    catalog = nlq.build_catalog(models, ["sales"])
+    sales = catalog[0]
+    revenue = next(m for m in sales.measures if m["name"] == "revenue")
+    assert set(revenue["synonyms"]) == {"sales", "turnover", "income"}
+    order_date = next(d for d in sales.dimensions if d["name"] == "order_date")
+    assert set(order_date["synonyms"]) == {"date", "purchase date"}
+    # a measure/dimension with no declared synonyms still gets the key, as
+    # an empty list — a predictable shape for every downstream consumer
+    orders = next(m for m in sales.measures if m["name"] == "orders")
+    assert orders["synonyms"] == []
+
+
 def test_build_catalog_omits_formula_for_framed_measures(models):
     """A framed measure's expr_source is a fragment over an intermediary
     frame and is meaningless without that frame's context (see

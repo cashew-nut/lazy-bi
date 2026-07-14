@@ -79,3 +79,38 @@ def test_catalog_text_omits_formula_marker_when_absent():
 
 def test_system_prompt_explains_the_formula_field():
     assert "computed as" in llm._SYSTEM_PROMPT
+
+
+# ── synonyms (alternate business vocabulary) ───────────────────────────────
+
+def test_catalog_text_includes_synonyms_for_dimensions_and_measures():
+    catalog = [
+        llm.ModelCatalogEntry(
+            name="sales", label="Sales Orders", description="",
+            dimensions=[{"name": "order_date", "label": "Order Date", "type": "time",
+                         "description": "", "synonyms": ["date", "purchase date"]}],
+            measures=[{"name": "revenue", "label": "Revenue", "description": "",
+                       "synonyms": ["sales", "turnover"]}],
+        ),
+    ]
+    text = llm._catalog_text(catalog)
+    assert "also called: date, purchase date" in text
+    assert "also called: sales, turnover" in text
+
+
+def test_catalog_text_omits_synonyms_marker_when_absent():
+    catalog = [
+        llm.ModelCatalogEntry(
+            name="sales", label="Sales Orders", description="",
+            dimensions=[{"name": "category", "label": "Category", "type": "categorical",
+                         "description": "", "synonyms": []}],
+            measures=[{"name": "orders", "label": "Orders", "description": "", "synonyms": []}],
+        ),
+    ]
+    text = llm._catalog_text(catalog)
+    assert "also called" not in text
+
+
+def test_system_prompt_explains_synonyms_and_requires_declared_name():
+    assert "also called" in llm._SYSTEM_PROMPT
+    assert "never a synonym string" in llm._SYSTEM_PROMPT

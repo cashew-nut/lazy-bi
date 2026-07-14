@@ -50,6 +50,7 @@ class DimensionSpec(BaseModel):
     description: str = ""
     spine: SpineSpec | None = None
     geo: GeoSpec | None = None
+    synonyms: list[str] = []
 
 
 class MeasureSpec(BaseModel):
@@ -66,6 +67,7 @@ class MeasureSpec(BaseModel):
     # admin-gated for the same reason (spec 011, Principle VI).
     frame: Optional[str] = None
     frame_emits: list[str] = []
+    synonyms: list[str] = []
 
 
 class JoinSpec(BaseModel):
@@ -111,6 +113,13 @@ class MeasureIn(BaseModel):
     # measures. See specs/008-safe-measure-compilation.
     frame: Optional[str] = None
     frame_emits: list[str] = []
+    # the measure lab (measurelab.js) never surfaces this field or
+    # `description` — it only ever sends name/label/format/expr, and
+    # update_measure() replaces the measure's whole yaml block — so, like
+    # description, re-saving an existing measure through the lab (not the
+    # guided model form or the raw yaml editor) drops synonyms hand-authored
+    # outside it. Pre-existing, accepted narrowness of that editor.
+    synonyms: list[str] = []
 
 
 def _reload_or_400() -> None:
@@ -346,6 +355,8 @@ def _measure_entry(m: MeasureIn) -> dict:
         entry["frame"] = m.frame
     if m.frame_emits:
         entry["frame_emits"] = list(m.frame_emits)
+    if m.synonyms:
+        entry["synonyms"] = list(m.synonyms)
     entry["expr"] = m.expr
     return entry
 
