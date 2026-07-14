@@ -34,14 +34,23 @@ _RELATIVE_DATE_KEYWORDS = list(engine.RELATIVE_DATE_KEYWORDS)
 
 @dataclass(frozen=True)
 class ModelCatalogEntry:
-    """One model's queryable shape, as shown to the LLM — never raw source
-    columns/paths/credentials, only what semantic.model_to_spec already
-    exposes to the existing /api/models endpoint (research.md R4)."""
+    """One model's queryable shape, as shown to the LLM — only what semantic.
+    model_to_spec already exposes to the existing, authenticated /api/models
+    endpoint (research.md R4). Non-framed measures also carry their DSL
+    `expr` (nlq._measure_catalog_entry) so the LLM can read a measure's
+    actual formula instead of guessing from its name/description alone — a
+    name isn't always enough to tell e.g. an unweighted average from a
+    weighted one. A formula may reference raw source columns that never
+    appear anywhere else in this catalog (dimensions/filters/sort only ever
+    use declared names); that's a deliberate, documented data-egress
+    addition (README's "Conversational analytics" section, FR-015), not a
+    new *query* capability — a raw column named in a formula still can't be
+    used anywhere in a proposal (app/nlq.py's re-validation rejects it)."""
     name: str
     label: str
     description: str
     dimensions: list[dict] = field(default_factory=list)  # [{name, label, type, description}]
-    measures: list[dict] = field(default_factory=list)     # [{name, label, description}]
+    measures: list[dict] = field(default_factory=list)     # [{name, label, description, expr?}]
 
 
 @dataclass(frozen=True)
@@ -202,6 +211,15 @@ _SYSTEM_PROMPT = (
     "semantic layer. You may only reference models/dimensions/measures "
     "given in the catalog below — never a raw column, another data source, "
     "code, or SQL.\n\n"
+    "Some measures in the catalog include a 'computed as' formula — this is "
+    "the measure's actual definition, given because its name and "
+    "description alone can be ambiguous (e.g. an unweighted average vs. a "
+    "weighted one) or the measure may have no description at all. Use it "
+    "only to judge which declared measure best answers the question — you "
+    "still always select a measure by its declared name in propose_query, "
+    "never by writing or adapting a formula yourself, and never reference "
+    "any column named inside a formula directly (as a dimension, filter "
+    "field, or otherwise) — only that measure's own declared name.\n\n"
     "Rules for a propose_query call (violating these makes the query fail):\n"
     f"- filters[].op must be exactly one of: {', '.join(_FILTER_OPS)} — never "
     "a symbol like '=' or '>', and never a SQL keyword.\n"
@@ -230,7 +248,13 @@ def _catalog_text(catalog: list[ModelCatalogEntry]) -> str:
         for d in m.dimensions:
             lines.append(f"  dimension: {d['name']} ({d['type']}) — {d.get('description', '')}")
         for meas in m.measures:
-            lines.append(f"  measure: {meas['name']} — {meas.get('description', '')}")
+            line = f"  measure: {meas['name']} ({meas.get('label', '')}) — {meas.get('description', '')}"
+            if meas.get("expr"):
+                # ground truth for what this measure actually computes — see
+                # nlq._measure_catalog_entry; use it to tell similarly-named
+                # or undescribed measures apart, never to invent a new one
+                line += f" | computed as: {meas['expr']}"
+            lines.append(line)
     return "\n".join(lines) if lines else "(no models available to this user)"
 
 

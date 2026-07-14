@@ -49,3 +49,33 @@ def test_all_four_tool_kinds_present():
     assert {t["name"] for t in llm._TOOLS} == {
         "propose_query", "ask_clarification", "show_last_query", "decline",
     }
+
+
+# ── measure formula ground truth (a name/description alone isn't always
+# enough to disambiguate measures — see nlq._measure_catalog_entry) ───────
+
+def test_catalog_text_includes_measure_formula_when_present():
+    catalog = [
+        llm.ModelCatalogEntry(
+            name="sales", label="Sales Orders", description="", dimensions=[],
+            measures=[{"name": "revenue", "label": "Revenue", "description": "",
+                       "expr": "sum(unit_price * quantity)"}],
+        ),
+    ]
+    text = llm._catalog_text(catalog)
+    assert "computed as: sum(unit_price * quantity)" in text
+
+
+def test_catalog_text_omits_formula_marker_when_absent():
+    catalog = [
+        llm.ModelCatalogEntry(
+            name="sales", label="Sales Orders", description="", dimensions=[],
+            measures=[{"name": "orders", "label": "Orders", "description": ""}],
+        ),
+    ]
+    text = llm._catalog_text(catalog)
+    assert "computed as" not in text
+
+
+def test_system_prompt_explains_the_formula_field():
+    assert "computed as" in llm._SYSTEM_PROMPT

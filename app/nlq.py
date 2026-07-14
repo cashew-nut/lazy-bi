@@ -82,12 +82,32 @@ def build_catalog(models: dict[str, semantic.Model], scope: list[str]) -> list[M
                 {"name": d.name, "label": d.label, "type": d.type, "description": d.description}
                 for d in model.dimensions.values()
             ],
-            measures=[
-                {"name": m.name, "label": m.label, "description": m.description}
-                for m in model.measures.values()
-            ],
+            measures=[_measure_catalog_entry(m) for m in model.measures.values()],
         ))
     return entries
+
+
+def _measure_catalog_entry(m: semantic.Measure) -> dict:
+    """A name/description alone often isn't enough to pick the right measure
+    (e.g. 'avg_unit_price' = mean(unit_price) vs. 'aov' = revenue per order —
+    indistinguishable by name, and roughly half of this project's demo
+    measures carry no description at all) — so the measure's actual DSL
+    formula is included as ground truth the LLM can read directly, not just
+    infer from a label. Framed measures (m.frame_source is set) are the one
+    exception: their expr_source is a fragment over an intermediary frame
+    (see semantic.Measure) and is meaningless without that frame's context,
+    so it's omitted rather than shown dangling — the description is relied
+    on for those instead. Note this puts the measure's raw source-column
+    references (e.g. `unit_price`, never a declared dimension) in front of
+    the LLM, which is new relative to the rest of the catalog — see README's
+    "Conversational analytics" section (FR-015)."""
+    entry = {"name": m.name, "label": m.label, "description": m.description}
+    if m.frame_source is None:
+        # YAML's `>` folded block style (used by some multi-line measures)
+        # keeps a trailing newline in expr_source; strip it so it doesn't
+        # leak a stray blank line into the middle of the LLM's prompt text
+        entry["expr"] = m.expr_source.strip()
+    return entry
 
 
 def _dim_name(entry) -> str:

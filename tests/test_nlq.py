@@ -45,6 +45,30 @@ def test_build_catalog_scoped(models):
     assert [m.name for m in catalog] == ["sales"]
 
 
+# ── measure formulas in the catalog (a name/description alone isn't always
+# enough to pick the right measure — see nlq._measure_catalog_entry) ──────
+
+def test_build_catalog_includes_measure_formula_for_plain_measures(models):
+    catalog = nlq.build_catalog(models, ["sales"])
+    sales = catalog[0]
+    revenue = next(m for m in sales.measures if m["name"] == "revenue")
+    assert revenue["expr"] == models["sales"].measure("revenue").expr_source
+    assert "unit_price" in revenue["expr"]
+
+
+def test_build_catalog_omits_formula_for_framed_measures(models):
+    """A framed measure's expr_source is a fragment over an intermediary
+    frame and is meaningless without that frame's context (see
+    semantic.Measure.frame_source) — it must not leak into the catalog on
+    its own."""
+    catalog = nlq.build_catalog(models, ["clinical_ops_recruitment"])
+    recruitment = catalog[0]
+    framed = next(m for m in recruitment.measures if m["name"] == "median_months_to_75pct_randomised")
+    assert "expr" not in framed
+    plain = next(m for m in recruitment.measures if m["name"] == "screened_actual")
+    assert "expr" in plain
+
+
 def test_resolve_propose_query_unambiguous(models):
     translator = FakeTranslator([
         RawToolCall("propose_query", {

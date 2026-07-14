@@ -662,9 +662,21 @@ allows — never hardcoded per deployment.
 
 **What leaves the deployment, and to whom, when enabled:** every question
 sends the question text and a catalog of the declared model/dimension/
-measure *names and descriptions* (never raw source data, file paths, or
-credentials) to the Anthropic Messages API over HTTPS, so it can propose a
-query or ask a clarifying question. Once a proposal is validated and run,
+measure names and descriptions to the Anthropic Messages API over HTTPS, so
+it can propose a query or ask a clarifying question. A name and description
+alone are often not enough to pick the right measure (e.g. an unweighted
+average vs. a revenue-weighted one, or a measure with no description at
+all) — so the catalog also includes each non-framed measure's DSL formula
+(e.g. `sum(unit_price * quantity)`), the same text already visible to any
+authenticated user via `GET /api/models`/the modelling workspace. A formula
+may name a raw source column that's otherwise never sent (dimensions,
+filters, and sort only ever use declared names) — this is schema text, not
+row data, and a raw column named in a formula still can't be used anywhere
+in a proposal (the existing re-validation rejects it), but it is a
+deliberate, documented widening of what reaches the third party. Framed
+measures (the rarer `frame:`-based ones) are exempt: their DSL fragment
+isn't self-contained without that frame's context, so only their name/
+description is sent, same as before. Once a proposal is validated and run,
 the resulting *result rows* (capped at `MAX_ROWS`, same cap the query
 builder uses) are also sent, so the assistant can generate the
 natural-language answer text. Nothing is sent to any third party unless
