@@ -20,6 +20,12 @@ from .semantic import ImportBinding, Model, ModelError, Source, TIME_GRAINS, com
 
 FILTER_OPS = {"eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in", "contains"}
 
+_COMPARE_OPS = {
+    "eq": lambda a, b: a == b, "ne": lambda a, b: a != b,
+    "gt": lambda a, b: a > b, "gte": lambda a, b: a >= b,
+    "lt": lambda a, b: a < b, "lte": lambda a, b: a <= b,
+}
+
 # ── dynamic ("relative") date filter values ──────────────────────
 # A time filter's value may be a keyword like "today" or "start_of_month"
 # instead of a fixed ISO date. It's resolved against the current date on
@@ -175,13 +181,20 @@ def scan(model: Model) -> pl.LazyFrame:
     return lf
 
 
+def _resolve_date_value(value: Any) -> date:
+    """A filter value as a concrete date: a relative keyword/offset resolved
+    against today, or else a fixed ISO date. Raises ValueError if it's
+    neither."""
+    relative = resolve_relative_date(value)
+    return relative if relative is not None else date.fromisoformat(str(value))
+
+
 def _coerce(value: Any, dtype: pl.DataType) -> Any:
     """Coerce a JSON filter value to the column's dtype so comparisons work."""
     if value is None:
         return None
     if dtype == pl.Date:
-        relative = resolve_relative_date(value)
-        return relative if relative is not None else date.fromisoformat(str(value))
+        return _resolve_date_value(value)
     if isinstance(dtype, pl.Datetime) or dtype == pl.Datetime:
         relative = resolve_relative_date(value)
         if relative is not None:
@@ -213,11 +226,7 @@ def _filter_expr(model: Model, spec: dict, schema: pl.Schema) -> pl.Expr:
     value = _coerce(spec.get("value"), dtype)
     if op == "contains":
         return col.cast(pl.String).str.contains(f"(?i){str(spec.get('value', ''))}", literal=False)
-    return {
-        "eq": col == value, "ne": col != value,
-        "gt": col > value, "gte": col >= value,
-        "lt": col < value, "lte": col <= value,
-    }[op]
+    return _COMPARE_OPS[op](col, value)
 
 
 FAR_FUTURE = date(9999, 1, 1)
@@ -372,12 +381,10 @@ def run_query(model: Model, query: dict) -> dict:
     spine_lo = spine_hi = None
     for dim, spec in spine_filters:
         op = spec.get("op", "eq")
-        v = resolve_relative_date(spec.get("value"))
-        if v is None:
-            try:
-                v = date.fromisoformat(str(spec.get("value")))
-            except ValueError:
-                raise QueryError(f"spine filter on '{dim.name}' needs an ISO date value")
+        try:
+            v = _resolve_date_value(spec.get("value"))
+        except ValueError:
+            raise QueryError(f"spine filter on '{dim.name}' needs an ISO date value")
         s, e = pl.col(dim.spine.start), pl.col(dim.spine.end)
         if op in ("gte", "gt"):
             lf = lf.filter(e >= v)

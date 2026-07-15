@@ -124,7 +124,7 @@ class MeasureIn(BaseModel):
 
 def _reload_or_400() -> None:
     try:
-        registry.reload_models()
+        registry.reload_all()
     except semantic.ModelError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -136,6 +136,23 @@ def _parse_or_400(text: str) -> semantic.Model:
         return model
     except semantic.ModelError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+def _model_out(parsed: semantic.Model) -> dict:
+    """Summary + schema introspection, shared by /validate and /generate —
+    each renders/parses differently but reports the same shape."""
+    out = {
+        "ok": True, "error": None,
+        "model": {"name": parsed.name, "label": parsed.label,
+                  "dimensions": len(parsed.dimensions), "measures": len(parsed.measures)},
+    }
+    try:
+        schema = engine.scan(parsed).collect_schema()
+        out["columns"] = [{"name": n, "dtype": str(t)} for n, t in schema.items()]
+    except Exception as exc:
+        out["columns"] = None
+        out["schema_error"] = f"source not reachable: {exc}"
+    return out
 
 
 @router.get("/models")
@@ -158,18 +175,7 @@ def validate_model(body: YamlIn):
         semantic.resolve_imports(parsed, registry.dimension_bundles)
     except semantic.ModelError as exc:
         return {"ok": False, "error": str(exc)}
-    out = {
-        "ok": True, "error": None,
-        "model": {"name": parsed.name, "label": parsed.label,
-                  "dimensions": len(parsed.dimensions), "measures": len(parsed.measures)},
-    }
-    try:
-        schema = engine.scan(parsed).collect_schema()
-        out["columns"] = [{"name": n, "dtype": str(t)} for n, t in schema.items()]
-    except Exception as exc:
-        out["columns"] = None
-        out["schema_error"] = f"source not reachable: {exc}"
-    return out
+    return _model_out(parsed)
 
 
 @router.post("/models/generate", dependencies=[Depends(require_role("author"))])
@@ -183,17 +189,8 @@ def generate_model_yaml(spec: ModelSpec):
         semantic.resolve_imports(parsed, registry.dimension_bundles)
     except semantic.ModelError as exc:
         return {"ok": False, "error": str(exc), "yaml": text, "columns": None}
-    out = {
-        "ok": True, "error": None, "yaml": text,
-        "model": {"name": parsed.name, "label": parsed.label,
-                  "dimensions": len(parsed.dimensions), "measures": len(parsed.measures)},
-    }
-    try:
-        schema = engine.scan(parsed).collect_schema()
-        out["columns"] = [{"name": n, "dtype": str(t)} for n, t in schema.items()]
-    except Exception as exc:
-        out["columns"] = None
-        out["schema_error"] = f"source not reachable: {exc}"
+    out = _model_out(parsed)
+    out["yaml"] = text
     return out
 
 

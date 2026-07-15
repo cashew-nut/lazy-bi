@@ -10,12 +10,19 @@ from __future__ import annotations
 
 import io
 import random
+import secrets
 from datetime import date, timedelta
 
 import polars as pl
 from deltalake import write_deltalake
 
-from . import config, s3
+from . import auth, config, s3
+from .registry import registry
+
+# shared demo time window: ~2.5 years of history ending mid-2026, reused
+# across every fact table so the frames stay time-aligned with each other.
+DEMO_START = date(2024, 1, 1)
+DEMO_END = date(2026, 6, 30)
 
 REGIONS = ["Neo-Tokyo", "Night City", "Euro-Zone", "Pacifica", "Badlands"]
 CATEGORIES = {
@@ -37,8 +44,8 @@ PRICE = {
 
 
 def _sales_frame(rng: random.Random) -> pl.DataFrame:
-    start = date(2024, 1, 1)
-    days = (date(2026, 6, 30) - start).days
+    start = DEMO_START
+    days = (DEMO_END - start).days
     rows = []
     order_id = 100000
     for _ in range(60_000):
@@ -143,8 +150,8 @@ PLANS = {"street": 20.0, "corpo": 95.0, "netrunner": 240.0}
 def _subscriptions_frame(rng: random.Random) -> pl.DataFrame:
     """Subscription intervals for the spine demo: start/end dates, null end =
     still active. Growth over time with plan-dependent churn."""
-    start_lo = date(2024, 1, 1)
-    horizon = date(2026, 6, 30)
+    start_lo = DEMO_START
+    horizon = DEMO_END
     days = (horizon - start_lo).days
     rows = []
     for cust in range(1, 9001):
@@ -169,8 +176,8 @@ COURIERS = ["Trauma Freight", "Arasaka Logistics", "Militech Express", "Night Co
 
 
 def _shipments_frame(rng: random.Random) -> pl.DataFrame:
-    start = date(2024, 1, 1)
-    days = (date(2026, 6, 30) - start).days
+    start = DEMO_START
+    days = (DEMO_END - start).days
     rows = []
     for _ in range(20_000):
         courier = rng.choices(COURIERS, weights=[4, 3, 2, 3])[0]
@@ -258,7 +265,7 @@ BASELINE_FAIL_RATE = {
 }
 SITE_TIERS = [("small", 0.3, 1.2, 5), ("medium", 1.0, 3.0, 3), ("large", 2.5, 6.0, 2)]
 
-RECRUITMENT_NOW = date(2026, 6, 30)          # "actual" data stops here
+RECRUITMENT_NOW = DEMO_END                   # "actual" data stops here
 RECRUITMENT_PLAN_HORIZON = date(2026, 12, 31)  # baseline/plan projects further out
 
 
@@ -401,6 +408,10 @@ def _upload(client, key: str, df: pl.DataFrame) -> None:
     client.put_object(Bucket=config.BUCKET, Key=key, Body=buf.getvalue())
 
 
+def _upload_csv(client, key: str, df: pl.DataFrame) -> None:
+    client.put_object(Bucket=config.BUCKET, Key=key, Body=df.write_csv().encode())
+
+
 def seed_bucket() -> bool:
     """Create the bucket and upload demo parquet files. Returns True if seeded,
     False if the bucket already had data."""
@@ -419,24 +430,18 @@ def seed_bucket() -> bool:
     for (year,), part in sales.group_by(pl.col("order_date").dt.year(), maintain_order=True):
         _upload(client, f"sales/{year}.parquet", part)
     _upload(client, "marketing/spend.parquet", _marketing_frame(rng))
-    client.put_object(Bucket=config.BUCKET, Key="ref/products.csv",
-                      Body=_products_frame().write_csv().encode())
-    client.put_object(Bucket=config.BUCKET, Key="ref/regions.csv",
-                      Body=_regions_frame().write_csv().encode())
-    client.put_object(Bucket=config.BUCKET, Key="ref/territories.csv",
-                      Body=_territories_frame().write_csv().encode())
+    _upload_csv(client, "ref/products.csv", _products_frame())
+    _upload_csv(client, "ref/regions.csv", _regions_frame())
+    _upload_csv(client, "ref/territories.csv", _territories_frame())
     write_deltalake(f"s3://{config.BUCKET}/logistics/shipments", _shipments_frame(rng),
                     storage_options=config.delta_write_options())
     _upload(client, "subscriptions/subs.parquet", _subscriptions_frame(rng))
 
     countries, sites = _study_countries_and_sites(rng)
     events = _recruitment_events_frame(rng, sites)
-    client.put_object(Bucket=config.BUCKET, Key="ref/studies.csv",
-                      Body=_studies_frame().write_csv().encode())
-    client.put_object(Bucket=config.BUCKET, Key="ref/study_countries.csv",
-                      Body=countries.write_csv().encode())
-    client.put_object(Bucket=config.BUCKET, Key="ref/study_sites.csv",
-                      Body=sites.drop("_phase", "_area").write_csv().encode())
+    _upload_csv(client, "ref/studies.csv", _studies_frame())
+    _upload_csv(client, "ref/study_countries.csv", countries)
+    _upload_csv(client, "ref/study_sites.csv", sites.drop("_phase", "_area"))
     _upload(client, "recruitment/events.parquet", events)
 
     _upload_local_cache(client)
@@ -460,15 +465,10 @@ def seed_bootstrap_admin() -> bool:
     zero-config without ever shipping a well-known credential. Never runs
     again once any account exists (so a production DB can't regress to a
     printed password). Returns True if seeded."""
-    import secrets as _secrets
-
-    from . import auth
-    from .registry import registry
-
     store = registry.auth_store
     if store.count_users() > 0:
         return False
-    password = _secrets.token_urlsafe(12)
+    password = secrets.token_urlsafe(12)
     user = store.create_user("admin", "Bootstrap Admin", "admin",
                              auth.hash_password(password))
     store.record_audit("bootstrap_admin_created", "system", target="admin")

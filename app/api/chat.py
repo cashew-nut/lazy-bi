@@ -83,6 +83,18 @@ def _get_owned(conversation_id: int, user: User) -> dict:
     return conv
 
 
+def _start_ask(conversation_id: int, user: User, question: str):
+    """Shared setup for ask() and ask_stream(): persist the user's turn and
+    assemble everything a Translator needs to answer it."""
+    conv = _get_owned(conversation_id, user)
+    question_msg = registry.conversation_store.add_message(
+        conversation_id, "user", question_text=question)
+    catalog = nlq.build_catalog(registry.models, conv["model_scope"])
+    prior_context = _prior_turns(conv)
+    translator = _translator_for(conv.get("llm_model"))
+    return conv, question_msg, catalog, prior_context, translator
+
+
 @router.get("/conversations", dependencies=[Depends(_require_enabled)])
 def list_conversations(user: User = Depends(require_role("viewer"))):
     return registry.conversation_store.list_for_user(user.id)
@@ -175,6 +187,14 @@ def _handle_translator_error(conversation_id: int, user: User, question_msg: dic
     return {"question": question_msg, "response": response_msg}
 
 
+def _resolved_query_dict(decision) -> dict:
+    return {
+        "model": decision.model, "dimensions": decision.dimensions,
+        "measures": decision.measures, "filters": decision.filters,
+        "sort": decision.sort, "limit": decision.limit,
+    }
+
+
 def _handle_decision(conversation_id: int, user: User, question_msg: dict,
                       question: str, decision: nlq.Decision) -> dict:
     """Persist `decision` as the assistant's turn (executing a ProposeQuery
@@ -195,11 +215,7 @@ def _handle_decision(conversation_id: int, user: User, question_msg: dict,
         audit_target = (f"conversation:{conversation_id} outcome:clarification "
                          f"question:{question!r} candidates:{decision.candidates}")
     elif isinstance(decision, nlq.ShowQuery):
-        resolved_query = {
-            "model": decision.model, "dimensions": decision.dimensions,
-            "measures": decision.measures, "filters": decision.filters,
-            "sort": decision.sort, "limit": decision.limit,
-        }
+        resolved_query = _resolved_query_dict(decision)
         response_msg = store.add_message(
             conversation_id, "assistant", outcome="query_shown", resolved_query=resolved_query,
             answer_text=f"Here's the query behind “{decision.question_text}”.",
@@ -207,11 +223,7 @@ def _handle_decision(conversation_id: int, user: User, question_msg: dict,
         audit_target = f"conversation:{conversation_id} outcome:query_shown question:{question!r}"
     else:
         model = registry.models[decision.model]
-        resolved_query = {
-            "model": decision.model, "dimensions": decision.dimensions,
-            "measures": decision.measures, "filters": decision.filters,
-            "sort": decision.sort, "limit": decision.limit,
-        }
+        resolved_query = _resolved_query_dict(decision)
         try:
             result = engine.run_query(model, resolved_query)
         except (semantic.ModelError, engine.QueryError) as exc:
@@ -239,17 +251,12 @@ def _handle_decision(conversation_id: int, user: User, question_msg: dict,
 
 @router.post("/conversations/{conversation_id}/ask", dependencies=[Depends(_require_enabled)])
 def ask(conversation_id: int, body: AskIn, user: User = Depends(require_role("viewer"))):
-    conv = _get_owned(conversation_id, user)
-    store = registry.conversation_store
-    question_msg = store.add_message(conversation_id, "user", question_text=body.question)
-
-    catalog = nlq.build_catalog(registry.models, conv["model_scope"])
-    prior_context = _prior_turns(conv)
-    translator = _translator_for(conv.get("llm_model"))
+    conv, question_msg, catalog, prior_context, translator = _start_ask(
+        conversation_id, user, body.question)
 
     try:
         decision = nlq.resolve(
-            body.question, catalog, prior_context, user, registry.models, translator,
+            body.question, catalog, prior_context, registry.models, translator,
             scope=conv["model_scope"],
         )
     except TranslatorError as exc:
@@ -273,20 +280,15 @@ def ask_stream(conversation_id: int, body: AskIn, user: User = Depends(require_r
     (its GET-only, no-custom-headers API can't carry the CSRF header this
     app requires for cookie-authed mutations) — a caller reads this with
     fetch() + a ReadableStream reader instead."""
-    conv = _get_owned(conversation_id, user)
-    store = registry.conversation_store
-    question_msg = store.add_message(conversation_id, "user", question_text=body.question)
-
-    catalog = nlq.build_catalog(registry.models, conv["model_scope"])
-    prior_context = _prior_turns(conv)
-    translator = _translator_for(conv.get("llm_model"))
+    conv, question_msg, catalog, prior_context, translator = _start_ask(
+        conversation_id, user, body.question)
 
     def gen():
         yield _sse("question", {"question": question_msg})
         decision = None
         try:
             for item in nlq.resolve_streaming(
-                body.question, catalog, prior_context, user, registry.models, translator,
+                body.question, catalog, prior_context, registry.models, translator,
                 scope=conv["model_scope"],
             ):
                 if not isinstance(item, StreamEvent):

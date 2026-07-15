@@ -1,11 +1,9 @@
 """Data explorer (bucket objects mapped to models) and health."""
 from __future__ import annotations
 
-import fnmatch
-
 from fastapi import APIRouter
 
-from .. import config, s3
+from .. import config, s3, semantic
 from ..registry import registry
 
 router = APIRouter(tags=["explorer"])
@@ -16,24 +14,7 @@ def explorer():
     """Every object in the bucket, matched against each model's source and
     join globs so the UI can show which files feed which models."""
     client = s3.client()
-    prefix = f"s3://{config.BUCKET}/"
-    matchers = []  # (model_name, role, match_fn)
-    for m in registry.models.values():
-        sources = (
-            [("source", m.source)]
-            + [(f"join: {j.name}", j.source) for j in m.joins]
-            + [(f"import: {binding.bundle.name}.{ds}", binding.bundle.datasets[ds].source)
-               for binding in m.import_bindings for ds in binding.included_datasets]
-        )
-        for role, src in sources:
-            if not src.path.startswith(prefix):
-                continue
-            rel = src.path[len(prefix):]
-            if src.format == "delta":
-                root = rel.rstrip("/") + "/"
-                matchers.append((m.name, role, lambda k, r=root: k.startswith(r)))
-            else:
-                matchers.append((m.name, role, lambda k, p=rel: fnmatch.fnmatch(k, p)))
+    matchers = semantic.model_source_matchers(registry.models.values(), config.BUCKET)
 
     files = []
     per_model = {name: {"files": 0, "bytes": 0} for name in registry.models}

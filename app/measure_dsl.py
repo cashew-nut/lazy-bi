@@ -404,14 +404,21 @@ def _resolve_periods_arg(compiler: "_Compiler", node: ast.AST) -> int:
     )
 
 
+def _apply_window_over(compiler: "_Compiler", expr: pl.Expr) -> pl.Expr:
+    """Shared by running_total()/lag(): apply .over() once the engine has
+    resolved the query's actual partition/order (order_by is None during
+    structural-only validation, in which case the bare reduction is left
+    as-is — see _Compiler.__init__)."""
+    if compiler.order_by is not None:
+        return expr.over(compiler.partition_by or None, order_by=compiler.order_by)
+    return expr
+
+
 def _fn_running_total(compiler: "_Compiler", args: list, depth: int) -> pl.Expr:
     if len(args) != 1:
         raise MeasureCompileError("running_total() takes exactly 1 argument", kind="disallowed")
     value = compiler.build(args[0], depth + 1)
-    expr = value.cum_sum()
-    if compiler.order_by is not None:
-        expr = expr.over(compiler.partition_by or None, order_by=compiler.order_by)
-    return expr
+    return _apply_window_over(compiler, value.cum_sum())
 
 
 def _fn_lag(compiler: "_Compiler", args: list, depth: int) -> pl.Expr:
@@ -423,10 +430,7 @@ def _fn_lag(compiler: "_Compiler", args: list, depth: int) -> pl.Expr:
         periods = _resolve_periods_arg(compiler, args[1])
         if periods < 1:
             raise MeasureCompileError("lag()'s periods argument must be a positive integer", kind="disallowed")
-    expr = value.shift(periods)
-    if compiler.order_by is not None:
-        expr = expr.over(compiler.partition_by or None, order_by=compiler.order_by)
-    return expr
+    return _apply_window_over(compiler, value.shift(periods))
 
 
 # Functions legal inside a window measure. running_total/lag are the two
@@ -448,6 +452,13 @@ _WINDOW_FUNCTIONS = {
 }
 
 
+def _is_window_tree(tree: ast.AST) -> bool:
+    return any(
+        isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in _WINDOW_ONLY_FUNCTIONS
+        for n in ast.walk(tree)
+    )
+
+
 def is_window_expr(text: str) -> bool:
     """True if `text` uses running_total()/lag() anywhere — the signal that
     flips a measure from an aggregate reduction (raw columns -> one value per
@@ -460,10 +471,7 @@ def is_window_expr(text: str) -> bool:
         tree = ast.parse(text, mode="eval")
     except SyntaxError as exc:
         raise MeasureCompileError(f"invalid syntax: {exc}", kind="disallowed") from exc
-    return any(
-        isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in _WINDOW_ONLY_FUNCTIONS
-        for n in ast.walk(tree)
-    )
+    return _is_window_tree(tree)
 
 
 def referenced_names(text: str) -> set:
@@ -541,7 +549,7 @@ def compile_measure(
     node_count = sum(1 for _ in ast.walk(tree))
     if node_count > MAX_NODES:
         raise MeasureCompileError(f"expression exceeds {MAX_NODES} node limit", kind="limit_exceeded")
-    window = is_window_expr(text)
+    window = _is_window_tree(tree)
     compiler = _Compiler(
         schema, window=window, partition_by=partition_by, order_by=order_by, parameter_values=parameter_values
     )

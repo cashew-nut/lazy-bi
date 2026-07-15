@@ -16,7 +16,6 @@ from dataclasses import dataclass, field
 from typing import Iterator, Union
 
 from . import engine, semantic
-from .auth import User
 from .llm import ModelCatalogEntry, PriorTurn, RawToolCall, StreamEvent, Translator, TranslatorError
 
 __all__ = [
@@ -224,7 +223,6 @@ def resolve(
     question: str,
     catalog: list[ModelCatalogEntry],
     prior_context: list[PriorTurn],
-    user: User,
     models: dict[str, semantic.Model],
     translator: Translator,
     scope: list[str] | None = None,
@@ -242,7 +240,6 @@ def resolve_streaming(
     question: str,
     catalog: list[ModelCatalogEntry],
     prior_context: list[PriorTurn],
-    user: User,
     models: dict[str, semantic.Model],
     translator: Translator,
     scope: list[str] | None = None,

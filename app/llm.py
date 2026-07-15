@@ -364,6 +364,16 @@ def _thinking_kwargs(model: str) -> dict:
     return {}
 
 
+def _log_and_wrap(exc: Exception) -> TranslatorError:
+    """Shared failure path for both translate() and translate_streaming():
+    the user only ever sees a generic "temporarily unavailable" message
+    (chat.py) — log the real cause server-side so a deployer can actually
+    diagnose a bad key / network / proxy issue instead of staring at
+    "Connection error." with nothing in the terminal."""
+    logger.warning("Anthropic API call failed: %r (cause: %r)", exc, exc.__cause__)
+    return TranslatorError(str(exc))
+
+
 class AnthropicTranslator:
     """Talks to the Anthropic Messages API with forced tool-use so the
     result is always one of the four typed decisions (research.md R1)."""
@@ -371,6 +381,26 @@ class AnthropicTranslator:
     def __init__(self, api_key: str | None = None, model: str | None = None):
         self.api_key = api_key or config.LLM_API_KEY
         self.model = model or config.LLM_MODEL
+
+    def _request_kwargs(
+        self,
+        question: str,
+        catalog: list[ModelCatalogEntry],
+        prior_context: list[PriorTurn],
+    ) -> dict:
+        """The request shared by translate() (messages.create) and
+        translate_streaming() (messages.stream) — the two calls differ only
+        in streaming itself and the adaptive-thinking kwargs layered on top
+        (_thinking_kwargs)."""
+        prompt = _build_prompt(question, catalog, prior_context)
+        return dict(
+            model=self.model,
+            max_tokens=1024,
+            system=_SYSTEM_PROMPT,
+            tools=_tools_for_catalog(catalog),
+            tool_choice={"type": "any"},
+            messages=[{"role": "user", "content": prompt}],
+        )
 
     def translate(
         self,
@@ -381,24 +411,10 @@ class AnthropicTranslator:
         import anthropic
 
         client = anthropic.Anthropic(api_key=self.api_key)
-        prompt = _build_prompt(question, catalog, prior_context)
         try:
-            response = client.messages.create(
-                model=self.model,
-                max_tokens=1024,
-                system=_SYSTEM_PROMPT,
-                tools=_tools_for_catalog(catalog),
-                tool_choice={"type": "any"},
-                messages=[{"role": "user", "content": prompt}],
-            )
+            response = client.messages.create(**self._request_kwargs(question, catalog, prior_context))
         except anthropic.APIError as exc:
-            # The user only ever sees a generic "temporarily unavailable"
-            # message (chat.py) — log the real cause server-side so a
-            # deployer can actually diagnose a bad key / network / proxy
-            # issue instead of staring at "Connection error." with nothing
-            # in the terminal.
-            logger.warning("Anthropic API call failed: %r (cause: %r)", exc, exc.__cause__)
-            raise TranslatorError(str(exc)) from exc
+            raise _log_and_wrap(exc) from exc
 
         for block in response.content:
             if block.type == "tool_use":
@@ -424,15 +440,9 @@ class AnthropicTranslator:
         import anthropic
 
         client = anthropic.Anthropic(api_key=self.api_key)
-        prompt = _build_prompt(question, catalog, prior_context)
         try:
             with client.messages.stream(
-                model=self.model,
-                max_tokens=1024,
-                system=_SYSTEM_PROMPT,
-                tools=_tools_for_catalog(catalog),
-                tool_choice={"type": "any"},
-                messages=[{"role": "user", "content": prompt}],
+                **self._request_kwargs(question, catalog, prior_context),
                 **_thinking_kwargs(self.model),
             ) as stream:
                 for event in stream:
@@ -445,8 +455,7 @@ class AnthropicTranslator:
                         yield StreamEvent(kind="tool_input", tool_input=snapshot)
                 message = stream.get_final_message()
         except anthropic.APIError as exc:
-            logger.warning("Anthropic API call failed: %r (cause: %r)", exc, exc.__cause__)
-            raise TranslatorError(str(exc)) from exc
+            raise _log_and_wrap(exc) from exc
 
         for block in message.content:
             if block.type == "tool_use":

@@ -72,6 +72,23 @@ def _reload_or_400() -> None:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+def _bundle_datasets_out(parsed: semantic.DimensionBundle) -> list[dict]:
+    """Per-dataset summary with schema introspection, shared by /validate and
+    /generate — each renders/parses differently but reports the same shape."""
+    datasets = []
+    for ds in parsed.datasets.values():
+        entry = {"name": ds.name, "dimensions": len(ds.dimensions),
+                 "joins": [j.to for j in ds.joins]}
+        try:
+            schema = engine.scan_source(ds.source).collect_schema()
+            entry["columns"] = [{"name": n, "dtype": str(t)} for n, t in schema.items()]
+        except Exception as exc:
+            entry["columns"] = None
+            entry["schema_error"] = f"source not reachable: {exc}"
+        datasets.append(entry)
+    return datasets
+
+
 @router.get("/dimensions")
 def list_dimension_bundles():
     return [_to_public(b) for b in registry.dimension_bundles.values()]
@@ -92,17 +109,7 @@ def validate_dimension_bundle(body: YamlIn):
         parsed = semantic.parse_bundle_text(body.yaml)
     except semantic.ModelError as exc:
         return {"ok": False, "error": str(exc)}
-    datasets = []
-    for ds in parsed.datasets.values():
-        entry = {"name": ds.name, "dimensions": len(ds.dimensions),
-                 "joins": [j.to for j in ds.joins]}
-        try:
-            schema = engine.scan_source(ds.source).collect_schema()
-            entry["columns"] = [{"name": n, "dtype": str(t)} for n, t in schema.items()]
-        except Exception as exc:
-            entry["columns"] = None
-            entry["schema_error"] = f"source not reachable: {exc}"
-        datasets.append(entry)
+    datasets = _bundle_datasets_out(parsed)
     return {"ok": True, "error": None,
             "bundle": {"name": parsed.name, "label": parsed.label, "datasets": datasets}}
 
@@ -117,17 +124,7 @@ def generate_bundle_yaml(spec: BundleSpec):
         parsed = semantic.parse_bundle_text(text)
     except semantic.ModelError as exc:
         return {"ok": False, "error": str(exc), "yaml": text}
-    datasets = []
-    for ds in parsed.datasets.values():
-        entry = {"name": ds.name, "dimensions": len(ds.dimensions),
-                 "joins": [j.to for j in ds.joins]}
-        try:
-            schema = engine.scan_source(ds.source).collect_schema()
-            entry["columns"] = [{"name": n, "dtype": str(t)} for n, t in schema.items()]
-        except Exception as exc:
-            entry["columns"] = None
-            entry["schema_error"] = f"source not reachable: {exc}"
-        datasets.append(entry)
+    datasets = _bundle_datasets_out(parsed)
     return {"ok": True, "error": None, "yaml": text,
             "bundle": {"name": parsed.name, "label": parsed.label, "datasets": datasets}}
 
