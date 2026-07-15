@@ -32,6 +32,8 @@ export function probeChatAvailability(health) {
   $("#chat-nav-btn").hidden = !chat.enabled;
 }
 
+export const isChatEnabled = () => chat.enabled;
+
 // returns the id of whichever conversation ends up current (freshly
 // auto-opened, or already open from before) so the router can reflect it
 // into the URL — null when there's nothing to show (feature disabled, or

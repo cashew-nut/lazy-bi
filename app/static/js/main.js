@@ -17,6 +17,8 @@ import { initAuth } from "./auth.js";
 import { attachBundleForm } from "./bundleform.js";
 import { attachChat, probeChatAvailability } from "./chat.js";
 import { attachEditor, deleteEditorItem, saveEditor } from "./editor.js";
+// side-effect only: registers hooks.renderHome for the router
+import "./home.js";
 import { $, api } from "./lib.js";
 import { initMeasureLab } from "./measurelab.js";
 import { attachModelForm } from "./modelform.js";
@@ -179,6 +181,7 @@ async function init() {
     for (const btn of document.querySelectorAll("#mode-nav button")) {
       btn.addEventListener("click", () => navigate(pathForMode(btn.dataset.mode)));
     }
+    $("#logo").addEventListener("click", () => navigate(paths.home()));
     $("#modelling-refresh").addEventListener("click", loadModelling);
 
     // re-render charts when the window or panel resizes

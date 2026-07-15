@@ -448,7 +448,60 @@ table.data tr:hover td { background: rgba(0, 229, 255, 0.04); }
 #mode-nav button:last-child { border-right: none; }
 #mode-nav button:hover { color: var(--ink); }
 #mode-nav button.on { color: var(--bg); background: var(--neon); font-weight: 700; }
-body[data-mode="modelling"] aside, body[data-mode="portal"] aside, body[data-mode="chat"] aside { display: none; }
+body[data-mode="home"] aside, body[data-mode="modelling"] aside, body[data-mode="portal"] aside, body[data-mode="chat"] aside { display: none; }
+
+/* ── home: operator console (mode picker + admin shortcuts + models) ── */
+.logo { cursor: pointer; }
+.home-body {
+  flex: 1; min-height: 0; overflow-y: auto; padding: 44px 32px 40px;
+  display: flex; flex-direction: column; align-items: center; gap: 32px;
+}
+.home-kicker { color: var(--ink-3); letter-spacing: 2px; font-size: 11px; text-transform: uppercase; text-align: center; margin-bottom: 8px; }
+.home-greeting { font-size: 26px; letter-spacing: 1px; color: var(--ink); text-align: center; margin: 0; }
+.home-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; width: 100%; max-width: 1080px; }
+.home-card, .home-admin-card {
+  display: flex; text-align: left; cursor: pointer; color: inherit;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: linear-gradient(180deg, #0d1422, #0a0e17);
+  font-family: var(--mono); transition: border-color 0.15s, box-shadow 0.15s;
+}
+.home-card { flex-direction: column; padding: 20px 18px; }
+.home-card .ic { font-size: 24px; }
+.home-card .nm { font-size: 13px; letter-spacing: 2px; color: var(--ink); margin-top: 14px; }
+.home-card .desc { font-size: 11px; color: var(--ink-2); margin-top: 6px; line-height: 1.5; }
+.home-card.studio .ic { color: var(--neon); text-shadow: 0 0 10px rgba(0, 229, 255, 0.4); }
+.home-card.studio:hover { border-color: var(--neon); box-shadow: 0 0 24px rgba(0, 229, 255, 0.16); }
+.home-card.modelling .ic { color: var(--pink); text-shadow: 0 0 10px rgba(255, 46, 210, 0.4); }
+.home-card.modelling:hover { border-color: var(--pink); box-shadow: 0 0 24px rgba(255, 46, 210, 0.16); }
+.home-card.portal .ic { color: #2bd97c; text-shadow: 0 0 10px rgba(43, 217, 124, 0.4); }
+.home-card.portal:hover { border-color: #2bd97c; box-shadow: 0 0 24px rgba(43, 217, 124, 0.16); }
+.home-card.chat .ic { color: #e8b339; text-shadow: 0 0 10px rgba(232, 179, 57, 0.4); }
+.home-card.chat:hover { border-color: #e8b339; box-shadow: 0 0 24px rgba(232, 179, 57, 0.16); }
+.home-admin { width: 100%; max-width: 1080px; }
+.home-admin-cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin-top: 10px; }
+.home-admin-card { align-items: center; gap: 12px; padding: 16px 18px; }
+.home-admin-card .ic { flex: none; font-size: 20px; color: var(--pink); text-shadow: 0 0 10px rgba(255, 46, 210, 0.4); }
+.home-admin-card .nm { font-size: 12px; letter-spacing: 2px; color: var(--ink); }
+.home-admin-card .desc { font-size: 11px; color: var(--ink-2); margin-top: 4px; }
+.home-admin-card:hover { border-color: var(--pink); box-shadow: 0 0 24px rgba(255, 46, 210, 0.16); }
+.home-models {
+  width: 100%; max-width: 1080px; border: 1px solid var(--line); border-radius: 6px;
+  background: rgba(13, 20, 34, 0.85); padding: 14px 18px 16px;
+}
+.home-models-count { color: var(--ink-3); font-size: 10px; letter-spacing: 1px; text-transform: none; margin-left: 8px; }
+.home-models-list { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.home-model-chip {
+  display: flex; align-items: baseline; gap: 8px; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 3px; padding: 6px 10px;
+}
+.home-model-chip:hover { border-color: var(--neon); }
+.home-model-chip .nm { color: var(--ink); font-size: 12px; letter-spacing: 0.5px; }
+.home-model-chip .fmt { font-size: 9px; color: var(--pink); border: 1px solid var(--line); padding: 1px 5px; border-radius: 2px; }
+.home-model-chip .meta { font-size: 10px; color: var(--ink-3); }
+@media (max-width: 900px) {
+  .home-cards { grid-template-columns: repeat(2, 1fr); }
+  .home-admin-cards { grid-template-columns: 1fr; }
+}
 
 /* ── portal ─────────────────────────────────────────── */
 .crumbs { flex: 1; color: var(--ink-2); font-size: 12px; letter-spacing: 1px; }
