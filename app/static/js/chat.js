@@ -7,6 +7,7 @@
    decides that once, at boot. */
 "use strict";
 
+import { decideChart, renderViz } from "./charts/index.js";
 import { $, el, api, fmtMeasure } from "./lib.js";
 import { navigate, paths } from "./router.js";
 import { hooks, state, modelByName } from "./state.js";
@@ -248,9 +249,43 @@ function renderMessage(msg) {
         + `· sort: ${sortText} · limit: ${q.limit ?? "—"}`)));
   }
   if (msg.result && msg.result.rows && msg.result.rows.length) {
-    bubble.append(renderGroundingTable(msg.result));
+    bubble.append(renderGrounding(msg));
   }
   return bubble;
+}
+
+// A time-shaped result (resolved_query names a time dimension, 1-2 dims
+// total) gets a chart above the grounding table, same chart code the
+// builder/dashboard use (decideChart/renderViz from charts/index.js) so it
+// reads as one system — the table stays underneath either way, as the
+// always-shown, always-verifiable grounding (FR-004).
+function renderGrounding(msg) {
+  const wrap = el("div", { class: "grounding-wrap" });
+  const ctx = vizCtxFor(msg);
+  if (ctx && decideChart(ctx) === "line") {
+    const legendBox = el("div", { class: "grounding-legend" });
+    const chartBox = el("div", { class: "grounding-chart" });
+    ctx.legendBox = legendBox;
+    ctx.container = chartBox;
+    ctx.rerender = () => renderViz(ctx);
+    wrap.append(legendBox, chartBox);
+    renderViz(ctx);
+  }
+  wrap.append(renderGroundingTable(msg.result));
+  return wrap;
+}
+
+function vizCtxFor(msg) {
+  const q = msg.resolved_query;
+  if (!q) return null;
+  const model = modelByName(q.model);
+  if (!model) return null;
+  return {
+    model,
+    dims: (q.dimensions || []).map((d) => (typeof d === "string" ? { name: d } : { name: d.name, grain: d.grain })),
+    chartType: "auto",
+    result: msg.result,
+  };
 }
 
 function renderGroundingTable(result) {
