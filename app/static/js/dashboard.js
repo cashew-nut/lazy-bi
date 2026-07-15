@@ -13,6 +13,7 @@ import {
 } from "./filters.js";
 import { canAuthor } from "./auth.js";
 import { $, api, el } from "./lib.js";
+import { navigate, paths } from "./router.js";
 import { hooks, modelByName, pubFor, refreshPubs, showView, state } from "./state.js";
 
 export async function refreshDashList() {
@@ -40,15 +41,16 @@ export function renderDashList() {
         onclick: async (e) => {
           e.stopPropagation();
           await api(`/api/dashboards/${d.id}`, { method: "DELETE" });
-          if (state.dash && state.dash.id === d.id) showView("builder");
+          if (state.dash && state.dash.id === d.id) navigate(paths.studio());
           refreshDashList();
         },
       }, "✕"));
-    item.addEventListener("click", () => openDashboard(d.id));
+    item.addEventListener("click", () => navigate(paths.studioDashboard(d.id)));
     box.append(item);
   }
 }
 hooks.renderDashList = renderDashList;
+hooks.openDashboard = openDashboard;
 
 // portal-mode parameter picks: session-local, never saved (mirrors how
 // portal-editable filter values and crossFilter/dashGrain stay ephemeral) —

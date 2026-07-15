@@ -293,11 +293,16 @@ def test_modelform_view_present(client):
 
 
 def test_new_model_opens_the_form_not_the_editor(client):
+    """+ MODEL routes (via the router) to the guided form, not straight to the
+    yaml editor; the raw yaml escape hatch stays reachable separately."""
     main = client.get("/static/js/main.js").text
-    assert '$("#mk-new-model").addEventListener("click", () => openModelForm(null))' in main
+    assert '$("#mk-new-model").addEventListener("click", () => navigate(paths.modellingNewModel()))' in main
+    router = client.get("/static/js/router.js").text
+    assert 'modellingNewModel: () => "/modelling/model/new"' in router
+    assert 'return hooks.openModelForm && hooks.openModelForm(isNew ? null : name);' in router
     modelling = client.get("/static/js/modelling.js").text
-    assert "openModelForm" in modelling
-    assert 'openEditor("model", m.name)' in modelling  # raw yaml editing still reachable
+    assert "navigate(paths.modellingModel(m.name))" in modelling        # ✎ edit -> guided form
+    assert "navigate(paths.modellingModelYaml(m.name))" in modelling    # { } yaml editing still reachable
 
 
 # ── bundle form backend (guided common-model authoring) ─────────
@@ -395,7 +400,10 @@ def test_bundleform_view_present(client):
     assert 'id="bf-yaml"' in html
     assert client.get("/static/js/bundleform.js").status_code == 200
     main = client.get("/static/js/main.js").text
-    assert '$("#mk-new-bundle").addEventListener("click", () => openBundleForm(null))' in main
+    assert '$("#mk-new-bundle").addEventListener("click", () => navigate(paths.modellingNewBundle()))' in main
+    router = client.get("/static/js/router.js").text
+    assert 'modellingNewBundle: () => "/modelling/bundle/new"' in router
+    assert 'return hooks.openBundleForm && hooks.openBundleForm(isNew ? null : name);' in router
     modelling = client.get("/static/js/modelling.js").text
-    assert "openBundleForm" in modelling
-    assert 'openEditor("bundle", b.name)' in modelling  # raw yaml editing still reachable
+    assert "navigate(paths.modellingBundle(b.name))" in modelling         # ✎ edit -> guided form
+    assert "navigate(paths.modellingBundleYaml(b.name))" in modelling     # { } yaml editing still reachable

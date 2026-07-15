@@ -5,6 +5,7 @@
 
 import { isAdmin, user } from "./auth.js";
 import { $, api, el } from "./lib.js";
+import { hooks } from "./state.js";
 
 const ROLES = ["viewer", "author", "admin"];
 
@@ -12,6 +13,7 @@ export async function loadAccount() {
   await Promise.all([renderTokens(), isAdmin() ? renderUsers() : Promise.resolve()]);
   $("#account-users-panel").hidden = !isAdmin();
 }
+hooks.loadAccount = loadAccount;
 
 // ── my tokens ────────────────────────────────────────────────
 

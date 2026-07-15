@@ -8,7 +8,8 @@
 "use strict";
 
 import { $, el, api, fmtMeasure } from "./lib.js";
-import { state, modelByName } from "./state.js";
+import { navigate, paths } from "./router.js";
+import { hooks, state, modelByName } from "./state.js";
 
 const chat = {
   enabled: false,
@@ -31,19 +32,25 @@ export function probeChatAvailability(health) {
   $("#chat-nav-btn").hidden = !chat.enabled;
 }
 
+// returns the id of whichever conversation ends up current (freshly
+// auto-opened, or already open from before) so the router can reflect it
+// into the URL — null when there's nothing to show (feature disabled, or
+// no conversations yet)
 export async function loadChat() {
   if (!chat.enabled) {
     $("#chat-thread").innerHTML = "";
     $("#chat-thread").append(el("div", { class: "empty-note" },
       "conversational analytics isn't configured on this server."));
-    return;
+    return null;
   }
   renderScopeChips();
   renderModelSelect();
   await refreshConvList();
   if (!chat.current && chat.conversations.length) await openConversation(chat.conversations[0].id);
   else renderThread();
+  return chat.current ? chat.current.id : null;
 }
+hooks.loadChat = loadChat;
 
 // Clear chip-toggle picker (not a cramped <select multiple>) so it's obvious
 // at a glance which models a conversation is pinned to — clicking a chip
@@ -102,7 +109,7 @@ function renderConvList() {
     const item = el("div", { class: "chat-conv" + (chat.current && chat.current.id === c.id ? " on" : "") },
       el("div", { class: "nm" }, c.title || "untitled conversation"),
       el("div", { class: "sub" }, `${scopeLabel} · ${c.llm_model || chat.defaultModel}`));
-    item.addEventListener("click", () => openConversation(c.id));
+    item.addEventListener("click", () => navigate(paths.chatConversation(c.id)));
     box.append(item);
   }
   if (!chat.conversations.length) {
@@ -118,6 +125,7 @@ export async function openConversation(id) {
   renderConvList();
   renderThread();
 }
+hooks.openConversation = openConversation;
 
 export async function newConversation() {
   const scope = [...chat.scopeSelection];
@@ -126,7 +134,7 @@ export async function newConversation() {
     method: "POST", body: { model_scope: scope, llm_model: llmModel },
   });
   chat.conversations.unshift(created);
-  await openConversation(created.id);
+  await navigate(paths.chatConversation(created.id));
 }
 
 function renderThread() {

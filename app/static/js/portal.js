@@ -2,14 +2,22 @@
    dashboards, opened read-only via dashboard.js. */
 "use strict";
 
-import { openDashboard } from "./dashboard.js";
 import { $, el } from "./lib.js";
-import { refreshPubs, state } from "./state.js";
+import { navigate, paths } from "./router.js";
+import { hooks, refreshPubs, showView, state } from "./state.js";
 
 export async function loadPortal() {
   await refreshPubs();
   renderPortal();
 }
+
+// router entry point for /portal and /portal/folder/*path — see router.js
+export async function openPortalFolder(path) {
+  state.portalFolder = path;
+  showView("portal");
+  await loadPortal();
+}
+hooks.openPortalFolder = openPortalFolder;
 
 export function renderPortal() {
   const grid = $("#portal-grid");
@@ -19,14 +27,14 @@ export function renderPortal() {
   const cur = state.portalFolder;
 
   const rootLink = el("a", {}, "◉ portal");
-  rootLink.addEventListener("click", () => { state.portalFolder = ""; renderPortal(); });
+  rootLink.addEventListener("click", () => navigate(paths.portalFolder("")));
   crumbs.append(rootLink);
   const acc = [];
   for (const seg of cur.split("/").filter(Boolean)) {
     acc.push(seg);
     const path = acc.join("/");
     const link = el("a", {}, seg);
-    link.addEventListener("click", () => { state.portalFolder = path; renderPortal(); });
+    link.addEventListener("click", () => navigate(paths.portalFolder(path)));
     crumbs.append(" / ", link);
   }
 
@@ -44,7 +52,7 @@ export function renderPortal() {
       el("div", { class: "ic" }, "◫"),
       el("div", { class: "nm" }, name),
       el("div", { class: "sub" }, `${inside} dashboard${inside === 1 ? "" : "s"}`));
-    card.addEventListener("click", () => { state.portalFolder = prefix + name; renderPortal(); });
+    card.addEventListener("click", () => navigate(paths.portalFolder(prefix + name)));
     grid.append(card);
   }
   for (const p of state.publications.filter((x) => x.folder === cur)) {
@@ -52,7 +60,7 @@ export function renderPortal() {
       el("div", { class: "ic" }, "▦"),
       el("div", { class: "nm" }, p.name),
       el("div", { class: "sub" }, `${p.tiles} tiles · published ${p.published_at.slice(0, 10)}`));
-    card.addEventListener("click", () => openDashboard(p.dashboard_id, true));
+    card.addEventListener("click", () => navigate(paths.portalDashboard(p.dashboard_id)));
     grid.append(card);
   }
   if (!grid.children.length) {

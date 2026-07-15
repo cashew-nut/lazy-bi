@@ -12,6 +12,7 @@ import { refreshModels } from "./builder.js";
 import { dslContext, dslItems, makeCompleter } from "./completion.js";
 import { renderImportPanel } from "./dimlab.js";
 import { $, api, el, fmtBytes } from "./lib.js";
+import { navigate, paths } from "./router.js";
 import { hooks, showView, state } from "./state.js";
 
 const NEW_MODEL_TEMPLATE = `# new semantic model — SAVE writes models/<name>.yaml
@@ -133,6 +134,7 @@ export async function openEditor(kind, name, opts = {}) {
   showView("editor");
   validateEditor();
 }
+hooks.openEditor = openEditor;
 
 // ── unsaved-edit guard (ephemeral state; FR-021 / Constitution V) ──
 
@@ -140,6 +142,7 @@ export function confirmLeaveEditor() {
   if (!editor.dirty) return true;
   return confirm("You have unsaved changes to this model. Discard them?");
 }
+hooks.confirmLeaveEditor = confirmLeaveEditor;
 
 function markDirty() {
   editor.dirty = true;
@@ -348,6 +351,7 @@ export async function saveEditor() {
     if (!confirm("This model currently fails validation and may not load. Save anyway?")) return;
   }
   const yaml = $("#yaml-editor").value;
+  const wasNew = !editor.name;
   editorStatus("saving…");
   try {
     const saved = editor.name
@@ -366,6 +370,11 @@ export async function saveEditor() {
     else { await renderImportPanel(); }
     await validateEditor();
     editorStatus($("#editor-status").innerHTML + ' · <span class="ok">saved ✓</span>');
+    // a brand-new artifact just got its real name — catch the URL up to it
+    if (wasNew) {
+      navigate(editor.kind === "bundle" ? paths.modellingBundleYaml(saved.name) : paths.modellingModelYaml(saved.name),
+        { replace: true });
+    }
   } catch (err) {
     editorStatus('<span class="err">✗ save failed</span>');
     $("#editor-report").innerHTML = `<span class="err">${err.message}</span>`;
@@ -388,8 +397,7 @@ export async function deleteEditorItem() {
   }
   editor.dirty = false;
   await refreshModels();
-  showView("modelling");
-  if (hooks.loadModelling) hooks.loadModelling();
+  navigate(paths.modelling());
 }
 
 // ── wiring (called once from main.js) ──

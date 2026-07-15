@@ -9,6 +9,7 @@ import {
   opsForDim, resetFilterForField, toApiFilter,
 } from "./filters.js";
 import { $, api, el } from "./lib.js";
+import { navigate, paths } from "./router.js";
 import { hooks, modelByName, showView, state } from "./state.js";
 
 export const dimByName = (name) => state.model.dimensions.find((d) => d.name === name);
@@ -376,6 +377,7 @@ export async function saveVisual(asNew) {
   state.visualId = saved.id;
   state.visualName = saved.name;
   refreshSaved();
+  navigate(paths.studioVisual(saved.id), { replace: true });
 }
 
 export function loadVisual(v) {
@@ -435,6 +437,19 @@ export function selectModel(name) {
   syncBuilderUI();
   scheduleRun();
 }
+hooks.selectModel = selectModel;
+
+// router entry points for /studio and /studio/visual/:id — see router.js
+hooks.defaultStudio = () => {
+  showView("builder");
+  if (state.models.length) selectModel(state.models[0].name);
+};
+hooks.openVisualById = async (id) => {
+  const visuals = await api("/api/visuals");
+  const v = visuals.find((x) => x.id === id);
+  if (!v) throw new Error(`visual ${id} not found`);
+  loadVisual(v);
+};
 
 // pull fresh model definitions after an edit and keep the builder coherent
 export async function refreshModels() {
