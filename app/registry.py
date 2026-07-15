@@ -39,10 +39,5 @@ class Registry:
         for model in self.models.values():
             semantic.resolve_imports(model, self.dimension_bundles)
 
-    def reload_models(self) -> None:
-        """Back-compat name — also reloads dimension bundles, since models may
-        import them and the two must always be resolved together."""
-        self.reload_all()
-
 
 registry = Registry()

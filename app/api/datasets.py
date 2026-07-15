@@ -2,11 +2,9 @@
 in the bucket grouped into pickable datasets (glob or delta-root sources),
 annotated with which loaded models already read them.
 
-Read-only. Reuses the same object walk and model-source matcher shape as
-app/api/explorer.py; the grouping itself lives in semantic.group_objects."""
+Read-only. Reuses semantic.model_source_matchers (shared with app/api/explorer.py)
+and semantic.group_objects for the grouping itself."""
 from __future__ import annotations
-
-import fnmatch
 
 from fastapi import APIRouter, HTTPException
 
@@ -14,30 +12,6 @@ from .. import config, engine, s3, semantic
 from ..registry import registry
 
 router = APIRouter(tags=["datasets"])
-
-
-def _model_matchers():
-    """(model_name, role, match_fn) over each model's source/join/import globs —
-    the explorer's matcher shape, reused so datasets can be tagged with readers."""
-    prefix = f"s3://{config.BUCKET}/"
-    matchers = []
-    for m in registry.models.values():
-        sources = (
-            [("source", m.source)]
-            + [(f"join: {j.name}", j.source) for j in m.joins]
-            + [(f"import: {b.bundle.name}.{ds}", b.bundle.datasets[ds].source)
-               for b in m.import_bindings for ds in b.included_datasets]
-        )
-        for role, src in sources:
-            if not src.path.startswith(prefix):
-                continue
-            rel = src.path[len(prefix):]
-            if src.format == "delta":
-                root = rel.rstrip("/") + "/"
-                matchers.append((m.name, role, lambda k, r=root: k.startswith(r)))
-            else:
-                matchers.append((m.name, role, lambda k, p=rel: fnmatch.fnmatch(k, p)))
-    return matchers
 
 
 @router.get("/datasets")
@@ -51,7 +25,7 @@ def list_datasets():
 
     datasets = semantic.group_objects(objects, config.BUCKET)
 
-    matchers = _model_matchers()
+    matchers = semantic.model_source_matchers(registry.models.values(), config.BUCKET)
     for ds in datasets:
         seen: set[tuple[str, str]] = set()
         readers = []

@@ -63,6 +63,10 @@ class VisualStore:
         return conn
 
     @staticmethod
+    def _now() -> str:
+        return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    @staticmethod
     def _row_to_dict(row: sqlite3.Row) -> dict:
         return {
             "id": row["id"],
@@ -84,7 +88,7 @@ class VisualStore:
         return self._row_to_dict(row) if row else None
 
     def create(self, name: str, model: str, spec: dict) -> dict:
-        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        now = self._now()
         with self._conn() as conn:
             cur = conn.execute(
                 "INSERT INTO visuals (name, model, spec, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
@@ -93,7 +97,7 @@ class VisualStore:
         return self.get(cur.lastrowid)
 
     def update(self, visual_id: int, name: str, model: str, spec: dict) -> Optional[dict]:
-        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        now = self._now()
         with self._conn() as conn:
             cur = conn.execute(
                 "UPDATE visuals SET name = ?, model = ?, spec = ?, updated_at = ? WHERE id = ?",
@@ -149,7 +153,7 @@ class VisualStore:
         return json.dumps({"items": items, "views": views, "active_view": active_view})
 
     def create_dashboard(self, name: str, items: list, views: list, active_view: int = 0) -> dict:
-        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        now = self._now()
         with self._conn() as conn:
             cur = conn.execute(
                 "INSERT INTO dashboards (name, items, created_at, updated_at) VALUES (?, ?, ?, ?)",
@@ -159,7 +163,7 @@ class VisualStore:
 
     def update_dashboard(self, dash_id: int, name: str, items: list, views: list,
                          active_view: int = 0) -> Optional[dict]:
-        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        now = self._now()
         with self._conn() as conn:
             cur = conn.execute(
                 "UPDATE dashboards SET name = ?, items = ?, updated_at = ? WHERE id = ?",
@@ -179,7 +183,7 @@ class VisualStore:
     def publish(self, dashboard_id: int, folder: str) -> Optional[dict]:
         if not self.get_dashboard(dashboard_id):
             return None
-        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        now = self._now()
         with self._conn() as conn:
             conn.execute(
                 "INSERT INTO publications (dashboard_id, folder, published_at, updated_at) VALUES (?, ?, ?, ?) "
@@ -219,7 +223,7 @@ class VisualStore:
         expr: Optional[str] = None, frame: Optional[str] = None,
         frame_emits: Optional[list] = None, user_id: Optional[int] = None,
     ) -> dict:
-        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        now = self._now()
         with self._conn() as conn:
             prev = conn.execute(
                 "SELECT MAX(version) AS v FROM measure_provenance WHERE model = ? AND measure = ?",

@@ -7,10 +7,7 @@ from __future__ import annotations
 import pytest
 
 from app import nlq
-from app.auth import User
 from app.llm import PriorTurn, RawToolCall, StreamEvent, TranslatorError
-
-VIEWER = User(id=1, username="viewer", display_name="Viewer", role="viewer")
 
 
 class FakeTranslator:
@@ -107,7 +104,7 @@ def test_resolve_propose_query_unambiguous(models):
             "filters": [], "sort": None, "limit": None,
         }),
     ])
-    decision = nlq.resolve("revenue by category", _catalog(models), [], VIEWER, models, translator)
+    decision = nlq.resolve("revenue by category", _catalog(models), [], models, translator)
     assert isinstance(decision, nlq.ProposeQuery)
     assert decision.model == "sales"
     assert decision.dimensions == ["category"]
@@ -122,7 +119,7 @@ def test_resolve_rejects_unknown_dimension(models):
             "model": "sales", "dimensions": ["not_a_real_dimension"], "measures": ["revenue"],
         }),
     ])
-    decision = nlq.resolve("bogus", _catalog(models), [], VIEWER, models, translator)
+    decision = nlq.resolve("bogus", _catalog(models), [], models, translator)
     assert isinstance(decision, nlq.Decline)
 
 
@@ -130,7 +127,7 @@ def test_resolve_rejects_unknown_measure(models):
     translator = FakeTranslator([
         RawToolCall("propose_query", {"model": "sales", "dimensions": [], "measures": ["not_a_measure"]}),
     ])
-    decision = nlq.resolve("bogus", _catalog(models), [], VIEWER, models, translator)
+    decision = nlq.resolve("bogus", _catalog(models), [], models, translator)
     assert isinstance(decision, nlq.Decline)
 
 
@@ -138,7 +135,7 @@ def test_resolve_rejects_unknown_model(models):
     translator = FakeTranslator([
         RawToolCall("propose_query", {"model": "not_a_model", "dimensions": [], "measures": ["revenue"]}),
     ])
-    decision = nlq.resolve("bogus", _catalog(models), [], VIEWER, models, translator)
+    decision = nlq.resolve("bogus", _catalog(models), [], models, translator)
     assert isinstance(decision, nlq.Decline)
 
 
@@ -150,7 +147,7 @@ def test_resolve_missing_model_declines_with_a_clear_message(models):
     translator = FakeTranslator([
         RawToolCall("propose_query", {"dimensions": [], "measures": ["revenue"]}),
     ])
-    decision = nlq.resolve("bogus", _catalog(models), [], VIEWER, models, translator)
+    decision = nlq.resolve("bogus", _catalog(models), [], models, translator)
     assert isinstance(decision, nlq.Decline)
     assert "None" not in decision.reason_text
     assert decision.reason_text == "the assistant didn't specify which model to use for that."
@@ -161,13 +158,13 @@ def test_resolve_rejects_model_outside_scope(models):
         RawToolCall("propose_query", {"model": "sales", "dimensions": [], "measures": ["revenue"]}),
     ])
     scoped_catalog = nlq.build_catalog(models, ["logistics"])
-    decision = nlq.resolve("bogus", scoped_catalog, [], VIEWER, models, translator, scope=["logistics"])
+    decision = nlq.resolve("bogus", scoped_catalog, [], models, translator, scope=["logistics"])
     assert isinstance(decision, nlq.Decline)
 
 
 def test_resolve_decline_passes_through(models):
     translator = FakeTranslator([RawToolCall("decline", {"reason_text": "no such metric here"})])
-    decision = nlq.resolve("what is the meaning of life", _catalog(models), [], VIEWER, models, translator)
+    decision = nlq.resolve("what is the meaning of life", _catalog(models), [], models, translator)
     assert isinstance(decision, nlq.Decline)
     assert decision.reason_text == "no such metric here"
 
@@ -179,7 +176,7 @@ def test_resolve_clarification_filters_invented_candidates(models):
             "candidates": ["sales", "an_invented_model_name"],
         }),
     ])
-    decision = nlq.resolve("revenue", _catalog(models), [], VIEWER, models, translator)
+    decision = nlq.resolve("revenue", _catalog(models), [], models, translator)
     assert isinstance(decision, nlq.AskClarification)
     assert decision.candidates == ["sales"]
 
@@ -188,7 +185,7 @@ def test_resolve_clarification_with_no_real_candidates_declines(models):
     translator = FakeTranslator([
         RawToolCall("ask_clarification", {"question_text": "huh?", "candidates": ["invented"]}),
     ])
-    decision = nlq.resolve("revenue", _catalog(models), [], VIEWER, models, translator)
+    decision = nlq.resolve("revenue", _catalog(models), [], models, translator)
     assert isinstance(decision, nlq.Decline)
 
 
@@ -200,7 +197,7 @@ def test_resolve_follow_up_reuses_and_revalidates_prior_context(models):
             "model": "sales", "dimensions": ["order_date"], "measures": ["revenue"],
         }),
     ])
-    decision = nlq.resolve("now break it down by date instead", _catalog(models), prior, VIEWER, models, translator)
+    decision = nlq.resolve("now break it down by date instead", _catalog(models), prior, models, translator)
     assert isinstance(decision, nlq.ProposeQuery)
     assert decision.dimensions == ["order_date"]
 
@@ -214,7 +211,7 @@ def test_resolve_stale_prior_context_model_removed_still_revalidates(models):
     translator = FakeTranslator([
         RawToolCall("propose_query", {"model": "a_removed_model", "dimensions": [], "measures": ["revenue"]}),
     ])
-    decision = nlq.resolve("and last quarter?", _catalog(models), prior, VIEWER, models, translator)
+    decision = nlq.resolve("and last quarter?", _catalog(models), prior, models, translator)
     assert isinstance(decision, nlq.Decline)
 
 
@@ -232,7 +229,7 @@ def test_resolve_rejects_invalid_filter_op(models):
             "filters": [{"field": "category", "op": "=", "value": "Widgets"}],
         }),
     ])
-    decision = nlq.resolve("revenue where category = Widgets", _catalog(models), [], VIEWER, models, translator)
+    decision = nlq.resolve("revenue where category = Widgets", _catalog(models), [], models, translator)
     assert isinstance(decision, nlq.Decline)
     assert "=" in decision.reason_text
 
@@ -244,7 +241,7 @@ def test_resolve_accepts_valid_filter_op(models):
             "filters": [{"field": "category", "op": "eq", "value": "Widgets"}],
         }),
     ])
-    decision = nlq.resolve("revenue for widgets", _catalog(models), [], VIEWER, models, translator)
+    decision = nlq.resolve("revenue for widgets", _catalog(models), [], models, translator)
     assert isinstance(decision, nlq.ProposeQuery)
 
 
@@ -255,7 +252,7 @@ def test_resolve_rejects_invalid_grain(models):
             "measures": ["revenue"],
         }),
     ])
-    decision = nlq.resolve("revenue by quarter", _catalog(models), [], VIEWER, models, translator)
+    decision = nlq.resolve("revenue by quarter", _catalog(models), [], models, translator)
     assert isinstance(decision, nlq.Decline)
     assert "1qtr" in decision.reason_text
 
@@ -267,7 +264,7 @@ def test_resolve_accepts_valid_grain(models):
             "measures": ["revenue"],
         }),
     ])
-    decision = nlq.resolve("revenue by quarter", _catalog(models), [], VIEWER, models, translator)
+    decision = nlq.resolve("revenue by quarter", _catalog(models), [], models, translator)
     assert isinstance(decision, nlq.ProposeQuery)
 
 
@@ -282,7 +279,7 @@ def test_resolve_show_last_query_returns_most_recent_prior_turn(models):
                   sort={"by": "revenue", "desc": True}, limit=50),
     ]
     translator = FakeTranslator([RawToolCall("show_last_query", {})])
-    decision = nlq.resolve("can you show me the query you just ran?", _catalog(models), prior, VIEWER, models, translator)
+    decision = nlq.resolve("can you show me the query you just ran?", _catalog(models), prior, models, translator)
     assert isinstance(decision, nlq.ShowQuery)
     assert decision.model == "sales"
     assert decision.dimensions == ["order_date"]
@@ -292,7 +289,7 @@ def test_resolve_show_last_query_returns_most_recent_prior_turn(models):
 
 def test_resolve_show_last_query_without_prior_context_declines(models):
     translator = FakeTranslator([RawToolCall("show_last_query", {})])
-    decision = nlq.resolve("show me the query", _catalog(models), [], VIEWER, models, translator)
+    decision = nlq.resolve("show me the query", _catalog(models), [], models, translator)
     assert isinstance(decision, nlq.Decline)
 
 
@@ -309,7 +306,7 @@ def test_resolve_streaming_yields_events_then_a_decision(models):
             StreamEvent(kind="tool_input", tool_input={"model": "sales"}),
         ]],
     )
-    items = list(nlq.resolve_streaming("revenue by category", _catalog(models), [], VIEWER, models, translator))
+    items = list(nlq.resolve_streaming("revenue by category", _catalog(models), [], models, translator))
     *events, decision = items
     assert [e.kind for e in events] == ["thinking", "tool_name", "tool_input"]
     assert events[0].text == "considering the question"
@@ -330,7 +327,7 @@ def test_resolve_streaming_still_revalidates_like_resolve(models):
         }),
     ])
     items = list(nlq.resolve_streaming(
-        "revenue where category = Widgets", _catalog(models), [], VIEWER, models, translator))
+        "revenue where category = Widgets", _catalog(models), [], models, translator))
     decision = items[-1]
     assert isinstance(decision, nlq.Decline)
     assert "=" in decision.reason_text
@@ -341,7 +338,7 @@ def test_resolve_streaming_with_no_display_events_still_yields_a_decision(models
     common case in most of these tests) still ends in exactly one Decision —
     proves the "done" event alone is enough to drive resolve_streaming."""
     translator = FakeTranslator([RawToolCall("decline", {"reason_text": "not in the model"})])
-    items = list(nlq.resolve_streaming("bogus", _catalog(models), [], VIEWER, models, translator))
+    items = list(nlq.resolve_streaming("bogus", _catalog(models), [], models, translator))
     assert len(items) == 1
     assert isinstance(items[0], nlq.Decline)
 
@@ -355,4 +352,4 @@ def test_resolve_streaming_propagates_translator_error(models):
             raise TranslatorError("boom")
 
     with pytest.raises(TranslatorError):
-        list(nlq.resolve_streaming("revenue", _catalog(models), [], VIEWER, models, ErrorTranslator()))
+        list(nlq.resolve_streaming("revenue", _catalog(models), [], models, ErrorTranslator()))
