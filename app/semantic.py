@@ -8,10 +8,11 @@ application code — do not load YAML from untrusted users.
 """
 from __future__ import annotations
 
+import fnmatch
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import polars as pl
 import yaml
@@ -404,12 +405,36 @@ def _repr_str(dumper: yaml.SafeDumper, data: str):
 _BlockStrDumper.add_representer(str, _repr_str)
 
 
+def _measure_yaml_block(measure: dict) -> str:
+    """Render a single measure to an indented yaml block, as used by both
+    append_measure_yaml and replace_measure_yaml. yaml handles the quoting of
+    the new block itself."""
+    block = yaml.dump([measure], Dumper=_BlockStrDumper, default_flow_style=False, sort_keys=False, width=1000)
+    return "".join("  " + line + "\n" for line in block.rstrip("\n").split("\n"))
+
+
+def _yaml_block_end(lines: list[str], start: int, is_boundary: Callable[[str], bool]) -> tuple[int, int]:
+    """Scan forward from `start` for the end of the yaml block beginning there:
+    `end` is the index of the first following line matching `is_boundary` (or
+    EOF), and `last_content` is the last non-blank line index inside the block
+    — shared by append_measure_yaml (scanning to the end of `measures:`) and
+    _measure_block_bounds (scanning to the end of one list entry)."""
+    end = len(lines)
+    last_content = start
+    for i in range(start + 1, len(lines)):
+        line = lines[i]
+        if line.strip() and is_boundary(line):
+            end = i
+            break
+        if line.strip():
+            last_content = i
+    return end, last_content
+
+
 def append_measure_yaml(text: str, measure: dict) -> str:
     """Insert a measure at the end of the `measures:` block of a model's yaml,
-    preserving the rest of the file byte-for-byte (comments included). yaml
-    handles the quoting of the new block itself."""
-    block = yaml.dump([measure], Dumper=_BlockStrDumper, default_flow_style=False, sort_keys=False, width=1000)
-    block = "".join("  " + line + "\n" for line in block.rstrip("\n").split("\n"))
+    preserving the rest of the file byte-for-byte (comments included)."""
+    block = _measure_yaml_block(measure)
 
     lines = text.split("\n")
     start = next((i for i, line in enumerate(lines) if line.rstrip() == "measures:"), None)
@@ -418,15 +443,7 @@ def append_measure_yaml(text: str, measure: dict) -> str:
 
     # the block ends before the next top-level key (or EOF); remember the last
     # line that actually belongs to it so trailing blanks stay trailing
-    end = len(lines)
-    last_content = start
-    for i in range(start + 1, len(lines)):
-        line = lines[i]
-        if line.strip() and not line.startswith((" ", "\t", "#")):
-            end = i
-            break
-        if line.strip():
-            last_content = i
+    end, last_content = _yaml_block_end(lines, start, lambda line: not line.startswith((" ", "\t", "#")))
     insert_at = min(last_content + 1, end)
     return "\n".join(lines[:insert_at]) + "\n" + block + "\n".join(lines[insert_at:])
 
@@ -441,15 +458,9 @@ def _measure_block_bounds(lines: list[str], measure_name: str) -> Optional[tuple
     )
     if start is None:
         return None
-    end = len(lines)
-    last_content = start
-    for i in range(start + 1, len(lines)):
-        line = lines[i]
-        if line.strip() and (line.startswith("  - ") or not line.startswith((" ", "\t"))):
-            end = i
-            break
-        if line.strip():
-            last_content = i
+    _, last_content = _yaml_block_end(
+        lines, start, lambda line: line.startswith("  - ") or not line.startswith((" ", "\t"))
+    )
     return start, last_content + 1
 
 
@@ -461,8 +472,7 @@ def replace_measure_yaml(text: str, measure_name: str, measure: dict) -> str:
     if bounds is None:
         raise ModelError(f"measure '{measure_name}' not found in yaml")
     start, end = bounds
-    block = yaml.dump([measure], Dumper=_BlockStrDumper, default_flow_style=False, sort_keys=False, width=1000)
-    block = "".join("  " + line + "\n" for line in block.rstrip("\n").split("\n"))
+    block = _measure_yaml_block(measure)
     return "\n".join(lines[:start]) + "\n" + block + "\n".join(lines[end:])
 
 
@@ -476,26 +486,42 @@ def remove_measure_yaml(text: str, measure_name: str) -> str:
     return "\n".join(lines[:start] + lines[end:])
 
 
-def parse_model_text(text: str) -> Model:
-    """Parse and validate a model from editor-supplied YAML text."""
+def _parse_editor_text(text: str, mapping_desc: str, parser: Callable[[dict, Path], object]):
+    """Shared load/validate step for parse_model_text and parse_bundle_text:
+    both take editor-supplied YAML text and hand a raw mapping to their
+    respective `_parse_*` function, differing only in the expected shape."""
     try:
         raw = yaml.safe_load(text)
     except yaml.YAMLError as exc:
         raise ModelError(f"invalid yaml: {exc}")
     if not isinstance(raw, dict):
-        raise ModelError("yaml must be a mapping with name / source / dimensions / measures")
-    return _parse_model(raw, Path("<editor>"))
+        raise ModelError(f"yaml must be a mapping with {mapping_desc}")
+    return parser(raw, Path("<editor>"))
+
+
+def parse_model_text(text: str) -> Model:
+    """Parse and validate a model from editor-supplied YAML text."""
+    return _parse_editor_text(text, "name / source / dimensions / measures", _parse_model)
+
+
+def _load_yaml_dir(directory: Path, parser: Callable[[dict, Path], object]) -> dict:
+    """Shared directory-of-yaml-files loader for load_models and
+    load_dimension_bundles: parse every *.yml/*.yaml file and index the
+    resulting objects (which both set .origin and .name) by name."""
+    items: dict = {}
+    if not directory.is_dir():
+        return items
+    for path in sorted(directory.glob("*.y*ml")):
+        with open(path) as fh:
+            raw = yaml.safe_load(fh)
+        item = parser(raw, path)
+        item.origin = path
+        items[item.name] = item
+    return items
 
 
 def load_models(models_dir: Path) -> dict[str, Model]:
-    models: dict[str, Model] = {}
-    for path in sorted(models_dir.glob("*.y*ml")):
-        with open(path) as fh:
-            raw = yaml.safe_load(fh)
-        model = _parse_model(raw, path)
-        model.origin = path
-        models[model.name] = model
-    return models
+    return _load_yaml_dir(models_dir, _parse_model)
 
 
 # ---------------------------------------------------------------------------
@@ -600,26 +626,11 @@ def _parse_bundle(raw: dict, origin: Path) -> DimensionBundle:
 
 def parse_bundle_text(text: str) -> DimensionBundle:
     """Parse and validate a dimension bundle from editor-supplied YAML text."""
-    try:
-        raw = yaml.safe_load(text)
-    except yaml.YAMLError as exc:
-        raise ModelError(f"invalid yaml: {exc}")
-    if not isinstance(raw, dict):
-        raise ModelError("yaml must be a mapping with name / datasets")
-    return _parse_bundle(raw, Path("<editor>"))
+    return _parse_editor_text(text, "name / datasets", _parse_bundle)
 
 
 def load_dimension_bundles(dimensions_dir: Path) -> dict[str, DimensionBundle]:
-    bundles: dict[str, DimensionBundle] = {}
-    if not dimensions_dir.is_dir():
-        return bundles
-    for path in sorted(dimensions_dir.glob("*.y*ml")):
-        with open(path) as fh:
-            raw = yaml.safe_load(fh)
-        bundle = _parse_bundle(raw, path)
-        bundle.origin = path
-        bundles[bundle.name] = bundle
-    return bundles
+    return _load_yaml_dir(dimensions_dir, _parse_bundle)
 
 
 # ---------------------------------------------------------------------------
@@ -732,13 +743,20 @@ def _spec_join_keys(entry: dict, spec: dict) -> None:
         entry["how"] = spec["how"]
 
 
-def spec_to_yaml(spec: dict) -> str:
-    """Render a form spec dict to canonical model YAML (defaults omitted)."""
+def _spec_header(spec: dict) -> dict:
+    """name/label/description prelude shared by spec_to_yaml and
+    bundle_spec_to_yaml (defaults omitted)."""
     doc: dict = {"name": spec["name"]}
     if spec.get("label"):
         doc["label"] = spec["label"]
     if spec.get("description"):
         doc["description"] = spec["description"]
+    return doc
+
+
+def spec_to_yaml(spec: dict) -> str:
+    """Render a form spec dict to canonical model YAML (defaults omitted)."""
+    doc = _spec_header(spec)
     src = spec["source"]
     doc["source"] = {"format": src.get("format", "parquet"), "path": src["path"]}
 
@@ -795,11 +813,7 @@ def _dump_generated(doc: dict) -> str:
 
 def bundle_spec_to_yaml(spec: dict) -> str:
     """Render a form spec dict to canonical dimension-bundle YAML."""
-    doc: dict = {"name": spec["name"]}
-    if spec.get("label"):
-        doc["label"] = spec["label"]
-    if spec.get("description"):
-        doc["description"] = spec["description"]
+    doc = _spec_header(spec)
     entries = []
     for ds in spec.get("datasets") or []:
         entry: dict = {
@@ -857,6 +871,33 @@ def _object_format(key: str) -> Optional[str]:
     return None
 
 
+def model_source_matchers(
+    models, bucket: str
+) -> list[tuple[str, str, Callable[[str], bool]]]:
+    """(model_name, role, match_fn) triples over each model's source/join/import
+    globs — which bucket objects feed which model. Shared by the explorer and
+    dataset-picker endpoints, which both tag bucket objects with their readers."""
+    prefix = f"s3://{bucket}/"
+    matchers: list[tuple[str, str, Callable[[str], bool]]] = []
+    for m in models:
+        sources = (
+            [("source", m.source)]
+            + [(f"join: {j.name}", j.source) for j in m.joins]
+            + [(f"import: {b.bundle.name}.{ds}", b.bundle.datasets[ds].source)
+               for b in m.import_bindings for ds in b.included_datasets]
+        )
+        for role, src in sources:
+            if not src.path.startswith(prefix):
+                continue
+            rel = src.path[len(prefix):]
+            if src.format == "delta":
+                root = rel.rstrip("/") + "/"
+                matchers.append((m.name, role, lambda k, r=root: k.startswith(r)))
+            else:
+                matchers.append((m.name, role, lambda k, p=rel: fnmatch.fnmatch(k, p)))
+    return matchers
+
+
 def group_objects(objects: list[dict], bucket: str) -> list[dict]:
     """Group bucket objects (each ``{"key", "size"}``) into pickable datasets.
 
@@ -878,10 +919,18 @@ def group_objects(objects: list[dict], bucket: str) -> list[dict]:
                 return root
         return None
 
+    # bucket every object by its delta root (or None) in a single pass, rather
+    # than rescanning all objects against delta_root_of once per root below
+    delta_members: dict[str, list[dict]] = {root: [] for root in delta_roots}
+    non_delta: list[dict] = []
+    for obj in objects:
+        root = delta_root_of(obj["key"])
+        (delta_members[root] if root is not None else non_delta).append(obj)
+
     datasets: list[dict] = []
 
     for root in delta_roots:
-        members = [o for o in objects if delta_root_of(o["key"]) == root]
+        members = delta_members[root]
         datasets.append({
             "key": root,
             "path": f"s3://{bucket}/{root}",
@@ -893,9 +942,7 @@ def group_objects(objects: list[dict], bucket: str) -> list[dict]:
         })
 
     groups: dict[str, list[dict]] = {}
-    for obj in objects:
-        if delta_root_of(obj["key"]):
-            continue
+    for obj in non_delta:
         groups.setdefault(_dirname(obj["key"]), []).append(obj)
 
     for prefix, members in groups.items():
