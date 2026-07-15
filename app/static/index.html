@@ -117,18 +117,29 @@
     <main>
       <div id="home-view" class="chart-card" hidden>
         <div class="home-body">
-          <div class="home-hero">
-            <div class="home-kicker">// operator console</div>
-            <h1 id="home-greeting" class="home-greeting">Where to?</h1>
-          </div>
-          <div id="home-cards" class="home-cards"></div>
+          <p class="home-prompt">
+            <span class="home-prompt-glyph" aria-hidden="true">&gt;</span>
+            <span id="home-greeting">where to?</span><span class="home-cursor" aria-hidden="true">_</span>
+          </p>
+
+          <div id="home-cards" class="home-index"></div>
+
           <div id="home-admin" class="home-admin" hidden>
-            <div class="sec-title">Admin shortcuts</div>
-            <div id="home-admin-cards" class="home-admin-cards"></div>
+            <div class="home-admin-label">admin</div>
+            <div id="home-admin-cards" class="home-admin-row"></div>
           </div>
-          <div class="home-models">
-            <div class="sec-title">Semantic models <span id="home-models-count" class="home-models-count"></span></div>
-            <div id="home-models-list" class="home-models-list"></div>
+
+          <div class="home-status">
+            <div class="home-status-head">
+              <span>semantic models</span>
+              <span id="home-models-count" class="home-status-count"></span>
+            </div>
+            <div class="home-status-scroll">
+              <table class="data">
+                <thead><tr><th>model</th><th>format</th><th class="num">dim</th><th class="num">msr</th></tr></thead>
+                <tbody id="home-models-list"></tbody>
+              </table>
+            </div>
           </div>
         </div>
       </div>
