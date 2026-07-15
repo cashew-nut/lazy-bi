@@ -116,30 +116,36 @@
 
     <main>
       <div id="home-view" class="chart-card" hidden>
-        <div class="home-body">
-          <p class="home-prompt">
-            <span class="home-prompt-glyph" aria-hidden="true">&gt;</span>
-            <span id="home-greeting">where to?</span><span class="home-cursor" aria-hidden="true">_</span>
-          </p>
+        <div class="home-layout">
+          <div class="home-body">
+            <p class="home-prompt">
+              <span class="home-prompt-glyph" aria-hidden="true">&gt;</span>
+              <span id="home-greeting">where to?</span><span class="home-cursor" aria-hidden="true">_</span>
+            </p>
 
-          <div id="home-cards" class="home-index"></div>
+            <div id="home-cards" class="home-index"></div>
 
-          <div id="home-admin" class="home-admin" hidden>
-            <div class="home-admin-label">admin</div>
-            <div id="home-admin-cards" class="home-admin-row"></div>
+            <div id="home-admin" class="home-admin" hidden>
+              <div class="home-admin-label">admin</div>
+              <div id="home-admin-cards" class="home-admin-row"></div>
+            </div>
+
+            <div class="home-status">
+              <div class="home-status-head">
+                <span>semantic models</span>
+                <span id="home-models-count" class="home-status-count"></span>
+              </div>
+              <div class="home-status-scroll">
+                <table class="data">
+                  <thead><tr><th>model</th><th>format</th><th class="num">dim</th><th class="num">msr</th></tr></thead>
+                  <tbody id="home-models-list"></tbody>
+                </table>
+              </div>
+            </div>
           </div>
 
-          <div class="home-status">
-            <div class="home-status-head">
-              <span>semantic models</span>
-              <span id="home-models-count" class="home-status-count"></span>
-            </div>
-            <div class="home-status-scroll">
-              <table class="data">
-                <thead><tr><th>model</th><th>format</th><th class="num">dim</th><th class="num">msr</th></tr></thead>
-                <tbody id="home-models-list"></tbody>
-              </table>
-            </div>
+          <div id="home-rain" class="home-rain" aria-hidden="true">
+            <canvas id="home-rain-canvas"></canvas>
           </div>
         </div>
       </div>
