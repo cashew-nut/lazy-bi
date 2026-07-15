@@ -15,6 +15,7 @@ import {
   sourceSchema, textField, titleCase,
 } from "./formkit.js";
 import { $, api, el } from "./lib.js";
+import { navigate, paths, setPath } from "./router.js";
 import { hooks, showView, state } from "./state.js";
 
 const STEPS = ["SOURCE", "JOINS", "COMMON MODELS", "DIMENSIONS & MEASURES", "REVIEW & SAVE"];
@@ -76,6 +77,7 @@ export function confirmLeaveModelForm() {
   if (state.view !== "modelform" || !form.dirty) return true;
   return confirm("Leave the model form? In-progress edits are not saved.");
 }
+hooks.confirmLeaveModelForm = confirmLeaveModelForm;
 
 export async function openModelForm(name) {
   if (!confirmLeaveModelForm()) return;
@@ -110,6 +112,7 @@ export async function openModelForm(name) {
   }
   render();
 }
+hooks.openModelForm = openModelForm;
 
 const toPairs = (j) => j.left_on.map((l, idx) => ({ left: l, right: j.right_on[idx] ?? l }));
 
@@ -655,8 +658,7 @@ async function saveModelForm() {
       : await api("/api/models", { method: "POST", body: { yaml: generated.yaml } });
     form.dirty = false;
     await refreshModels();
-    showView("modelling");
-    if (hooks.loadModelling) hooks.loadModelling();
+    navigate(paths.modelling());
     setStatus(`<span class="ok">saved ${saved.file} ✓</span>`);
   } catch (err) {
     setStatus(`<span class="err">✗ ${err.message}</span>`);
@@ -671,6 +673,7 @@ async function editAsYaml() {
   setStatus("");
   form.dirty = false;   // the yaml editor takes over ownership of the edits
   openEditor("model", form.editingName, { text: res?.yaml });
+  setPath(form.editingName ? paths.modellingModelYaml(form.editingName) : paths.modellingNewModelYaml());
 }
 
 export function attachModelForm() {
@@ -685,7 +688,6 @@ export function attachModelForm() {
   $("#mf-back").addEventListener("click", () => {
     if (!confirmLeaveModelForm()) return;
     form.dirty = false;
-    showView("modelling");
-    if (hooks.loadModelling) hooks.loadModelling();
+    navigate(paths.modelling());
   });
 }

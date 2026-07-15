@@ -11,7 +11,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -108,6 +108,18 @@ def create_app() -> FastAPI:
         return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"})
 
     app.mount("/static", NoCacheStaticFiles(directory=STATIC_DIR), name="static")
+
+    # SPA fallback: the frontend router (app/static/js/router.js) owns real
+    # paths like /modelling/model/foo now, so a hard refresh or a pasted link
+    # must still come back to the same shell. Registered last — the routes
+    # above (this function's "/", api_router, and the /static mount) already
+    # matched everything they own by the time Starlette reaches this one.
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def spa_fallback(full_path: str):
+        if full_path.startswith("api/") or full_path.startswith("static/"):
+            raise HTTPException(status_code=404)
+        return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"})
+
     return app
 
 

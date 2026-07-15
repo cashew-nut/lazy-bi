@@ -13,6 +13,7 @@ import {
   sourceSchema, textField, titleCase,
 } from "./formkit.js";
 import { $, api, el } from "./lib.js";
+import { navigate, paths, setPath } from "./router.js";
 import { hooks, showView, state } from "./state.js";
 
 const STEPS = ["NAME & DATASETS", "RELATIONSHIPS", "DIMENSIONS", "REVIEW & SAVE"];
@@ -51,6 +52,7 @@ export function confirmLeaveBundleForm() {
   if (state.view !== "bundleform" || !form.dirty) return true;
   return confirm("Leave the common-model form? In-progress edits are not saved.");
 }
+hooks.confirmLeaveBundleForm = confirmLeaveBundleForm;
 
 export async function openBundleForm(name) {
   if (!confirmLeaveBundleForm()) return;
@@ -81,6 +83,7 @@ export async function openBundleForm(name) {
   }
   render();
 }
+hooks.openBundleForm = openBundleForm;
 
 // ── rendering ──────────────────────────────────────────────────────────────
 
@@ -324,8 +327,7 @@ async function saveBundleForm() {
     form.dirty = false;
     state.bundles = await api("/api/dimensions");   // importers may have re-resolved
     await refreshModels();
-    showView("modelling");
-    if (hooks.loadModelling) hooks.loadModelling();
+    navigate(paths.modelling());
     setStatus(`<span class="ok">saved ${saved.file} ✓</span>`);
   } catch (err) {
     setStatus(`<span class="err">✗ ${err.message}</span>`);
@@ -338,6 +340,7 @@ async function editAsYaml() {
   setStatus("");
   form.dirty = false;   // the yaml editor takes over ownership of the edits
   openEditor("bundle", form.editingName, { text: res?.yaml });
+  setPath(form.editingName ? paths.modellingBundleYaml(form.editingName) : paths.modellingNewBundleYaml());
 }
 
 export function attachBundleForm() {
@@ -352,7 +355,6 @@ export function attachBundleForm() {
   $("#bf-back").addEventListener("click", () => {
     if (!confirmLeaveBundleForm()) return;
     form.dirty = false;
-    showView("modelling");
-    if (hooks.loadModelling) hooks.loadModelling();
+    navigate(paths.modelling());
   });
 }

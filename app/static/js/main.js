@@ -3,26 +3,30 @@
 
 import {
   addParameter, refreshSaved, renderBuilderViz, renderChartSeg, renderFilters, saveVisual,
-  scheduleRun, selectModel,
+  scheduleRun,
 } from "./builder.js";
 import { PALETTE } from "./charts/common.js";
 import { renderViz, vizMessage } from "./charts/index.js";
 import {
-  activeView, closeFocus, dashDimUnion, focus, openDashboard,
+  activeView, closeFocus, dashDimUnion, focus,
   paramConflictMessage, publishCurrent, refreshDashList, renderDashboard, renderDashFilters,
   renderFocusFilters, saveDash,
 } from "./dashboard.js";
-import { attachAccount, loadAccount } from "./admin.js";
+import { attachAccount } from "./admin.js";
 import { initAuth } from "./auth.js";
-import { attachBundleForm, confirmLeaveBundleForm, openBundleForm } from "./bundleform.js";
-import { attachChat, loadChat, probeChatAvailability } from "./chat.js";
-import { attachEditor, confirmLeaveEditor, deleteEditorItem, saveEditor } from "./editor.js";
+import { attachBundleForm } from "./bundleform.js";
+import { attachChat, probeChatAvailability } from "./chat.js";
+import { attachEditor, deleteEditorItem, saveEditor } from "./editor.js";
 import { $, api } from "./lib.js";
 import { initMeasureLab } from "./measurelab.js";
-import { attachModelForm, confirmLeaveModelForm, openModelForm } from "./modelform.js";
+import { attachModelForm } from "./modelform.js";
 import { loadModelling } from "./modelling.js";
-import { loadPortal, renderPortal } from "./portal.js";
-import { refreshPubs, showView, state } from "./state.js";
+// side-effect only: nothing here calls into the portal module directly
+// anymore (the router dispatches to it via hooks.openPortalFolder), but the
+// module still has to be imported somewhere for that registration to run
+import "./portal.js";
+import { initRouter, navigate, pathForMode, paths } from "./router.js";
+import { refreshPubs, state } from "./state.js";
 
 async function init() {
   try {
@@ -34,7 +38,7 @@ async function init() {
     initMeasureLab();
 
     // ── builder ──
-    $("#model-select").addEventListener("change", (e) => selectModel(e.target.value));
+    $("#model-select").addEventListener("change", (e) => navigate(paths.studioModel(e.target.value)));
     $("#add-filter").addEventListener("click", () => {
       state.filters.push({ field: state.model.dimensions[0].name, op: "eq", value: "", values: [] });
       renderFilters();
@@ -68,15 +72,11 @@ async function init() {
     attachEditor();   // input/keydown/completion/dataset-picker/revert/beforeunload
     attachModelForm();
     attachBundleForm();
-    $("#mk-new-model").addEventListener("click", () => openModelForm(null));
-    $("#mk-new-bundle").addEventListener("click", () => openBundleForm(null));
+    $("#mk-new-model").addEventListener("click", () => navigate(paths.modellingNewModel()));
+    $("#mk-new-bundle").addEventListener("click", () => navigate(paths.modellingNewBundle()));
     $("#editor-save").addEventListener("click", saveEditor);
     $("#editor-delete").addEventListener("click", deleteEditorItem);
-    $("#editor-back").addEventListener("click", () => {
-      if (!confirmLeaveEditor()) return;
-      showView("modelling");
-      loadModelling();
-    });
+    $("#editor-back").addEventListener("click", () => navigate(paths.modelling()));
 
     // ── dashboards ──
     $("#new-dash").addEventListener("click", async () => {
@@ -85,11 +85,10 @@ async function init() {
         body: { name: "untitled_dashboard", items: [], views: [{ name: "default", filters: [] }], active_view: 0 },
       });
       await refreshDashList();
-      openDashboard(created.id);
+      navigate(paths.studioDashboard(created.id));
     });
     $("#dash-back").addEventListener("click", () => {
-      if (state.portal) { showView("portal"); renderPortal(); }
-      else showView("builder");
+      navigate(state.portal ? paths.portalFolder(state.portalFolder) : paths.studio());
     });
     $("#dash-publish").addEventListener("click", publishCurrent);
     $("#dash-name").addEventListener("change", saveDash);
@@ -114,7 +113,7 @@ async function init() {
     $("#dash-delete").addEventListener("click", async () => {
       await api(`/api/dashboards/${state.dash.id}`, { method: "DELETE" });
       await refreshDashList();
-      showView("builder");
+      navigate(paths.studio());
     });
 
     // dashboard views = named filter sets
@@ -175,19 +174,10 @@ async function init() {
       renderFocusFilters();
     });
 
-    // mode nav: studio / modelling / portal
+    // mode nav: studio / modelling / portal / chat / account — the leave-
+    // unsaved-edits guard (FR-021) now lives centrally in navigate()
     for (const btn of document.querySelectorAll("#mode-nav button")) {
-      btn.addEventListener("click", () => {
-        // guard: leaving the editor/forms with unsaved edits must warn (FR-021)
-        if (state.view === "editor" && !confirmLeaveEditor()) return;
-        if (!confirmLeaveModelForm() || !confirmLeaveBundleForm()) return;
-        const m = btn.dataset.mode;
-        if (m === "studio") showView("builder");
-        else if (m === "modelling") { showView("modelling"); loadModelling(); }
-        else if (m === "account") { showView("account"); loadAccount(); }
-        else if (m === "chat") { showView("chat"); loadChat(); }
-        else { state.portalFolder = ""; showView("portal"); loadPortal(); }
-      });
+      btn.addEventListener("click", () => navigate(pathForMode(btn.dataset.mode)));
     }
     $("#modelling-refresh").addEventListener("click", loadModelling);
 
@@ -203,7 +193,7 @@ async function init() {
     window.addEventListener("resize", rerenderOnResize);
     new ResizeObserver(rerenderOnResize).observe($("#chart"));
 
-    selectModel(models[0].name);
+    await initRouter();   // resolves the current URL (or "/" -> /studio) into a view
     refreshSaved();
     await refreshPubs();
     refreshDashList();

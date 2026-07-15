@@ -5,14 +5,11 @@
    authoring lives here now — Studio only builds visuals. */
 "use strict";
 
-import { selectModel } from "./builder.js";
-import { openBundleForm } from "./bundleform.js";
-import { openEditor } from "./editor.js";
 import { $, api, el, fmtBytes } from "./lib.js";
-import { openModelForm } from "./modelform.js";
-import { hooks, showView, state } from "./state.js";
+import { navigate, paths } from "./router.js";
+import { hooks, state } from "./state.js";
 
-const openInBuilder = (name) => { showView("builder"); selectModel(name); };
+const openInBuilder = (name) => navigate(paths.studioModel(name));
 
 export async function loadModelling() {
   $("#modelling-side").innerHTML = "";
@@ -44,12 +41,12 @@ function renderSide(models, bundles, data) {
       el("div", { class: "path" }, m.path),
       el("div", { class: "mk-sub" }, `${st.files} file${st.files === 1 ? "" : "s"} · ${fmtBytes(st.bytes)} · ${m.dimensions.length} dims · ${m.measures.length} measures`),
       el("div", { class: "mk-actions" },
-        el("button", { class: "mini-btn", onclick: () => openModelForm(m.name) }, "✎ edit"),
-        el("button", { class: "mini-btn", title: "edit the raw yaml", onclick: () => openEditor("model", m.name) }, "{ } yaml"),
+        el("button", { class: "mini-btn", onclick: () => navigate(paths.modellingModel(m.name)) }, "✎ edit"),
+        el("button", { class: "mini-btn", title: "edit the raw yaml", onclick: () => navigate(paths.modellingModelYaml(m.name)) }, "{ } yaml"),
         el("button", { class: "mini-btn go", onclick: () => openInBuilder(m.name) }, "build ►")));
     box.append(card);
   }
-  box.append(el("button", { class: "ghost mk-new", onclick: () => openModelForm(null) }, "+ new model"));
+  box.append(el("button", { class: "ghost mk-new", onclick: () => navigate(paths.modellingNewModel()) }, "+ new model"));
 
   box.append(el("div", { class: "sec-title", style: "margin-top:16px" }, "Common Models"));
   if (!bundles.length) {
@@ -62,11 +59,11 @@ function renderSide(models, bundles, data) {
         el("span", { class: "fmt" }, `${b.datasets.length} set${b.datasets.length === 1 ? "" : "s"}`)),
       el("div", { class: "path" }, b.datasets.map((d) => d.name).join(", ") || "—"),
       el("div", { class: "mk-actions" },
-        el("button", { class: "mini-btn", onclick: () => openBundleForm(b.name) }, "✎ edit"),
-        el("button", { class: "mini-btn", title: "edit the raw yaml", onclick: () => openEditor("bundle", b.name) }, "{ } yaml")));
+        el("button", { class: "mini-btn", onclick: () => navigate(paths.modellingBundle(b.name)) }, "✎ edit"),
+        el("button", { class: "mini-btn", title: "edit the raw yaml", onclick: () => navigate(paths.modellingBundleYaml(b.name)) }, "{ } yaml")));
     box.append(card);
   }
-  box.append(el("button", { class: "ghost mk-new", onclick: () => openBundleForm(null) }, "+ new common model"));
+  box.append(el("button", { class: "ghost mk-new", onclick: () => navigate(paths.modellingNewBundle()) }, "+ new common model"));
 }
 
 // datasets↔models overview (carried over verbatim from the old explorer)
