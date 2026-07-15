@@ -220,6 +220,171 @@ def test_resolve_stale_prior_context_model_removed_still_revalidates(models):
 # actual allowlist must decline cleanly here, never reach engine.run_query
 # and surface as a raw, unexplained QueryError ──────────────────────────
 
+# ── inline measures — chat-authored running_total()/lag() (issue: the LLM
+# could only ever pick a pre-declared measure; now it can define a window
+# calculation over one, without needing a model author to save it first) ──
+
+def test_resolve_propose_query_with_inline_running_total(models):
+    translator = FakeTranslator([
+        RawToolCall("propose_query", {
+            "model": "sales", "dimensions": [{"name": "order_date", "grain": "1mo"}],
+            "measures": ["revenue", "running_revenue"],
+            "inline_measures": [
+                {"name": "running_revenue", "expr": "running_total(revenue)", "label": "Running Revenue"},
+            ],
+        }),
+    ])
+    decision = nlq.resolve("running total of revenue by month", _catalog(models), [], models, translator)
+    assert isinstance(decision, nlq.ProposeQuery)
+    assert decision.measures == ["revenue", "running_revenue"]
+    assert decision.inline_measures == [
+        {"name": "running_revenue", "expr": "running_total(revenue)", "label": "Running Revenue", "format": None},
+    ]
+
+
+def test_resolve_propose_query_with_inline_lag(models):
+    translator = FakeTranslator([
+        RawToolCall("propose_query", {
+            "model": "sales", "dimensions": [{"name": "order_date", "grain": "1q"}],
+            "measures": ["qoq_revenue"],
+            "inline_measures": [{"name": "qoq_revenue", "expr": "lag(revenue)"}],
+        }),
+    ])
+    decision = nlq.resolve("quarter over quarter revenue", _catalog(models), [], models, translator)
+    assert isinstance(decision, nlq.ProposeQuery)
+    assert decision.inline_measures[0]["expr"] == "lag(revenue)"
+
+
+def test_resolve_rejects_inline_measure_over_a_raw_column(models):
+    """The same "never a raw column" invariant enforced for dimensions/
+    filters must hold for a chat-authored inline measure too."""
+    translator = FakeTranslator([
+        RawToolCall("propose_query", {
+            "model": "sales", "dimensions": [], "measures": ["running_price"],
+            "inline_measures": [{"name": "running_price", "expr": "running_total(unit_price)"}],
+        }),
+    ])
+    decision = nlq.resolve("running total of unit price", _catalog(models), [], models, translator)
+    assert isinstance(decision, nlq.Decline)
+    assert "unit_price" in decision.reason_text
+
+
+def test_resolve_rejects_non_window_inline_measure(models):
+    """Arbitrary raw-column arithmetic isn't allowed from chat — only
+    running_total()/lag() over an already-declared measure is."""
+    translator = FakeTranslator([
+        RawToolCall("propose_query", {
+            "model": "sales", "dimensions": [], "measures": ["double_revenue"],
+            "inline_measures": [{"name": "double_revenue", "expr": "revenue * 2"}],
+        }),
+    ])
+    decision = nlq.resolve("double the revenue", _catalog(models), [], models, translator)
+    assert isinstance(decision, nlq.Decline)
+    assert "running_total" in decision.reason_text
+
+
+def test_resolve_rejects_inline_measure_reusing_a_declared_name(models):
+    translator = FakeTranslator([
+        RawToolCall("propose_query", {
+            "model": "sales", "dimensions": [], "measures": ["revenue"],
+            "inline_measures": [{"name": "revenue", "expr": "lag(revenue)"}],
+        }),
+    ])
+    decision = nlq.resolve("lag of revenue", _catalog(models), [], models, translator)
+    assert isinstance(decision, nlq.Decline)
+
+
+def test_resolve_rejects_inline_measure_with_no_expr(models):
+    translator = FakeTranslator([
+        RawToolCall("propose_query", {
+            "model": "sales", "dimensions": [], "measures": ["revenue"],
+            "inline_measures": [{"name": "running_revenue"}],
+        }),
+    ])
+    decision = nlq.resolve("running total", _catalog(models), [], models, translator)
+    assert isinstance(decision, nlq.Decline)
+
+
+def test_resolve_show_last_query_carries_inline_measures_through(models):
+    prior = [PriorTurn(
+        question_text="running total of revenue", model="sales",
+        dimensions=[{"name": "order_date", "grain": "1mo"}], measures=["revenue", "running_revenue"],
+        filters=[], inline_measures=[{"name": "running_revenue", "expr": "running_total(revenue)"}],
+    )]
+    translator = FakeTranslator([RawToolCall("show_last_query", {})])
+    decision = nlq.resolve("show me that query", _catalog(models), prior, models, translator)
+    assert isinstance(decision, nlq.ShowQuery)
+    assert decision.inline_measures == [{"name": "running_revenue", "expr": "running_total(revenue)"}]
+
+
+# ── categorical "common sense" — sample values in the catalog, and a
+# case-insensitive correction safety net for eq/in filters against them ────
+
+def test_build_catalog_includes_sample_values_for_categorical_dimensions(models):
+    catalog = nlq.build_catalog(models, ["clinical_ops_recruitment"])
+    recruitment = catalog[0]
+    therapeutic_area = next(d for d in recruitment.dimensions if d["name"] == "therapeutic_area")
+    assert "Cardiology" in therapeutic_area["sample_values"]
+
+
+def test_build_catalog_omits_sample_values_for_time_dimensions(models):
+    catalog = nlq.build_catalog(models, ["clinical_ops_recruitment"])
+    recruitment = catalog[0]
+    event_date = next(d for d in recruitment.dimensions if d["name"] == "event_date")
+    assert "sample_values" not in event_date
+
+
+def test_resolve_corrects_categorical_filter_casing_for_eq(models):
+    """The exact bug reported: 'cardiology trials' filtered as 'eq' against
+    the stored 'Cardiology' must not silently match nothing."""
+    translator = FakeTranslator([
+        RawToolCall("propose_query", {
+            "model": "clinical_ops_recruitment", "dimensions": [], "measures": ["randomised_actual"],
+            "filters": [{"field": "therapeutic_area", "op": "eq", "value": "cardiology"}],
+        }),
+    ])
+    decision = nlq.resolve(
+        "randomised patients for cardiology trials",
+        nlq.build_catalog(models, ["clinical_ops_recruitment"]), [], models, translator,
+        scope=["clinical_ops_recruitment"],
+    )
+    assert isinstance(decision, nlq.ProposeQuery)
+    assert decision.filters[0]["value"] == "Cardiology"
+
+
+def test_resolve_corrects_categorical_filter_casing_for_in(models):
+    translator = FakeTranslator([
+        RawToolCall("propose_query", {
+            "model": "clinical_ops_recruitment", "dimensions": [], "measures": ["randomised_actual"],
+            "filters": [{"field": "therapeutic_area", "op": "in", "values": ["cardiology", "ONCOLOGY"]}],
+        }),
+    ])
+    decision = nlq.resolve(
+        "randomised patients for cardiology or oncology trials",
+        nlq.build_catalog(models, ["clinical_ops_recruitment"]), [], models, translator,
+        scope=["clinical_ops_recruitment"],
+    )
+    assert isinstance(decision, nlq.ProposeQuery)
+    assert decision.filters[0]["values"] == ["Cardiology", "Oncology"]
+
+
+def test_resolve_leaves_unmatched_categorical_value_untouched(models):
+    """No case-insensitive match anywhere in the real values — the filter's
+    value passes through unchanged rather than being invented."""
+    translator = FakeTranslator([
+        RawToolCall("propose_query", {
+            "model": "clinical_ops_recruitment", "dimensions": [], "measures": ["randomised_actual"],
+            "filters": [{"field": "therapeutic_area", "op": "eq", "value": "not_a_real_area"}],
+        }),
+    ])
+    decision = nlq.resolve(
+        "bogus", nlq.build_catalog(models, ["clinical_ops_recruitment"]), [], models, translator,
+        scope=["clinical_ops_recruitment"],
+    )
+    assert isinstance(decision, nlq.ProposeQuery)
+    assert decision.filters[0]["value"] == "not_a_real_area"
+
+
 def test_resolve_rejects_invalid_filter_op(models):
     """The exact bug reported: an LLM proposing '=' instead of 'eq' must be
     caught here as a clean Decline, not fall through to engine.run_query."""

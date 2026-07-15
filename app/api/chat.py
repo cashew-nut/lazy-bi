@@ -151,6 +151,7 @@ def _prior_turns(conv: dict) -> list[PriorTurn]:
                 model=rq.get("model"), dimensions=rq.get("dimensions", []),
                 measures=rq.get("measures", []), filters=rq.get("filters", []),
                 sort=rq.get("sort"), limit=rq.get("limit"),
+                inline_measures=rq.get("inline_measures", []),
             ))
     return turns[-_PRIOR_CONTEXT_TURNS:]
 
@@ -192,6 +193,7 @@ def _resolved_query_dict(decision) -> dict:
         "model": decision.model, "dimensions": decision.dimensions,
         "measures": decision.measures, "filters": decision.filters,
         "sort": decision.sort, "limit": decision.limit,
+        "inline_measures": decision.inline_measures,
     }
 
 
