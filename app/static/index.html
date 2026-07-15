@@ -23,10 +23,11 @@
 </div>
 <div id="app" hidden>
   <header>
-    <div class="logo">CASH<b>_</b>INTELLIGENCE</div>
+    <div class="logo" id="logo">CASH<b>_</b>INTELLIGENCE</div>
     <div class="tagline">// lazy polars over s3 · semantic layer · night city build v1</div>
     <nav id="mode-nav">
-      <button data-mode="studio" class="on">STUDIO</button>
+      <button data-mode="home">HOME</button>
+      <button data-mode="studio">STUDIO</button>
       <button data-mode="modelling">MODELLING</button>
       <button data-mode="portal">PORTAL</button>
       <button data-mode="chat" id="chat-nav-btn" hidden>CHAT</button>
@@ -114,6 +115,24 @@
     </aside>
 
     <main>
+      <div id="home-view" class="chart-card" hidden>
+        <div class="home-body">
+          <div class="home-hero">
+            <div class="home-kicker">// operator console</div>
+            <h1 id="home-greeting" class="home-greeting">Where to?</h1>
+          </div>
+          <div id="home-cards" class="home-cards"></div>
+          <div id="home-admin" class="home-admin" hidden>
+            <div class="sec-title">Admin shortcuts</div>
+            <div id="home-admin-cards" class="home-admin-cards"></div>
+          </div>
+          <div class="home-models">
+            <div class="sec-title">Semantic models <span id="home-models-count" class="home-models-count"></span></div>
+            <div id="home-models-list" class="home-models-list"></div>
+          </div>
+        </div>
+      </div>
+
       <div id="builder-view" class="chart-card">
         <div class="chart-head">
           <input id="visual-name" placeholder="untitled_visual" spellcheck="false">

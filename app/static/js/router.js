@@ -13,6 +13,7 @@ const seg = (pathname) => pathname.split("/").filter(Boolean).map(decodeURICompo
 const enc = (s) => encodeURIComponent(s);
 
 export const paths = {
+  home: () => "/",
   studio: () => "/studio",
   studioModel: (name) => `/studio/model/${enc(name)}`,
   studioVisual: (id) => `/studio/visual/${id}`,
@@ -35,7 +36,7 @@ export const paths = {
 };
 
 const MODE_PATH = {
-  studio: paths.studio, modelling: paths.modelling, portal: paths.portal,
+  home: paths.home, studio: paths.studio, modelling: paths.modelling, portal: paths.portal,
   chat: paths.chat, account: paths.account,
 };
 export const pathForMode = (mode) => (MODE_PATH[mode] || paths.studio)();
@@ -95,12 +96,15 @@ async function resolveChat(rest) {
   return hooks.openConversation && hooks.openConversation(+rest[0]);
 }
 
-const FALLBACK = { studio: paths.studio, modelling: paths.modelling, portal: paths.portal, chat: paths.chat };
+const FALLBACK = { home: paths.home, studio: paths.studio, modelling: paths.modelling, portal: paths.portal, chat: paths.chat };
 
 async function resolveRoute(pathname) {
-  const [mod, ...rest] = seg(pathname === "/" ? "/studio" : pathname);
+  const [mod, ...rest] = seg(pathname === "/" ? "/home" : pathname);
   try {
     switch (mod) {
+      case "home":
+        showView("home");
+        return hooks.renderHome && hooks.renderHome();
       case "studio": return await resolveStudio(rest);
       case "modelling": return await resolveModelling(rest);
       case "portal": return await resolvePortal(rest);
@@ -112,7 +116,7 @@ async function resolveRoute(pathname) {
     }
   } catch (err) {
     console.warn("[router] " + pathname + " -> " + err.message);
-    const fallback = (FALLBACK[mod] || paths.studio)();
+    const fallback = (FALLBACK[mod] || paths.home)();
     history.replaceState(null, "", fallback);
     await resolveRoute(fallback);
   }
@@ -140,7 +144,5 @@ export function setPath(path, { replace = false } = {}) {
 
 export async function initRouter() {
   window.addEventListener("popstate", () => resolveRoute(location.pathname));
-  const initial = location.pathname === "/" ? paths.studio() : location.pathname;
-  if (initial !== location.pathname) history.replaceState(null, "", initial);
-  await resolveRoute(initial);
+  await resolveRoute(location.pathname);
 }
