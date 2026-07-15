@@ -1,7 +1,7 @@
-/* Home: the operator console shown at "/" — a mode picker (studio /
-   modelling / portal / chat), admin shortcuts, and a glance at the
-   registered semantic models. Pure presentation; router.js drives it via
-   hooks.renderHome once showView("home") has unhidden #home-view. */
+/* Home: the operator console shown at "/" — a numbered destination index
+   (studio / modelling / portal / chat), admin shortcuts, and a glance at
+   the registered semantic models. Pure presentation; router.js drives it
+   via hooks.renderHome once showView("home") has unhidden #home-view. */
 "use strict";
 
 import { isAdmin, user } from "./auth.js";
@@ -17,41 +17,39 @@ const MODES = [
   { mode: "chat", icon: "✦", label: "CHAT", desc: "Ask questions in plain language", path: paths.chat },
 ];
 
+const idx = (n) => String(n).padStart(2, "0");
+
 export function renderHome() {
   const u = user();
   const first = (u?.display_name || "").trim().split(/\s+/)[0] || "operator";
-  $("#home-greeting").textContent = `Where to, ${first}?`;
+  $("#home-greeting").textContent = `where to, ${first.toLowerCase()}?`;
 
-  const cards = $("#home-cards");
-  cards.innerHTML = "";
-  for (const m of MODES) {
-    if (m.mode === "chat" && !isChatEnabled()) continue;
-    const card = el("button", { class: `home-card ${m.mode}`, type: "button" },
-      el("div", { class: "ic" }, m.icon),
-      el("div", { class: "nm" }, m.label),
-      el("div", { class: "desc" }, m.desc));
-    card.addEventListener("click", () => navigate(m.path()));
-    cards.append(card);
-  }
+  const rows = $("#home-cards");
+  rows.innerHTML = "";
+  const visible = MODES.filter((m) => m.mode !== "chat" || isChatEnabled());
+  visible.forEach((m, i) => {
+    const row = el("button", { class: `home-row ${m.mode}`, type: "button" },
+      el("span", { class: "idx" }, idx(i)),
+      el("span", { class: "ic" }, m.icon),
+      el("span", { class: "body" },
+        el("span", { class: "nm" }, m.label),
+        el("span", { class: "desc" }, m.desc)));
+    row.addEventListener("click", () => navigate(m.path()));
+    rows.append(row);
+  });
 
   const adminPanel = $("#home-admin");
   adminPanel.hidden = !isAdmin();
   if (isAdmin()) {
-    const adminCards = $("#home-admin-cards");
-    adminCards.innerHTML = "";
-    const manageUsers = el("button", { class: "home-admin-card", type: "button" },
-      el("div", { class: "ic" }, "⚑"),
-      el("div", {},
-        el("div", { class: "nm" }, "MANAGE USERS"),
-        el("div", { class: "desc" }, "Roles, tokens & account access")));
+    const adminRow = $("#home-admin-cards");
+    adminRow.innerHTML = "";
+    const manageUsers = el("button", { class: "home-admin-chip", type: "button" },
+      el("span", { class: "ic" }, "⚑"), "manage users");
     manageUsers.addEventListener("click", () => navigate(paths.account()));
-    const modelRegistry = el("button", { class: "home-admin-card", type: "button" },
-      el("div", { class: "ic" }, "⌁"),
-      el("div", {},
-        el("div", { class: "nm" }, "MODEL REGISTRY"),
-        el("div", { class: "desc" }, "Author fact & common dimension models")));
+    const modelRegistry = el("button", { class: "home-admin-chip", type: "button" },
+      el("span", { class: "ic" }, "⌁"), "model registry");
     modelRegistry.addEventListener("click", () => navigate(paths.modelling()));
-    adminCards.append(manageUsers, modelRegistry);
+    adminRow.append(manageUsers, modelRegistry);
   }
 
   const list = $("#home-models-list");
@@ -60,15 +58,16 @@ export function renderHome() {
     ? `${state.models.length} model${state.models.length === 1 ? "" : "s"}`
     : "";
   for (const m of state.models) {
-    const chip = el("div", { class: "home-model-chip" },
-      el("span", { class: "nm" }, m.label || m.name),
-      el("span", { class: "fmt" }, m.format),
-      el("span", { class: "meta" }, `${m.dimensions.length} dim · ${m.measures.length} msr`));
-    chip.addEventListener("click", () => navigate(paths.studioModel(m.name)));
-    list.append(chip);
+    const row = el("tr", {},
+      el("td", {}, m.label || m.name),
+      el("td", { class: "fmt" }, m.format),
+      el("td", { class: "num" }, String(m.dimensions.length)),
+      el("td", { class: "num" }, String(m.measures.length)));
+    row.addEventListener("click", () => navigate(paths.studioModel(m.name)));
+    list.append(row);
   }
   if (!state.models.length) {
-    list.append(el("div", { class: "empty-note" }, "no semantic models found"));
+    list.append(el("tr", {}, el("td", { class: "empty-note", colspan: "4" }, "no semantic models found")));
   }
 }
 hooks.renderHome = renderHome;

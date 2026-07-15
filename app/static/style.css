@@ -450,57 +450,78 @@ table.data tr:hover td { background: rgba(0, 229, 255, 0.04); }
 #mode-nav button.on { color: var(--bg); background: var(--neon); font-weight: 700; }
 body[data-mode="home"] aside, body[data-mode="modelling"] aside, body[data-mode="portal"] aside, body[data-mode="chat"] aside { display: none; }
 
-/* ── home: operator console (mode picker + admin shortcuts + models) ── */
+/* Hallmark · macrostructure: Index-First · redesign of the home view.
+ * The operator console is a destination index, not a marketing hero — this
+ * drops the centered-eyebrow-over-heading + 4-up icon-card-grid shape
+ * (generic AI tells: eyebrow-over-heading, icon-tile cards, shadow-glow-on-
+ * dark hover) for a left-set terminal prompt + a numbered, hairline-ruled
+ * row list. Every colour still comes from the app's own :root tokens above
+ * — this is a structural redesign, not a re-theme. */
 .logo { cursor: pointer; }
 .home-body {
-  flex: 1; min-height: 0; overflow-y: auto; padding: 44px 32px 40px;
-  display: flex; flex-direction: column; align-items: center; gap: 32px;
+  flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden;
+  padding: 36px 40px 40px; max-width: 860px;
 }
-.home-kicker { color: var(--ink-3); letter-spacing: 2px; font-size: 11px; text-transform: uppercase; text-align: center; margin-bottom: 8px; }
-.home-greeting { font-size: 26px; letter-spacing: 1px; color: var(--ink); text-align: center; margin: 0; }
-.home-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; width: 100%; max-width: 1080px; }
-.home-card, .home-admin-card {
-  display: flex; text-align: left; cursor: pointer; color: inherit;
-  border: 1px solid var(--line); border-radius: 6px;
-  background: linear-gradient(180deg, #0d1422, #0a0e17);
-  font-family: var(--mono); transition: border-color 0.15s, box-shadow 0.15s;
+.home-prompt { margin: 0 0 26px; font-size: 15px; letter-spacing: 0.5px; color: var(--ink); }
+.home-prompt-glyph { color: var(--neon); margin-right: 8px; text-shadow: 0 0 6px var(--neon-dim); }
+.home-cursor {
+  display: inline-block; margin-left: 2px; color: var(--neon);
+  animation: home-blink 1.1s steps(1) infinite;
 }
-.home-card { flex-direction: column; padding: 20px 18px; }
-.home-card .ic { font-size: 24px; }
-.home-card .nm { font-size: 13px; letter-spacing: 2px; color: var(--ink); margin-top: 14px; }
-.home-card .desc { font-size: 11px; color: var(--ink-2); margin-top: 6px; line-height: 1.5; }
-.home-card.studio .ic { color: var(--neon); text-shadow: 0 0 10px rgba(0, 229, 255, 0.4); }
-.home-card.studio:hover { border-color: var(--neon); box-shadow: 0 0 24px rgba(0, 229, 255, 0.16); }
-.home-card.modelling .ic { color: var(--pink); text-shadow: 0 0 10px rgba(255, 46, 210, 0.4); }
-.home-card.modelling:hover { border-color: var(--pink); box-shadow: 0 0 24px rgba(255, 46, 210, 0.16); }
-.home-card.portal .ic { color: #2bd97c; text-shadow: 0 0 10px rgba(43, 217, 124, 0.4); }
-.home-card.portal:hover { border-color: #2bd97c; box-shadow: 0 0 24px rgba(43, 217, 124, 0.16); }
-.home-card.chat .ic { color: #e8b339; text-shadow: 0 0 10px rgba(232, 179, 57, 0.4); }
-.home-card.chat:hover { border-color: #e8b339; box-shadow: 0 0 24px rgba(232, 179, 57, 0.16); }
-.home-admin { width: 100%; max-width: 1080px; }
-.home-admin-cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin-top: 10px; }
-.home-admin-card { align-items: center; gap: 12px; padding: 16px 18px; }
-.home-admin-card .ic { flex: none; font-size: 20px; color: var(--pink); text-shadow: 0 0 10px rgba(255, 46, 210, 0.4); }
-.home-admin-card .nm { font-size: 12px; letter-spacing: 2px; color: var(--ink); }
-.home-admin-card .desc { font-size: 11px; color: var(--ink-2); margin-top: 4px; }
-.home-admin-card:hover { border-color: var(--pink); box-shadow: 0 0 24px rgba(255, 46, 210, 0.16); }
-.home-models {
-  width: 100%; max-width: 1080px; border: 1px solid var(--line); border-radius: 6px;
-  background: rgba(13, 20, 34, 0.85); padding: 14px 18px 16px;
+@media (prefers-reduced-motion: reduce) { .home-cursor { animation: none; } }
+@keyframes home-blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+
+.home-index { display: flex; flex-direction: column; border-top: 1px solid var(--line); }
+.home-row {
+  display: grid; grid-template-columns: 26px 20px minmax(0, 1fr); gap: 14px;
+  align-items: baseline; width: 100%; text-align: left; cursor: pointer;
+  background: transparent; border: none; border-bottom: 1px solid var(--line);
+  color: inherit; font-family: var(--mono); padding: 14px 8px 14px 10px;
+  box-shadow: inset 3px 0 0 transparent;
+  transition: background-color 0.12s;
 }
-.home-models-count { color: var(--ink-3); font-size: 10px; letter-spacing: 1px; text-transform: none; margin-left: 8px; }
-.home-models-list { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
-.home-model-chip {
-  display: flex; align-items: baseline; gap: 8px; cursor: pointer;
-  border: 1px solid var(--line); border-radius: 3px; padding: 6px 10px;
+.home-row .idx { font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.home-row .ic { font-size: 15px; line-height: 1.3; color: var(--ink-3); transition: color 0.12s; }
+.home-row .body { display: flex; flex-wrap: wrap; column-gap: 16px; row-gap: 2px; align-items: baseline; min-width: 0; }
+.home-row .nm { font-size: 13px; letter-spacing: 2px; color: var(--ink); white-space: nowrap; }
+.home-row .desc { font-size: 11.5px; color: var(--ink-2); }
+.home-row:hover, .home-row:focus-visible { background: rgba(255, 255, 255, 0.025); outline: none; }
+.home-row.studio:hover, .home-row.studio:focus-visible { box-shadow: inset 3px 0 0 var(--neon); }
+.home-row.studio:hover .ic, .home-row.studio:focus-visible .ic { color: var(--neon); }
+.home-row.modelling:hover, .home-row.modelling:focus-visible { box-shadow: inset 3px 0 0 var(--pink); }
+.home-row.modelling:hover .ic, .home-row.modelling:focus-visible .ic { color: var(--pink); }
+.home-row.portal:hover, .home-row.portal:focus-visible { box-shadow: inset 3px 0 0 #2bd97c; }
+.home-row.portal:hover .ic, .home-row.portal:focus-visible .ic { color: #2bd97c; }
+.home-row.chat:hover, .home-row.chat:focus-visible { box-shadow: inset 3px 0 0 #e8b339; }
+.home-row.chat:hover .ic, .home-row.chat:focus-visible .ic { color: #e8b339; }
+
+.home-admin { margin-top: 32px; }
+.home-admin-label { font-size: 10px; letter-spacing: 2.5px; color: var(--pink); text-transform: uppercase; margin-bottom: 8px; }
+.home-admin-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.home-admin-chip {
+  display: flex; align-items: baseline; gap: 7px; cursor: pointer; white-space: nowrap;
+  background: transparent; border: 1px solid var(--line); border-radius: 3px;
+  color: var(--ink-2); font-family: var(--mono); font-size: 11px; letter-spacing: 0.5px; padding: 7px 11px;
 }
-.home-model-chip:hover { border-color: var(--neon); }
-.home-model-chip .nm { color: var(--ink); font-size: 12px; letter-spacing: 0.5px; }
-.home-model-chip .fmt { font-size: 9px; color: var(--pink); border: 1px solid var(--line); padding: 1px 5px; border-radius: 2px; }
-.home-model-chip .meta { font-size: 10px; color: var(--ink-3); }
-@media (max-width: 900px) {
-  .home-cards { grid-template-columns: repeat(2, 1fr); }
-  .home-admin-cards { grid-template-columns: 1fr; }
+.home-admin-chip .ic { color: var(--pink); font-size: 12px; }
+.home-admin-chip:hover, .home-admin-chip:focus-visible { border-color: var(--pink); color: var(--ink); outline: none; }
+
+.home-status { margin-top: 44px; }
+.home-status-head {
+  display: flex; align-items: baseline; gap: 8px;
+  font-size: 10px; letter-spacing: 2.5px; color: var(--neon); text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.home-status-count { color: var(--ink-3); letter-spacing: 1px; text-transform: none; }
+.home-status-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 4px; }
+.home-status-scroll table.data { font-size: 11.5px; width: 100%; }
+.home-status-scroll table.data tbody tr { cursor: pointer; }
+.home-status-scroll table.data td.fmt { color: var(--pink); font-size: 10px; letter-spacing: 0.5px; }
+
+@media (max-width: 640px) {
+  .home-body { padding: 26px 18px 32px; }
+  .home-row { grid-template-columns: 22px 18px minmax(0, 1fr); gap: 10px; }
+  .home-row .body { flex-direction: column; }
 }
 
 /* ── portal ─────────────────────────────────────────── */
