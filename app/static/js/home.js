@@ -7,7 +7,6 @@
 import { isAdmin, user } from "./auth.js";
 import { isChatEnabled } from "./chat.js";
 import { $, el } from "./lib.js";
-import { startRain } from "./rain.js";
 import { navigate, paths } from "./router.js";
 import { hooks, state } from "./state.js";
 
@@ -70,7 +69,5 @@ export function renderHome() {
   if (!state.models.length) {
     list.append(el("tr", {}, el("td", { class: "empty-note", colspan: "4" }, "no semantic models found")));
   }
-
-  startRain();
 }
 hooks.renderHome = renderHome;
