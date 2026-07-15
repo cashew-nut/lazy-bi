@@ -458,20 +458,10 @@ body[data-mode="home"] aside, body[data-mode="modelling"] aside, body[data-mode=
  * row list. Every colour still comes from the app's own :root tokens above
  * — this is a structural redesign, not a re-theme. */
 .logo { cursor: pointer; }
-.home-layout { flex: 1; min-height: 0; display: flex; }
 .home-body {
-  flex: 1 1 auto; min-width: 0; overflow-y: auto; overflow-x: hidden;
+  flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden;
   padding: 36px 40px 40px; max-width: 860px;
 }
-/* the empty measure past 860px carries a slow digital-rain flourish instead
-   of dead space — purely decorative (aria-hidden, no content), hidden below
-   the width where it'd only be a cramped sliver. See rain.js. */
-.home-rain {
-  flex: 1; min-width: 0; position: relative; overflow: hidden;
-  border-left: 1px solid var(--line);
-}
-.home-rain canvas { position: absolute; inset: 0; display: block; }
-@media (max-width: 1099px) { .home-rain { display: none; } }
 .home-prompt { margin: 0 0 26px; font-size: 15px; letter-spacing: 0.5px; color: var(--ink); }
 .home-prompt-glyph { color: var(--neon); margin-right: 8px; text-shadow: 0 0 6px var(--neon-dim); }
 .home-cursor {

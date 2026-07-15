@@ -52,7 +52,6 @@ export function showView(view) {
   for (const v of ["home", "builder", "dashboard", "editor", "portal", "modelling", "modelform", "bundleform", "account", "chat"]) {
     $(`#${v}-view`).hidden = view !== v;
   }
-  if (view !== "home" && hooks.stopHomeRain) hooks.stopHomeRain();
   if (view !== "dashboard") { state.dash = null; state.tileCtxs = []; }
   const authoring = ["editor", "modelling", "modelform", "bundleform"];
   if (view === "builder" || authoring.includes(view)) state.portal = false;
