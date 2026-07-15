@@ -458,9 +458,14 @@ body[data-mode="home"] aside, body[data-mode="modelling"] aside, body[data-mode=
  * row list. Every colour still comes from the app's own :root tokens above
  * — this is a structural redesign, not a re-theme. */
 .logo { cursor: pointer; }
+/* the destination index reads best at a contained measure — cap and center
+   the card itself rather than stretching it full-bleed and then hunting for
+   something to put in the leftover space. Every other view stays edge-to-
+   edge; this is a home-view-only override. */
+#home-view { max-width: 980px; width: 100%; margin: 0 auto; }
 .home-body {
   flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden;
-  padding: 36px 40px 40px; max-width: 860px;
+  padding: 36px 40px 40px;
 }
 .home-prompt { margin: 0 0 26px; font-size: 15px; letter-spacing: 0.5px; color: var(--ink); }
 .home-prompt-glyph { color: var(--neon); margin-right: 8px; text-shadow: 0 0 6px var(--neon-dim); }
