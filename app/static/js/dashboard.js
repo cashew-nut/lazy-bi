@@ -535,6 +535,8 @@ export function openFocus(visual) {
   focus.filters = [];
   $("#focus-name").textContent = visual.name;
   $("#focus-tag").textContent = visual.model;
+  $("#focus-note").textContent = "ad-hoc filters — nothing here is saved";
+  $("#focus-filter-add").hidden = false;
   $("#focus-modal").hidden = false;
   renderFocusFilters();
   runFocus();
@@ -544,6 +546,25 @@ export function closeFocus() {
   focus.visual = null;
   $("#focus-modal").hidden = true;
   tooltipHide();
+}
+
+// static focus mode: expand an already-rendered ctx (e.g. chat's grounding
+// chart) into the shared modal at full size, read-only — there's no saved
+// visual/tileQuery behind it to re-run against, so the ad-hoc filter row
+// (which needs one) stays hidden here rather than sitting there inert
+export function openFocusStatic(name, tag, ctx) {
+  focus.visual = null;
+  focus.filters = [];
+  $("#focus-name").textContent = name;
+  $("#focus-tag").textContent = tag;
+  $("#focus-note").textContent = ctx.result ? `${ctx.result.row_count} rows · ${ctx.result.elapsed_ms}ms` : "";
+  $("#focus-filters").innerHTML = "";
+  $("#focus-filter-add").hidden = true;
+  $("#focus-meta").textContent = "";
+  $("#focus-modal").hidden = false;
+  const focusCtx = { ...ctx, container: $("#focus-chart"), legendBox: $("#focus-legend") };
+  focusCtx.rerender = () => renderViz(focusCtx);
+  renderViz(focusCtx);
 }
 
 async function runFocus() {
