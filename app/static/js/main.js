@@ -168,7 +168,7 @@ async function init() {
     // focus mode
     $("#focus-close").addEventListener("click", closeFocus);
     $("#focus-modal").addEventListener("click", (e) => { if (e.target.id === "focus-modal") closeFocus(); });
-    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && focus.visual) closeFocus(); });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#focus-modal").hidden) closeFocus(); });
     $("#focus-filter-add").addEventListener("click", () => {
       if (!focus.visual) return;
       const model = state.models.find((m) => m.name === focus.visual.model);

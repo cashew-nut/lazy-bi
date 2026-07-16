@@ -8,6 +8,7 @@
 "use strict";
 
 import { decideChart, renderViz } from "./charts/index.js";
+import { openFocusStatic } from "./dashboard.js";
 import { $, el, api, fmtMeasure } from "./lib.js";
 import { navigate, paths } from "./router.js";
 import { hooks, state, modelByName } from "./state.js";
@@ -263,12 +264,21 @@ function renderGrounding(msg) {
   const wrap = el("div", { class: "grounding-wrap" });
   const ctx = vizCtxFor(msg);
   if (ctx && decideChart(ctx) === "line") {
-    const legendBox = el("div", { class: "grounding-legend" });
-    const chartBox = el("div", { class: "grounding-chart" });
+    // reuse the same legend-box/chart-box classes the builder/dashboard/focus
+    // modal use, not just bespoke grounding-* ones — that's what styles the
+    // axis text and sizes the svg (style.css); without them the axis labels
+    // fall back to black UA defaults and the chart can spill into the table
+    const legendBox = el("div", { class: "grounding-legend legend-box" });
+    const chartBox = el("div", { class: "grounding-chart chart-box" });
     ctx.legendBox = legendBox;
     ctx.container = chartBox;
     ctx.rerender = () => renderViz(ctx);
-    wrap.append(legendBox, chartBox);
+    const expandBtn = el("button", {
+      class: "grounding-expand", title: "expand chart",
+      onclick: () => openFocusStatic(ctx.model.label || ctx.model.name, ctx.model.name, ctx),
+    }, "⤢");
+    const chartWrap = el("div", { class: "grounding-chart-wrap" }, expandBtn, chartBox);
+    wrap.append(legendBox, chartWrap);
     renderViz(ctx);
   }
   wrap.append(renderGroundingTable(msg.result));
