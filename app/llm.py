@@ -68,6 +68,7 @@ class PriorTurn:
     filters: list[dict]
     sort: dict | None = None
     limit: int | None = None
+    inline_measures: list[dict] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -149,6 +150,35 @@ _TOOLS = [
                     },
                 },
                 "measures": {"type": "array", "items": {"type": "string"}},
+                "inline_measures": {
+                    "type": "array",
+                    "description": (
+                        "Ad-hoc measures computed only for this query, for a calculation "
+                        "the catalog has no declared measure for (a running total, a "
+                        "period-over-period change/growth, etc.). Each must be a window "
+                        "expression — running_total(measure) or lag(measure[, periods]) — "
+                        "over one of the catalog's own declared measure names, never a raw "
+                        "column. Include the chosen name(s) in `measures` above to have "
+                        "them appear in the result."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "description": "a new name, not already a declared measure/dimension."},
+                            "expr": {
+                                "type": "string",
+                                "description": (
+                                    "e.g. running_total(revenue), lag(revenue), lag(revenue, 4), "
+                                    "or (revenue - lag(revenue)) / lag(revenue) for a % change. "
+                                    "Bare names must be declared measures of this query's model."
+                                ),
+                            },
+                            "label": {"type": "string"},
+                            "format": {"type": "string", "enum": ["number", "currency", "percent"]},
+                        },
+                        "required": ["name", "expr"],
+                    },
+                },
                 "filters": {
                     "type": "array",
                     "items": {
@@ -283,6 +313,17 @@ _SYSTEM_PROMPT = (
     "own declared `name` in propose_query — never a synonym string, never a "
     "formula you write or adapt yourself, and never a column referenced "
     "inside a formula (as a dimension, filter field, or otherwise).\n\n"
+    "A categorical dimension may list 'sample values' — real values stored "
+    "in that column. When an eq/ne/in/not_in filter targets it, always use "
+    "one of these real values, converted from the question's own wording to "
+    "match exactly (case included) — e.g. if the question says 'cardiology "
+    "trials' and the sample values show 'Cardiology', filter on 'Cardiology'; "
+    "if it says a country's ISO-2 code but the sample values are ISO-3 (or "
+    "vice versa, or full country names), convert to whichever form actually "
+    "appears. Never filter on the question's literal wording when it "
+    "doesn't match a real value. If nothing in the sample values plausibly "
+    "corresponds, prefer a case-insensitive `contains` filter over guessing "
+    "an exact value, or ask_clarification.\n\n"
     "Rules for a propose_query call (violating these makes the query fail):\n"
     f"- filters[].op must be exactly one of: {', '.join(_FILTER_OPS)} — never "
     "a symbol like '=' or '>', and never a SQL keyword.\n"
@@ -295,6 +336,19 @@ _SYSTEM_PROMPT = (
     f"- A time dimension's `grain` (when given) must be one of: {', '.join(_GRAINS)}.\n"
     "- sort.by must name one of the query's own dimensions or measures; "
     "sort.desc defaults to true (descending) when omitted.\n\n"
+    "If the question needs a calculation the catalog has no declared measure "
+    "for — a running total, a period-over-period change or growth rate, "
+    "etc. — define it yourself with propose_query's `inline_measures`: give "
+    "it a new name and an expr built from running_total(measure) and/or "
+    "lag(measure[, periods]) over one of the catalog's own declared measure "
+    "names (never a raw column, and never a synonym or formula string). "
+    "Plain arithmetic (+ - * /) is allowed around those, so e.g. a "
+    "quarter-over-quarter change is lag(revenue) and a % change is "
+    "(revenue - lag(revenue)) / lag(revenue). Then include the inline "
+    "measure's own name in `measures` so it appears in the result — the "
+    "sibling measure it references doesn't need to be listed separately, "
+    "it's pulled in automatically. Never invent a running total/lag over "
+    "something that isn't a declared measure.\n\n"
     "You must call exactly one tool: propose_query when the question maps "
     "unambiguously to the catalog, ask_clarification when it could "
     "reasonably map to more than one model/dimension/measure, "
@@ -312,6 +366,8 @@ def _catalog_text(catalog: list[ModelCatalogEntry]) -> str:
             line = f"  dimension: {d['name']} ({d['type']}) — {d.get('description', '')}"
             if d.get("synonyms"):
                 line += f" | also called: {', '.join(d['synonyms'])}"
+            if d.get("sample_values"):
+                line += f" | sample values: {', '.join(str(v) for v in d['sample_values'])}"
             lines.append(line)
         for meas in m.measures:
             line = f"  measure: {meas['name']} ({meas.get('label', '')}) — {meas.get('description', '')}"
@@ -331,10 +387,13 @@ def _prior_context_text(prior_context: list[PriorTurn]) -> str:
         return "(no prior turns in this conversation)"
     lines = []
     for t in prior_context:
-        lines.append(
+        line = (
             f"- Q: {t.question_text!r} -> model={t.model}, dimensions={t.dimensions}, "
             f"measures={t.measures}, filters={t.filters}"
         )
+        if t.inline_measures:
+            line += f", inline_measures={t.inline_measures}"
+        lines.append(line)
     return "\n".join(lines)
 
 

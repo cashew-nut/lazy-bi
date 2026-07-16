@@ -13,9 +13,9 @@ into an executed query.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterator, Union
+from typing import Iterator, Optional, Union
 
-from . import engine, semantic
+from . import engine, measure_dsl, semantic
 from .llm import ModelCatalogEntry, PriorTurn, RawToolCall, StreamEvent, Translator, TranslatorError
 
 __all__ = [
@@ -32,6 +32,7 @@ class ProposeQuery:
     filters: list[dict] = field(default_factory=list)
     sort: dict | None = None
     limit: int | None = None
+    inline_measures: list[dict] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,7 @@ class ShowQuery:
     filters: list[dict] = field(default_factory=list)
     sort: dict | None = None
     limit: int | None = None
+    inline_measures: list[dict] = field(default_factory=list)
 
 
 Decision = Union[ProposeQuery, AskClarification, Decline, ShowQuery]
@@ -77,14 +79,51 @@ def build_catalog(models: dict[str, semantic.Model], scope: list[str]) -> list[M
             name=model.name,
             label=model.label,
             description=model.description,
-            dimensions=[
-                {"name": d.name, "label": d.label, "type": d.type, "description": d.description,
-                 "synonyms": list(d.synonyms)}
-                for d in model.dimensions.values()
-            ],
+            dimensions=[_dimension_catalog_entry(model, d) for d in model.dimensions.values()],
             measures=[_measure_catalog_entry(m) for m in model.measures.values()],
         ))
     return entries
+
+
+# How many distinct real values a categorical dimension can have and still
+# get its "sample values" shown to the LLM (below) — high enough to cover a
+# genuinely closed vocabulary (statuses, categories, a full country list),
+# low enough to exclude a free-text/ID-shaped column mistakenly typed
+# categorical, and to keep the catalog's prompt size bounded either way.
+SAMPLE_VALUES_LIMIT = 200
+
+
+def _dimension_catalog_entry(model: semantic.Model, d: semantic.Dimension) -> dict:
+    entry = {"name": d.name, "label": d.label, "type": d.type, "description": d.description,
+             "synonyms": list(d.synonyms)}
+    sample_values = _dimension_sample_values(model, d)
+    if sample_values:
+        entry["sample_values"] = sample_values
+    return entry
+
+
+def _dimension_sample_values(model: semantic.Model, d: semantic.Dimension) -> Optional[list]:
+    """Real stored values for a categorical dimension, shown in the catalog
+    so the LLM can match a question's wording (a different case, code
+    system, or business phrasing) to what's actually on file instead of
+    guessing — the fix for filters silently matching nothing (e.g. 'eq' is
+    case-sensitive; asking for 'cardiology trials' against a column storing
+    'Cardiology' returns no rows with neither the casing nor the wording
+    corrected). None (omitted from the catalog) for a non-categorical or
+    spine dimension (see engine.dimension_values), an unreachable data
+    source, or a column whose real cardinality exceeds SAMPLE_VALUES_LIMIT —
+    building the catalog must never fail or hang just because one dimension's
+    source can't be scanned or is closer to free text than a real
+    vocabulary."""
+    if d.type != "categorical" or d.spine:
+        return None
+    try:
+        values = engine.dimension_values(model, d.name, limit=SAMPLE_VALUES_LIMIT + 1)
+    except Exception:
+        return None
+    if len(values) > SAMPLE_VALUES_LIMIT:
+        return None
+    return values
 
 
 def _measure_catalog_entry(m: semantic.Measure) -> dict:
@@ -116,8 +155,86 @@ def _dim_name(entry) -> str:
     return entry if isinstance(entry, str) else entry.get("name", "")
 
 
+_INLINE_MEASURE_FORMATS = {"number", "currency", "percent"}
+
+
+def _validate_inline_measures(raw: list, model: semantic.Model) -> tuple[dict[str, dict], Optional["Decline"]]:
+    """Chat-authored ad-hoc measures: each must be a window expression
+    (running_total()/lag() — see measure_dsl.is_window_expr) over one of the
+    model's own already-declared measures, never a raw column or another
+    inline measure — the same "never a raw column" invariant already
+    enforced for dimensions/filters, just extended to cover this new
+    capability. Returns {name: validated dict} plus None on success, or an
+    empty dict plus the Decline to return on the first problem found."""
+    validated: dict[str, dict] = {}
+    for entry in raw:
+        if not isinstance(entry, dict):
+            return {}, Decline("each inline measure must be an object with a name and an expr.")
+        name, expr = entry.get("name"), entry.get("expr")
+        if not name or not expr:
+            return {}, Decline("an inline measure needs both a name and an expr.")
+        if name in validated:
+            return {}, Decline(f"inline measure '{name}' is defined more than once.")
+        for already_declared in (model.dimension, model.measure):
+            try:
+                already_declared(name)
+            except semantic.ModelError:
+                continue
+            return {}, Decline(f"inline measure '{name}' can't reuse an already-declared name.")
+        fmt = entry.get("format")
+        if fmt is not None and fmt not in _INLINE_MEASURE_FORMATS:
+            return {}, Decline(f"inline measure '{name}': unsupported format '{fmt}'.")
+        try:
+            if not measure_dsl.is_window_expr(expr):
+                return {}, Decline(
+                    f"inline measure '{name}' must be a running_total()/lag() expression over "
+                    "a declared measure — anything else needs an authored model measure instead."
+                )
+            for dep in measure_dsl.referenced_names(expr):
+                model.measure(dep)
+            measure_dsl.compile_measure(expr, None, alias=name)
+        except (measure_dsl.MeasureCompileError, semantic.ModelError) as exc:
+            return {}, Decline(f"inline measure '{name}': {exc}")
+        validated[name] = {"name": name, "expr": expr, "label": entry.get("label"), "format": fmt}
+    return validated, None
+
+
+def _correct_categorical_filter_casing(
+    filters: list[dict], catalog: list[ModelCatalogEntry], model_name: str
+) -> list[dict]:
+    """Best-effort case correction for eq/ne/in/not_in filters against a
+    categorical dimension's real sample values (see
+    nlq._dimension_sample_values) — a safety net alongside llm.py's prompt
+    instruction, for when a proposed value doesn't exactly match a real
+    value but does case-insensitively (the reported bug: 'cardiology
+    trials' vs. the stored 'Cardiology' matching nothing at all under
+    case-sensitive 'eq'). Never invents a value that isn't actually on
+    file — a value with no case-insensitive match either way is left
+    untouched (contains/ask_clarification territory, not this)."""
+    entry = next((m for m in catalog if m.name == model_name), None)
+    if entry is None:
+        return filters
+    by_dim = {
+        d["name"]: {v.lower(): v for v in d["sample_values"] if isinstance(v, str)}
+        for d in entry.dimensions if d.get("sample_values")
+    }
+    corrected = []
+    for f in filters:
+        real = by_dim.get(f.get("field")) if f.get("op") in ("eq", "ne", "in", "not_in") else None
+        if not real:
+            corrected.append(f)
+            continue
+        f = dict(f)
+        if isinstance(f.get("value"), str):
+            f["value"] = real.get(f["value"].lower(), f["value"])
+        if isinstance(f.get("values"), list):
+            f["values"] = [real.get(v.lower(), v) if isinstance(v, str) else v for v in f["values"]]
+        corrected.append(f)
+    return corrected
+
+
 def _validate_propose_query(args: dict, models: dict[str, semantic.Model],
-                             scope: list[str]) -> ProposeQuery | Decline:
+                             scope: list[str], catalog: list[ModelCatalogEntry]) -> ProposeQuery | Decline:
     model_name = args.get("model")
     model = models.get(model_name)
     if model is None:
@@ -129,7 +246,11 @@ def _validate_propose_query(args: dict, models: dict[str, semantic.Model],
 
     dimensions = args.get("dimensions") or []
     measures = args.get("measures") or []
-    filters = args.get("filters") or []
+    filters = _correct_categorical_filter_casing(args.get("filters") or [], catalog, model_name)
+
+    inline_measures, inline_error = _validate_inline_measures(args.get("inline_measures") or [], model)
+    if inline_error:
+        return inline_error
 
     def bad(reason: str) -> Decline:
         return Decline(f"can't answer that from the declared '{model_name}' model: {reason}")
@@ -142,6 +263,8 @@ def _validate_propose_query(args: dict, models: dict[str, semantic.Model],
                 return bad(f"'{grain}' isn't a supported time grain "
                            f"(use one of {', '.join(semantic.TIME_GRAINS)})")
         for m in measures:
+            if m in inline_measures:
+                continue
             model.measure(m)
         for f in filters:
             model.dimension(f.get("field", ""))
@@ -169,6 +292,7 @@ def _validate_propose_query(args: dict, models: dict[str, semantic.Model],
     return ProposeQuery(
         model=model_name, dimensions=dimensions, measures=measures,
         filters=filters, sort=sort, limit=args.get("limit"),
+        inline_measures=list(inline_measures.values()),
     )
 
 
@@ -194,6 +318,7 @@ def _validate_show_last_query(prior_context: list[PriorTurn]) -> ShowQuery | Dec
     return ShowQuery(
         question_text=last.question_text, model=last.model, dimensions=last.dimensions,
         measures=last.measures, filters=last.filters, sort=last.sort, limit=last.limit,
+        inline_measures=last.inline_measures,
     )
 
 
@@ -215,7 +340,7 @@ def _dispatch(
     if raw.kind == "show_last_query":
         return _validate_show_last_query(prior_context)
     if raw.kind == "propose_query":
-        return _validate_propose_query(raw.args, models, scope)
+        return _validate_propose_query(raw.args, models, scope, catalog)
     return Decline(f"unrecognized response type '{raw.kind}'.")
 
 

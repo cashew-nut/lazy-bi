@@ -254,6 +254,62 @@ def test_ask_invalid_filter_op_declines_instead_of_raw_engine_error(viewer_clien
     assert res.json()["response"]["outcome"] == "declined"
 
 
+# ── inline measures execute through the real engine (running_total()/lag())
+
+def test_ask_with_inline_running_total_executes(viewer_client, fake_translator):
+    fake_translator.responses.append(RawToolCall("propose_query", {
+        "model": "sales", "dimensions": [{"name": "order_date", "grain": "1mo"}],
+        "measures": ["revenue", "running_revenue"],
+        "inline_measures": [{"name": "running_revenue", "expr": "running_total(revenue)"}],
+    }))
+    conv = viewer_client.post("/api/conversations", json={}).json()
+    res = viewer_client.post(f"/api/conversations/{conv['id']}/ask",
+                              json={"question": "running total of revenue by month"})
+    body = res.json()
+    assert body["response"]["outcome"] == "answered"
+    assert body["response"]["resolved_query"]["inline_measures"] == [
+        {"name": "running_revenue", "expr": "running_total(revenue)", "label": None, "format": None},
+    ]
+    columns = {c["name"] for c in body["response"]["result"]["columns"]}
+    assert {"revenue", "running_revenue"} <= columns
+    rows = body["response"]["result"]["rows"]
+    assert rows == sorted(rows, key=lambda r: r["order_date"])
+    running_total = 0.0
+    for row in rows:
+        running_total += row["revenue"]
+        assert row["running_revenue"] == pytest.approx(running_total)
+
+
+def test_ask_rejects_inline_measure_over_a_raw_column(viewer_client, fake_translator):
+    fake_translator.responses.append(RawToolCall("propose_query", {
+        "model": "sales", "dimensions": [], "measures": ["running_price"],
+        "inline_measures": [{"name": "running_price", "expr": "running_total(unit_price)"}],
+    }))
+    conv = viewer_client.post("/api/conversations", json={}).json()
+    res = viewer_client.post(f"/api/conversations/{conv['id']}/ask", json={"question": "running total of unit price"})
+    assert res.json()["response"]["outcome"] == "declined"
+
+
+# ── categorical "common sense": case-insensitive correction against real
+# stored values (the reported bug: 'cardiology trials' matching nothing
+# against the stored 'Cardiology' under case-sensitive 'eq') ───────────────
+
+def test_ask_corrects_categorical_filter_casing_and_finds_real_rows(viewer_client, fake_translator):
+    fake_translator.responses.append(RawToolCall("propose_query", {
+        "model": "clinical_ops_recruitment", "dimensions": [], "measures": ["randomised_actual"],
+        "filters": [{"field": "therapeutic_area", "op": "eq", "value": "cardiology"}],
+    }))
+    conv = viewer_client.post("/api/conversations", json={}).json()
+    res = viewer_client.post(f"/api/conversations/{conv['id']}/ask",
+                              json={"question": "randomised patients for cardiology trials"})
+    body = res.json()
+    assert body["response"]["resolved_query"]["filters"] == [
+        {"field": "therapeutic_area", "op": "eq", "value": "Cardiology"},
+    ]
+    assert body["response"]["outcome"] == "answered"
+    assert body["response"]["result"]["row_count"] > 0
+
+
 # ── POST .../ask/stream (SSE — same persisted outcome as .../ask, plus live
 # progress events) ──────────────────────────────────────────────────────────
 

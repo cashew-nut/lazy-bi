@@ -643,6 +643,30 @@ being mis-translated as a new, unanswerable business question. Conversations
 persist per-user (SQLite) and are strictly owner-scoped; asking a question
 requires only the **viewer** role, the same tier as the query builder.
 
+**Ad-hoc measures (`propose_query`'s `inline_measures`).** A question that
+needs a calculation nobody declared as a measure — a running total, a
+period-over-period change or growth rate — doesn't have to decline or wait
+for a model author. The assistant can define it itself, scoped to that one
+query, using the same safe measure DSL model authors use: `running_total
+(revenue)`, `lag(revenue)`, `lag(revenue, 4)`, or plain arithmetic around
+them (e.g. `(revenue - lag(revenue)) / lag(revenue)` for a % change). Every
+inline measure is re-validated exactly like everything else: it must be a
+window expression over one of the model's own already-declared measures —
+never a raw column, and never another inline measure — or the whole
+proposal declines.
+
+**Categorical "common sense."** A dimension's real stored values often
+don't match a question's wording exactly — different case (`cardiology` vs.
+the stored `Cardiology`), a different code system (ISO-2 vs. a column
+declared as ISO-3), or a paraphrase. The catalog includes up to 200 real
+sample values for each closed-vocabulary categorical dimension (omitted for
+a free-text/ID-shaped column whose distinct values exceed that, or where the
+data can't be reached), so the assistant can convert a question's wording to
+what's actually on file before filtering. As a safety net, an `eq`/`ne`/
+`in`/`not_in` filter's value is also case-insensitively corrected against
+those same sample values before the query runs, in case the model's own
+conversion falls short.
+
 **Off by default.** The whole feature — nav entry, API routes, everything —
 is disabled (`GET/POST /api/conversations*` return 503) unless
 `CI_LLM_API_KEY` is set. Set it (and optionally `CI_LLM_MODEL`, default
@@ -676,7 +700,14 @@ in a proposal (the existing re-validation rejects it), but it is a
 deliberate, documented widening of what reaches the third party. Framed
 measures (the rarer `frame:`-based ones) are exempt: their DSL fragment
 isn't self-contained without that frame's context, so only their name/
-description is sent, same as before. Once a proposal is validated and run,
+description is sent, same as before. The catalog also sends up to 200 of a
+categorical dimension's actual distinct stored values (omitted above that
+cardinality, or if its source can't be reached) — unlike everything else in
+the catalog, this is real row data, not schema text, sent so the assistant
+can match a question's wording (case, code system, phrasing) to what's
+genuinely on file; a dimension with more distinct values than that, or one
+typed `time`/`numeric`, never has its values sent this way. Once a proposal
+is validated and run,
 the resulting *result rows* (capped at `MAX_ROWS`, same cap the query
 builder uses) are also sent, so the assistant can generate the
 natural-language answer text. Nothing is sent to any third party unless

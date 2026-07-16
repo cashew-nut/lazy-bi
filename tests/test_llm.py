@@ -123,6 +123,53 @@ def test_system_prompt_explains_synonyms_and_requires_declared_name():
     assert "never a synonym string" in llm._SYSTEM_PROMPT
 
 
+# ── inline measures (chat-authored running_total()/lag()) ─────────────────
+
+def test_propose_query_tool_declares_inline_measures():
+    schema = _tool("propose_query")["input_schema"]["properties"]["inline_measures"]
+    item_props = schema["items"]["properties"]
+    assert set(schema["items"]["required"]) == {"name", "expr"}
+    assert {"name", "expr", "label", "format"} <= set(item_props)
+
+
+def test_system_prompt_explains_inline_measures():
+    assert "running_total" in llm._SYSTEM_PROMPT
+    assert "lag(measure" in llm._SYSTEM_PROMPT
+    assert "inline_measures" in llm._SYSTEM_PROMPT
+
+
+# ── categorical sample values ("common sense" case/format matching) ───────
+
+def test_catalog_text_includes_sample_values_when_present():
+    catalog = [
+        llm.ModelCatalogEntry(
+            name="clinical_ops_recruitment", label="Recruitment Events", description="",
+            dimensions=[{"name": "therapeutic_area", "label": "Therapeutic Area", "type": "categorical",
+                         "description": "", "synonyms": [], "sample_values": ["Cardiology", "Oncology"]}],
+            measures=[],
+        ),
+    ]
+    text = llm._catalog_text(catalog)
+    assert "sample values: Cardiology, Oncology" in text
+
+
+def test_catalog_text_omits_sample_values_marker_when_absent():
+    catalog = [
+        llm.ModelCatalogEntry(
+            name="sales", label="Sales Orders", description="",
+            dimensions=[{"name": "order_date", "label": "Order Date", "type": "time",
+                         "description": "", "synonyms": []}],
+            measures=[],
+        ),
+    ]
+    text = llm._catalog_text(catalog)
+    assert "sample values" not in text
+
+
+def test_system_prompt_explains_sample_values():
+    assert "sample values" in llm._SYSTEM_PROMPT
+
+
 # ── propose_query's `model` field, constrained to the live catalog (the bug
 # this fixes: with no declared vocabulary at all, the LLM could omit `model`
 # — most visible under a single-model scope, where nlq.py's re-validation
