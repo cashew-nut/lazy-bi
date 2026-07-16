@@ -55,6 +55,7 @@ MATRIX = {
     ("POST", "/api/models/{name}/measures"): "author",
     ("PUT", "/api/models/{name}/measures/{measure_name}"): "author",
     ("DELETE", "/api/models/{name}/measures/{measure_name}"): "author",
+    ("POST", "/api/conversations/{conversation_id}/messages/{message_id}/pin"): "author",
     ("POST", "/api/visuals"): "author",
     ("PUT", "/api/visuals/{visual_id}"): "author",
     ("DELETE", "/api/visuals/{visual_id}"): "author",

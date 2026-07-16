@@ -419,3 +419,107 @@ def test_ask_stream_disabled_without_llm_key(viewer_client, monkeypatch):
     monkeypatch.setattr(chat_api.config, "LLM_ENABLED", False)
     conv_id = 1  # never reached — _require_enabled short-circuits first
     assert viewer_client.post(f"/api/conversations/{conv_id}/ask/stream", json={"question": "x"}).status_code == 503
+
+
+# ── POST .../messages/:id/pin — save an answered turn as a visual, optionally
+# landing it on a dashboard in the same call ────────────────────────────────
+
+def _ask_answered(client, translator):
+    """One answered turn in a fresh conversation; returns (conv, response_msg)."""
+    translator.responses.append(_propose_sales_by_category())
+    conv = client.post("/api/conversations", json={}).json()
+    body = client.post(f"/api/conversations/{conv['id']}/ask",
+                        json={"question": "revenue by category"}).json()
+    assert body["response"]["outcome"] == "answered"
+    return conv, body["response"]
+
+
+def test_pin_creates_a_visual_from_the_persisted_resolved_query(author_client, fake_translator):
+    conv, response = _ask_answered(author_client, fake_translator)
+
+    res = author_client.post(f"/api/conversations/{conv['id']}/messages/{response['id']}/pin", json={})
+    assert res.status_code == 201
+    out = res.json()
+    assert out["dashboard"] is None
+    visual = out["visual"]
+    assert visual["name"] == "revenue by category"  # defaults to the question that produced the answer
+    assert visual["model"] == "sales"
+    q = visual["spec"]["query"]
+    assert q["dimensions"] == response["resolved_query"]["dimensions"]
+    assert q["measures"] == response["resolved_query"]["measures"]
+    assert q["parameters"] == [] and q["parameter_values"] == {}
+    assert visual["spec"]["chartType"] == "auto"
+    # a real saved visual: listed alongside builder-made ones, and its query
+    # re-executes to exactly the rows that grounded the answer
+    assert visual["id"] in [v["id"] for v in author_client.get("/api/visuals").json()]
+    requery = author_client.post("/api/query", json=q).json()
+    assert requery["rows"] == response["result"]["rows"]
+
+
+def test_pin_to_existing_dashboard_appends_a_tile(author_client, fake_translator):
+    conv, response = _ask_answered(author_client, fake_translator)
+    dash = author_client.post("/api/dashboards", json={"name": "ops", "items": []}).json()
+
+    res = author_client.post(
+        f"/api/conversations/{conv['id']}/messages/{response['id']}/pin",
+        json={"name": "pinned revenue", "dashboard_id": dash["id"]})
+    assert res.status_code == 201
+    out = res.json()
+    assert out["visual"]["name"] == "pinned revenue"
+    assert out["dashboard"]["id"] == dash["id"]
+    reread = author_client.get(f"/api/dashboards/{dash['id']}").json()
+    assert {"visual_id": out["visual"]["id"]} in reread["items"]
+
+
+def test_pin_to_new_dashboard(author_client, fake_translator):
+    conv, response = _ask_answered(author_client, fake_translator)
+    res = author_client.post(
+        f"/api/conversations/{conv['id']}/messages/{response['id']}/pin",
+        json={"new_dashboard_name": "chat findings"})
+    assert res.status_code == 201
+    out = res.json()
+    assert out["dashboard"]["name"] == "chat findings"
+    assert out["dashboard"]["items"] == [{"visual_id": out["visual"]["id"]}]
+
+
+def test_pin_requires_author_role(viewer_client, fake_translator):
+    conv, response = _ask_answered(viewer_client, fake_translator)
+    res = viewer_client.post(f"/api/conversations/{conv['id']}/messages/{response['id']}/pin", json={})
+    assert res.status_code == 403
+
+
+def test_pin_is_owner_scoped(viewer_client, author_client, fake_translator):
+    """An author still can't pin from someone else's conversation — same
+    404-not-403 non-leak as every other conversation route (FR-013)."""
+    conv, response = _ask_answered(viewer_client, fake_translator)
+    res = author_client.post(f"/api/conversations/{conv['id']}/messages/{response['id']}/pin", json={})
+    assert res.status_code == 404
+
+
+def test_pin_rejects_unanswered_messages_and_unknown_message_ids(author_client, fake_translator):
+    fake_translator.responses.append(RawToolCall("decline", {"reason_text": "not in the semantic layer"}))
+    conv = author_client.post("/api/conversations", json={}).json()
+    declined = author_client.post(f"/api/conversations/{conv['id']}/ask",
+                                   json={"question": "raw sql please"}).json()["response"]
+    assert author_client.post(
+        f"/api/conversations/{conv['id']}/messages/{declined['id']}/pin", json={}).status_code == 400
+    assert author_client.post(
+        f"/api/conversations/{conv['id']}/messages/999999/pin", json={}).status_code == 404
+
+
+def test_pin_to_unknown_dashboard_creates_no_orphan_visual(author_client, fake_translator):
+    conv, response = _ask_answered(author_client, fake_translator)
+    before = [v["id"] for v in author_client.get("/api/visuals").json()]
+    res = author_client.post(
+        f"/api/conversations/{conv['id']}/messages/{response['id']}/pin",
+        json={"dashboard_id": 999999})
+    assert res.status_code == 404
+    assert [v["id"] for v in author_client.get("/api/visuals").json()] == before
+
+
+def test_pin_rejects_both_destinations_at_once(author_client, fake_translator):
+    conv, response = _ask_answered(author_client, fake_translator)
+    res = author_client.post(
+        f"/api/conversations/{conv['id']}/messages/{response['id']}/pin",
+        json={"dashboard_id": 1, "new_dashboard_name": "also this"})
+    assert res.status_code == 400

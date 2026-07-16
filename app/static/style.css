@@ -1028,6 +1028,23 @@ textarea.mm-expr { min-height: 76px; font-size: 13px; }
 .chat-msg .meta summary { cursor: pointer; user-select: none; letter-spacing: 0.5px; }
 .chat-msg .meta summary:hover { color: var(--ink-2); }
 .chat-msg .meta .meta-body { margin-top: 4px; }
+.pin-bar { margin-top: 8px; }
+.pin-btn {
+  background: none; border: 1px solid var(--line); border-radius: 3px;
+  color: var(--ink-3); cursor: pointer; font-family: var(--mono); font-size: 9px;
+  letter-spacing: 1.5px; padding: 3px 8px;
+}
+.pin-btn:hover { color: var(--neon); border-color: var(--neon); }
+.pin-form {
+  margin-top: 8px; padding: 8px 10px; border: 1px dashed var(--line); border-radius: 4px;
+  display: flex; flex-direction: column; gap: 6px; font-size: 11px;
+}
+.pin-form .field-label { margin: 0; }
+.pin-actions { display: flex; align-items: center; gap: 8px; }
+.pin-status { color: var(--pink); font-size: 10px; }
+.pin-done { flex-direction: row; align-items: baseline; gap: 4px; color: var(--ink-2); border-style: solid; }
+.pin-link { color: var(--neon); text-decoration: none; }
+.pin-link:hover { text-decoration: underline; }
 .live-thinking {
   font-size: 11px; color: var(--ink-3); font-style: italic; white-space: pre-wrap;
   max-height: 160px; overflow-y: auto;

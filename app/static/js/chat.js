@@ -7,6 +7,7 @@
    decides that once, at boot. */
 "use strict";
 
+import { canAuthor } from "./auth.js";
 import { decideChart, renderViz } from "./charts/index.js";
 import { openFocusStatic } from "./dashboard.js";
 import { $, el, api, fmtMeasure } from "./lib.js";
@@ -252,7 +253,92 @@ function renderMessage(msg) {
   if (msg.result && msg.result.rows && msg.result.rows.length) {
     bubble.append(renderGrounding(msg));
   }
+  if (canAuthor() && msg.id && msg.resolved_query
+      && (msg.outcome === "answered" || msg.outcome === "answered_empty")) {
+    bubble.append(renderPinBar(msg));
+  }
   return bubble;
+}
+
+// ── pinning: save an answered turn as a visual / dashboard tile ──────────
+// POST /api/conversations/:id/messages/:id/pin — the server rebuilds the
+// visual from the message's persisted resolved_query, so what lands in
+// Studio is exactly what grounded the answer. Author-gated like every other
+// visual/dashboard mutation, so viewers never see the button.
+
+function defaultPinName(msg) {
+  let question = "";
+  for (const m of chat.current.messages) {
+    if (m.id >= msg.id) break;
+    if (m.role === "user" && m.question_text) question = m.question_text;
+  }
+  return question.trim().slice(0, 60) || chat.current.title || "chat visual";
+}
+
+function renderPinBar(msg) {
+  const bar = el("div", { class: "pin-bar" });
+  const btn = el("button", { class: "pin-btn", title: "save this answer as a visual" }, "◈ PIN");
+  btn.addEventListener("click", async () => {
+    const open = bar.querySelector(".pin-form");
+    if (open) { open.remove(); return; }
+    btn.disabled = true;
+    try {
+      bar.append(await pinForm(msg));
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  bar.append(btn);
+  return bar;
+}
+
+async function pinForm(msg) {
+  const dashboards = await api("/api/dashboards");
+  const nameInput = el("input", { class: "pin-name", value: defaultPinName(msg), spellcheck: "false" });
+  const destSel = el("select", { class: "pin-dest", title: "where the pinned visual should land" },
+    el("option", { value: "" }, "visual only (no dashboard)"),
+    ...dashboards.map((d) => el("option", { value: `dash:${d.id}` }, `dashboard: ${d.name}`)),
+    el("option", { value: "new" }, "+ new dashboard…"));
+  const newDashInput = el("input", { class: "pin-new-dash", placeholder: "new dashboard name", spellcheck: "false" });
+  newDashInput.hidden = true;
+  destSel.addEventListener("change", () => { newDashInput.hidden = destSel.value !== "new"; });
+  const status = el("span", { class: "pin-status" });
+  const save = el("button", { class: "btn alt pin-save" }, "SAVE");
+  const form = el("div", { class: "pin-form" },
+    el("div", { class: "field-label" }, "PIN AS VISUAL"),
+    nameInput, destSel, newDashInput,
+    el("div", { class: "pin-actions" }, save, status));
+  save.addEventListener("click", async () => {
+    const body = { name: nameInput.value.trim() };
+    if (destSel.value.startsWith("dash:")) body.dashboard_id = +destSel.value.slice(5);
+    else if (destSel.value === "new") body.new_dashboard_name = newDashInput.value.trim() || nameInput.value.trim();
+    save.disabled = true;
+    status.textContent = "";
+    try {
+      const out = await api(
+        `/api/conversations/${chat.current.id}/messages/${msg.id}/pin`,
+        { method: "POST", body });
+      form.replaceWith(pinConfirmation(out));
+    } catch (err) {
+      status.textContent = "✕ " + err.message;
+      save.disabled = false;
+    }
+  });
+  return form;
+}
+
+function pinConfirmation(out) {
+  const visualLink = el("a", { class: "pin-link", href: paths.studioVisual(out.visual.id) },
+    `open visual “${out.visual.name}”`);
+  visualLink.addEventListener("click", (e) => { e.preventDefault(); navigate(paths.studioVisual(out.visual.id)); });
+  const box = el("div", { class: "pin-form pin-done" }, "◈ pinned — ", visualLink);
+  if (out.dashboard) {
+    const dashLink = el("a", { class: "pin-link", href: paths.studioDashboard(out.dashboard.id) },
+      `dashboard “${out.dashboard.name}”`);
+    dashLink.addEventListener("click", (e) => { e.preventDefault(); navigate(paths.studioDashboard(out.dashboard.id)); });
+    box.append(" · ", dashLink);
+  }
+  return box;
 }
 
 // A time-shaped result (resolved_query names a time dimension, 1-2 dims

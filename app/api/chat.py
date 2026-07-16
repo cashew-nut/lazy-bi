@@ -19,6 +19,7 @@ from .. import config, engine, nlq, semantic
 from ..auth import User, require_role
 from ..llm import AnthropicTranslator, PriorTurn, StreamEvent, TranslatorError
 from ..registry import registry
+from .visuals import _validate_visual_spec
 
 router = APIRouter(tags=["chat"])
 
@@ -44,6 +45,12 @@ class ConversationPatch(BaseModel):
 
 class AskIn(BaseModel):
     question: str
+
+
+class PinIn(BaseModel):
+    name: str = ""
+    dashboard_id: Optional[int] = None
+    new_dashboard_name: Optional[str] = None
 
 
 def _require_enabled() -> None:
@@ -265,6 +272,82 @@ def ask(conversation_id: int, body: AskIn, user: User = Depends(require_role("vi
         return _handle_translator_error(conversation_id, user, question_msg, body.question, exc)
 
     return _handle_decision(conversation_id, user, question_msg, body.question, decision)
+
+
+def _default_pin_name(conv: dict, message_id: int) -> str:
+    """The question that produced the pinned answer, as the visual's name —
+    the closest thing a chat turn has to a human-written title."""
+    question = ""
+    for m in conv["messages"]:
+        if m["id"] >= message_id:
+            break
+        if m["role"] == "user" and m["question_text"]:
+            question = m["question_text"]
+    return question.strip()[:60] or conv["title"] or "chat visual"
+
+
+@router.post("/conversations/{conversation_id}/messages/{message_id}/pin", status_code=201)
+def pin_message(conversation_id: int, message_id: int, body: PinIn,
+                user: User = Depends(require_role("author"))):
+    """Persist an answered turn as a saved visual — the message's stored
+    resolved_query becomes the visual's query verbatim, so Studio and
+    dashboards re-execute exactly what grounded the answer (never a client-
+    side reconstruction of it). Optionally lands the visual on a dashboard
+    in the same call: an existing one by id, or a brand-new one by name.
+    Author-gated like every other visual/dashboard mutation, even though
+    asking is viewer-tier — and unlike the other conversation routes the
+    enabled-check runs *after* the role dependency, so an unauthorized
+    caller gets 403 (not 503) even on an unconfigured deployment."""
+    _require_enabled()
+    if body.dashboard_id is not None and body.new_dashboard_name:
+        raise HTTPException(status_code=400, detail="pass dashboard_id or new_dashboard_name, not both")
+    conv = _get_owned(conversation_id, user)
+    msg = next((m for m in conv["messages"] if m["id"] == message_id), None)
+    if not msg:
+        raise HTTPException(status_code=404, detail="message not found")
+    if msg["outcome"] not in ("answered", "answered_empty") or not msg["resolved_query"]:
+        raise HTTPException(status_code=400, detail="only answered messages can be pinned")
+    rq = msg["resolved_query"]
+    if rq["model"] not in registry.models:
+        raise HTTPException(status_code=400, detail=f"model '{rq['model']}' is no longer defined")
+    # resolve the target dashboard before creating anything, so a bad id
+    # can't leave an orphaned visual behind
+    target = None
+    if body.dashboard_id is not None:
+        target = registry.store.get_dashboard(body.dashboard_id)
+        if not target:
+            raise HTTPException(status_code=404, detail="dashboard not found")
+    name = body.name.strip() or _default_pin_name(conv, message_id)
+    spec = {
+        "query": {
+            "model": rq["model"],
+            "dimensions": rq.get("dimensions") or [],
+            "measures": rq.get("measures") or [],
+            "inline_measures": rq.get("inline_measures") or [],
+            "filters": rq.get("filters") or [],
+            "sort": rq.get("sort"),
+            "limit": rq.get("limit"),
+            "parameters": [],
+            "parameter_values": {},
+        },
+        "chartType": "auto",
+    }
+    _validate_visual_spec(spec)
+    visual = registry.store.create(name, rq["model"], spec)
+    dashboard = None
+    if target:
+        dashboard = registry.store.update_dashboard(
+            target["id"], target["name"], target["items"] + [{"visual_id": visual["id"]}],
+            target["views"], target["active_view"])
+    elif body.new_dashboard_name:
+        dashboard = registry.store.create_dashboard(
+            body.new_dashboard_name.strip() or name, [{"visual_id": visual["id"]}], [], 0)
+    registry.auth_store.record_audit(
+        "chat_pin", user.username, actor_user_id=user.id,
+        target=f"conversation:{conversation_id} message:{message_id} visual:{visual['id']}"
+               + (f" dashboard:{dashboard['id']}" if dashboard else ""),
+    )
+    return {"visual": visual, "dashboard": dashboard}
 
 
 def _sse(event: str, data: dict) -> str:
