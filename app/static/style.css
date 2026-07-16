@@ -859,6 +859,7 @@ textarea.mf-expr:focus { border-color: var(--neon); box-shadow: 0 0 6px var(--ne
 .mf-locked-dims .field-label { margin: 0; flex-basis: 100%; }
 
 /* dimension rows: chip · label · type · synonyms · remove */
+.mf-dim-row { flex-wrap: wrap; }
 .mf-dim-row .chip { width: 240px; flex: none; }
 .mf-dim-row .syn-box { flex: 1.4; }
 .mf-dim-row select { width: 124px; flex: none; }
@@ -868,6 +869,16 @@ textarea.mf-expr:focus { border-color: var(--neon); box-shadow: 0 0 6px var(--ne
   font-family: var(--mono); padding: 5px 0;
 }
 .mf-dim-row .rm:hover { color: var(--bad); border-color: var(--bad); }
+.mf-dim-row.spine { background: rgba(255, 46, 210, 0.03); border-radius: 4px; padding: 4px 6px; margin: 2px 0; }
+/* the spine's own start/end selects render on their own line beneath the
+   chip/label/type/synonyms/remove row above */
+.mf-spine-fields {
+  flex-basis: 100%; display: flex; align-items: center; gap: 8px;
+  margin-top: 4px; padding-left: 4px;
+}
+.mf-spine-fields .field-label { margin: 0; flex: none; }
+.mf-spine-fields select { flex: 1; min-width: 0; }
+.mf-spine-fields .mf-colcount { flex: none; color: var(--pink); }
 
 /* ── shared modal overlay (measure editor, create chooser) ── */
 .modal-overlay {

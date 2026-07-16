@@ -11,7 +11,8 @@ import { refreshModels } from "./builder.js";
 import { openEditor } from "./editor.js";
 import {
   colsOf, columnImportPanel, datasetCards, dimFromColumn, loadDatasets,
-  manualPathRow, NAME_RE, note, pairRow, sectionRail, sourceSchema, synonymsInput, textField,
+  manualPathRow, NAME_RE, note, pairRow, sectionRail, sourceSchema, spineCreatePanel, spineFields,
+  synonymsInput, textField,
 } from "./formkit.js";
 import { $, api, el } from "./lib.js";
 import { navigate, paths, setPath } from "./router.js";
@@ -33,6 +34,7 @@ const form = {
   datasets: [],        // {name, path, format, dimensions:[spec dicts]}
   rels: [],            // {from, to, how, pairs:[{left,right}]} — flattened DatasetJoins
   importFor: null,     // dataset object whose column-import panel is open (transient)
+  spineFor: null,      // dataset object whose new-spine-dimension panel is open (transient)
 };
 let generated = null;  // last /api/dimensions/generate response
 let genToken = 0;
@@ -67,7 +69,7 @@ export async function openBundleForm(name) {
   if (!confirmLeaveBundleForm()) return;
   Object.assign(form, {
     editingName: name, section: "overview", dirty: false,
-    name: "", label: "", description: "", datasets: [], rels: [], importFor: null,
+    name: "", label: "", description: "", datasets: [], rels: [], importFor: null, spineFor: null,
   });
   generated = null;
   showView("bundleform");
@@ -361,21 +363,25 @@ function renderDatasetDims(box, d) {
   d.dimensions.forEach((dim, idx) => {
     const colName = dim.column || dim.name;
     const dtype = cols.find((c) => c.name === colName)?.dtype || "?";
-    const row = el("div", { class: "mf-dim-row on" });
+    const row = el("div", { class: "mf-dim-row on" + (dim.spine ? " spine" : "") });
     const rm = el("button", { class: "rm", title: "remove dimension" }, "✕");
     rm.addEventListener("click", () => { d.dimensions.splice(idx, 1); markDirty(); renderDatasetDims(box, d); });
     const label = el("input", { value: dim.label, placeholder: "Label", spellcheck: "false" });
     label.addEventListener("input", () => { dim.label = label.value; markDirty(); });
     const type = el("select", {}, ...["categorical", "time", "numeric"].map((t) => el("option", { value: t }, t)));
     type.value = dim.type;
+    type.disabled = !!dim.spine;   // the server requires type: time on a spine dimension
+    type.title = dim.spine ? "a time-spine dimension is always type: time" : "";
     type.addEventListener("change", () => { dim.type = type.value; markDirty(); });
     row.append(
       el("span", { class: "chip on" }, el("span", { class: "tick" }, "✓"),
-        el("span", { class: "lbl" }, colName), el("span", { class: "hint" }, dtype)),
+        el("span", { class: "lbl" }, colName),
+        el("span", { class: "hint" }, dim.spine ? "generated timeline" : dtype)),
       label, type,
       synonymsInput(dim.synonyms || (dim.synonyms = []), markDirty));
-    if (dim.spine || dim.geo) row.append(el("span", { class: "mf-colcount" }, dim.spine ? "⧗ spine" : "◎ geo"));
+    if (dim.geo) row.append(el("span", { class: "mf-colcount" }, "◎ geo"));
     row.append(rm);
+    if (dim.spine) row.append(spineFields(dim, cols, markDirty));
     rows.append(row);
   });
   box.append(rows);
@@ -391,6 +397,20 @@ function renderDatasetDims(box, d) {
       grid.append(chip);
     }
     box.append(grid);
+  }
+
+  if (cols.length) {
+    if (form.spineFor === d) {
+      box.append(spineCreatePanel(cols, {
+        onapply: (dim) => { d.dimensions.push(dim); form.spineFor = null; markDirty(); renderDatasetDims(box, d); },
+        ondismiss: () => { form.spineFor = null; renderDatasetDims(box, d); },
+      }));
+    } else {
+      const btn = el("button", { class: "ghost", style: "margin-top:6px" },
+        "+ create time-spine dimension (for point-in-time \"active\" measures)");
+      btn.addEventListener("click", () => { form.spineFor = d; renderDatasetDims(box, d); });
+      box.append(btn);
+    }
   }
 }
 

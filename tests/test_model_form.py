@@ -49,8 +49,10 @@ def test_spec_to_yaml_emits_differing_relationship_columns():
 
 
 def test_spec_preserves_spine_and_geo():
-    """Fields the form does not surface must still round-trip untouched, so a
-    form save never silently strips advanced yaml."""
+    """A hand-authored spine or geo dimension (spine now also has a guided
+    creation/edit UI; geo still does not) must still round-trip untouched
+    through model_to_spec/spec_to_yaml, so an unrelated form save never
+    silently strips it."""
     text = (
         "name: t\nsource: {format: csv, path: s3://b/x.csv}\n"
         "dimensions:\n"

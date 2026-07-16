@@ -14,7 +14,8 @@ import { DSL_FUNCTIONS, dslContext, dslItems, makeCompleter } from "./completion
 import { openEditor } from "./editor.js";
 import {
   autoGrow, colsOf, columnImportPanel, datasetCards, dimFromColumn, loadDatasets,
-  manualPathRow, NAME_RE, note, pairRow, sectionRail, sourceSchema, synonymsInput, textField,
+  manualPathRow, NAME_RE, note, pairRow, sectionRail, sourceSchema, spineCreatePanel, spineFields,
+  synonymsInput, textField,
 } from "./formkit.js";
 import { $, api, el } from "./lib.js";
 import { navigate, paths, setPath } from "./router.js";
@@ -43,6 +44,7 @@ const form = {
   // transient UI state (never part of the spec)
   pickingSource: false,     // source picker grid expanded while a source is already set
   importFor: null,          // "source" | relation object — whose column-import panel is open
+  addingSpine: false,       // the "new time-spine dimension" panel is open
 };
 let generated = null;       // last /api/models/generate response
 let genToken = 0;           // stale-response guard for the debounced generate
@@ -100,7 +102,7 @@ export async function openModelForm(name) {
     name: "", label: "", description: "", source: null, relations: [], imports: [],
     dimensions: [],
     measures: [{ name: "rows", label: "Row Count", expr: "count()", format: "number", description: "", synonyms: [] }],
-    pickingSource: false, importFor: null,
+    pickingSource: false, importFor: null, addingSpine: false,
   });
   generated = null;
   closeMeasureModal();
@@ -528,22 +530,25 @@ function renderDimSection(main) {
   form.dimensions.forEach((dim, idx) => {
     const colName = dim.column || dim.name;
     const dtype = cols.find((c) => c.name === colName)?.dtype || "?";
-    const row = el("div", { class: "mf-dim-row on" });
+    const row = el("div", { class: "mf-dim-row on" + (dim.spine ? " spine" : "") });
     const rm = el("button", { class: "rm", title: "remove dimension" }, "✕");
     rm.addEventListener("click", () => { form.dimensions.splice(idx, 1); markDirty(); render(); });
     const label = el("input", { value: dim.label, placeholder: "Label", spellcheck: "false" });
     label.addEventListener("input", () => { dim.label = label.value; markDirty(); });
     const type = el("select", {}, ...["categorical", "time", "numeric"].map((t) => el("option", { value: t }, t)));
     type.value = dim.type;
+    type.disabled = !!dim.spine;   // the server requires type: time on a spine dimension
+    type.title = dim.spine ? "a time-spine dimension is always type: time" : "";
     type.addEventListener("change", () => { dim.type = type.value; markDirty(); });
     row.append(
       el("span", { class: "chip on" }, el("span", { class: "tick" }, "✓"),
         el("span", { class: "lbl" }, colName),
-        el("span", { class: "hint" }, known.has(colName) ? dtype : "column not in scan")),
+        el("span", { class: "hint" }, dim.spine ? "generated timeline" : known.has(colName) ? dtype : "column not in scan")),
       label, type,
       synonymsInput(dim.synonyms || (dim.synonyms = []), markDirty));
-    if (dim.spine || dim.geo) row.append(el("span", { class: "mf-colcount" }, dim.spine ? "⧗ spine" : "◎ geo"));
+    if (dim.geo) row.append(el("span", { class: "mf-colcount" }, "◎ geo"));
     row.append(rm);
+    if (dim.spine) row.append(spineFields(dim, cols, markDirty));
     rows.append(row);
   });
   main.append(rows);
@@ -564,6 +569,20 @@ function renderDimSection(main) {
     main.append(grid);
   } else if (!cols.length) {
     main.append(note("no readable columns — set a reachable source in DATA first, or add dimensions via EDIT YAML"));
+  }
+
+  if (cols.length) {
+    main.append(el("div", { class: "sec-title", style: "margin-top:16px" }, "Time-spine dimension"));
+    if (form.addingSpine) {
+      main.append(spineCreatePanel(cols, {
+        onapply: (dim) => { form.dimensions.push(dim); form.addingSpine = false; markDirty(); render(); },
+        ondismiss: () => { form.addingSpine = false; render(); },
+      }));
+    } else {
+      const btn = el("button", { class: "ghost" }, "+ create time-spine dimension (for point-in-time \"active\" measures)");
+      btn.addEventListener("click", () => { form.addingSpine = true; render(); });
+      main.append(btn);
+    }
   }
 
   const importedNames = Object.keys(owners);

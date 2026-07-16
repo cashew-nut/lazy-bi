@@ -223,6 +223,65 @@ export function columnImportPanel(cols, taken, { verb = "dimension", onapply, on
   return panel;
 }
 
+// ── time-spine dimension (point-in-time "active" measures) ──
+// Not backed by one column: it's a generated timeline interval-joined
+// against a [start, end] column pair (engine.py's _spine_prepare/query) —
+// e.g. subscriptions.yaml's active_at, backing "active customers"/"MRR"
+// measures that mean "as of this point in time", not "on this exact row's
+// date". Distinct creation flow from a plain column tick since it needs two
+// columns, not one, and the server requires type: time on the result.
+export function spineCreatePanel(cols, { onapply, ondismiss }) {
+  const dateCols = cols.filter((c) => /date|time/i.test(c.dtype));
+  const pick = dateCols.length ? dateCols : cols;
+  const opt = (c) => el("option", { value: c.name }, `${c.name} · ${c.dtype}`);
+  const name = el("input", { placeholder: "active_at", spellcheck: "false" });
+  const label = el("input", { placeholder: "Active At", spellcheck: "false" });
+  const startSel = el("select", {}, el("option", { value: "" }, "— start column —"), ...pick.map(opt));
+  const endSel = el("select", {}, el("option", { value: "" }, "— end column —"), ...pick.map(opt));
+  const create = el("button", { class: "btn" }, "CREATE SPINE DIMENSION");
+  create.addEventListener("click", () => {
+    const n = name.value.trim();
+    if (!n || !startSel.value || !endSel.value) return;
+    onapply({
+      name: n, column: n, label: label.value.trim() || titleCase(n), type: "time",
+      description: "", geo: null, synonyms: [],
+      spine: { start: startSel.value, end: endSel.value },
+    });
+  });
+  const cancel = el("button", { class: "btn plain" }, "CANCEL");
+  cancel.addEventListener("click", ondismiss);
+  return el("div", { class: "mf-import-cols" },
+    el("div", { class: "mf-import-head" }, el("span", { class: "field-label" }, "NEW TIME-SPINE DIMENSION")),
+    note("a generated timeline, not a real column — every row counts in each bucket it's active for "
+      + "(the [start, end) interval; a null end means still active). Powers point-in-time \"active\" "
+      + "measures like active customers or MRR — see subscriptions.yaml for a worked example."),
+    el("div", { class: "mf-row3" },
+      el("div", { class: "mf-field" }, el("div", { class: "field-label" }, "NAME"), name),
+      el("div", { class: "mf-field" }, el("div", { class: "field-label" }, "LABEL"), label)),
+    el("div", { class: "mf-row3", style: "margin-top:8px" },
+      el("div", { class: "mf-field" }, el("div", { class: "field-label" }, "START COLUMN"), startSel),
+      el("div", { class: "mf-field" }, el("div", { class: "field-label" }, "END COLUMN (nullable = still active)"), endSel)),
+    el("div", { class: "mf-import-actions" }, create, cancel));
+}
+
+/* inline start/end column selects for an already-declared spine dimension —
+   the row-level counterpart of spineCreatePanel, for editing one in place */
+export function spineFields(dim, cols, onchange) {
+  const dateCols = cols.filter((c) => /date|time/i.test(c.dtype));
+  const pick = dateCols.length ? dateCols : cols;
+  const sel = (val, set) => {
+    const s = el("select", {}, ...pick.map((c) => el("option", { value: c.name }, c.name)));
+    if (val && !pick.some((c) => c.name === val)) s.append(el("option", { value: val }, val));
+    s.value = val;
+    s.addEventListener("change", () => { set(s.value); onchange(); });
+    return s;
+  };
+  return el("div", { class: "mf-spine-fields" },
+    el("span", { class: "mf-colcount" }, "⧗ spine"),
+    el("span", { class: "field-label" }, "START"), sel(dim.spine.start, (v) => { dim.spine.start = v; }),
+    el("span", { class: "field-label" }, "END"), sel(dim.spine.end, (v) => { dim.spine.end = v; }));
+}
+
 // ── auto-growing textarea (single-line look, grows with content) ──
 export function autoGrow(ta) {
   const fit = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight + 2, 220) + "px"; };
