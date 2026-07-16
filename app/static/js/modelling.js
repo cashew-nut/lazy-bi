@@ -2,14 +2,20 @@
    explorer mode). Left rail = manage fact models and common models (create /
    edit / open-in-builder); right = the datasets↔models overview (which bucket
    objects feed which models), carried over from the old explorer. All model
-   authoring lives here now — Studio only builds visuals. */
+   authoring lives here now — Studio only builds visuals. Creation goes
+   through a chooser: fact model (blank, or started from a common model) vs
+   common dimension model. */
 "use strict";
 
 import { $, api, el, fmtBytes } from "./lib.js";
+import { setModelSeed } from "./modelform.js";
 import { navigate, paths } from "./router.js";
 import { hooks, state } from "./state.js";
 
 const openInBuilder = (name) => navigate(paths.studioModel(name));
+
+// yaml keys stay `joins` for compatibility; the UI vocabulary is "relation"
+const roleLabel = (role) => role.replace(/^join: /, "relation: ");
 
 export async function loadModelling() {
   $("#modelling-side").innerHTML = "";
@@ -46,7 +52,7 @@ function renderSide(models, bundles, data) {
         el("button", { class: "mini-btn go", onclick: () => openInBuilder(m.name) }, "build ►")));
     box.append(card);
   }
-  box.append(el("button", { class: "ghost mk-new", onclick: () => navigate(paths.modellingNewModel()) }, "+ new model"));
+  box.append(el("button", { class: "ghost mk-new", onclick: () => openCreateChooser(bundles) }, "+ new fact model"));
 
   box.append(el("div", { class: "sec-title", style: "margin-top:16px" }, "Common Models"));
   if (!bundles.length) {
@@ -66,6 +72,67 @@ function renderSide(models, bundles, data) {
   box.append(el("button", { class: "ghost mk-new", onclick: () => navigate(paths.modellingNewBundle()) }, "+ new common model"));
 }
 
+// ── create chooser: fact model (blank / seeded) vs common dimension model ──
+
+function closeCreateChooser() {
+  $("#create-modal").hidden = true;
+  $("#create-modal").innerHTML = "";
+}
+
+export function openCreateChooser(bundles = state.bundles) {
+  const overlay = $("#create-modal");
+  overlay.innerHTML = "";
+
+  const close = el("button", { class: "btn" }, "✕ CLOSE");
+  close.addEventListener("click", closeCreateChooser);
+
+  const go = (path, seed = null) => {
+    setModelSeed(seed);
+    closeCreateChooser();
+    navigate(path);
+  };
+
+  const factStart = el("div", { class: "cc-start" },
+    el("span", { class: "field-label" }, "START FROM"));
+  const blank = el("button", { class: "chip" },
+    el("span", { class: "tick" }, "▢"), el("span", { class: "lbl" }, "blank"));
+  blank.addEventListener("click", () => go(paths.modellingNewModel()));
+  factStart.append(blank);
+  for (const b of bundles) {
+    const chip = el("button", { class: "chip", title: `import '${b.label}' from the start — its shared dimensions arrive ready to relate` },
+      el("span", { class: "tick" }, "◈"), el("span", { class: "lbl" }, b.label));
+    chip.addEventListener("click", () => go(paths.modellingNewModel(), b.name));
+    factStart.append(chip);
+  }
+
+  const fact = el("div", { class: "cc-option" },
+    el("div", { class: "cc-name" }, "FACT MODEL"),
+    el("div", { class: "cc-desc" }, "A dataset you measure — orders, shipments, spend. Declares dimensions "
+      + "and measures; queried from Studio, dashboards and Chat."),
+    factStart);
+
+  const mkCommon = el("button", { class: "btn alt" }, "+ CREATE COMMON MODEL");
+  mkCommon.addEventListener("click", () => go(paths.modellingNewBundle()));
+  const common = el("div", { class: "cc-option" },
+    el("div", { class: "cc-name" }, "COMMON DIMENSION MODEL"),
+    el("div", { class: "cc-desc" }, "Shared dimensions — geography, calendars, hierarchies — declared once "
+      + "and imported by any fact model. No measures; importers see its dimensions read-only."),
+    el("div", { class: "cc-start" }, mkCommon));
+
+  overlay.append(el("div", { class: "mm-card cc-card" },
+    el("div", { class: "chart-head" },
+      el("span", { class: "editor-file" }, "create"),
+      el("span", { style: "flex:1" }), close),
+    el("div", { class: "cc-body" }, fact, common)));
+  overlay.hidden = false;
+  overlay.onclick = (e) => { if (e.target === overlay) closeCreateChooser(); };
+}
+hooks.openCreateChooser = openCreateChooser;
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("#create-modal").hidden) closeCreateChooser();
+});
+
 // datasets↔models overview (carried over verbatim from the old explorer)
 function renderFiles(data) {
   const table = el("table", { class: "data" });
@@ -84,7 +151,7 @@ function renderFiles(data) {
       seen.add(key);
       const chip = el("span", {
         class: "model-chip" + (hit.role.startsWith("join") ? " join" : ""),
-        title: hit.role + " — open in builder",
+        title: roleLabel(hit.role) + " — open in builder",
       }, hit.model);
       chip.addEventListener("click", () => openInBuilder(hit.model));
       models.append(chip);
