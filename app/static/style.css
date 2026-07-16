@@ -77,7 +77,7 @@ aside section { margin-bottom: 18px; }
 }
 .sec-title::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, var(--neon-dim), transparent); }
 
-select, input[type="text"], input[type="number"], input[type="date"] {
+select, input:not([type]), input[type="text"], input[type="number"], input[type="date"] {
   width: 100%; background: var(--bg); color: var(--ink);
   border: 1px solid var(--line); border-radius: 3px;
   font-family: var(--mono); font-size: 12px; padding: 6px 8px;
@@ -801,6 +801,116 @@ button.ghost.mk-new { margin-top: 2px; }
   padding: 12px; font-size: 12px; line-height: 1.55; color: var(--ink-2);
   overflow: auto; max-height: 60vh; white-space: pre;
 }
+
+/* ── guided-form redesign: sections, live status, column import ── */
+.mf-step .num.bad { color: #e8b339; border-color: #e8b339; }
+.mf-step.on .num.bad { color: #e8b339; border-color: #e8b339; }
+.mf-live { font-size: 11px; letter-spacing: 0.5px; color: var(--ink-2); white-space: nowrap; }
+.mf-live .ok { color: #2bd97c; text-shadow: 0 0 6px rgba(43, 217, 124, 0.4); }
+.mf-live .err { color: var(--bad); }
+.mf-live .warn { color: #e8b339; }
+.mf-live .pending { color: var(--ink-3); }
+
+/* expression editors are textareas now: single-line look that grows */
+textarea.mf-expr {
+  width: 100%; resize: none; overflow: hidden; min-height: 32px;
+  background: var(--bg); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 3px;
+  font-family: var(--mono); font-size: 12.5px; line-height: 1.5;
+  padding: 7px 9px; outline: none;
+}
+textarea.mf-expr:focus { border-color: var(--neon); box-shadow: 0 0 6px var(--neon-dim); }
+.mf-syn-row { display: flex; align-items: baseline; gap: 10px; margin-top: 7px; }
+.mf-syn-row .field-label { margin: 0; flex: none; }
+
+/* synonyms chip editor */
+.syn-box { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; min-width: 0; flex: 1; }
+.syn-chip {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 10px;
+  border: 1px solid var(--neon-dim); color: var(--ink); background: rgba(0, 229, 255, 0.06);
+  border-radius: 3px; padding: 2px 6px; white-space: nowrap;
+}
+.syn-chip b { cursor: pointer; color: var(--ink-3); font-weight: 400; }
+.syn-chip b:hover { color: var(--bad); }
+.syn-input {
+  width: 110px; background: transparent; border: 1px dashed var(--line); border-radius: 3px;
+  color: var(--ink); font-family: var(--mono); font-size: 10px; padding: 3px 6px; outline: none;
+}
+.syn-input:focus { border-color: var(--neon); border-style: solid; }
+
+/* column import panel (import all / select the relevant columns) */
+.mf-import-cols {
+  border: 1px dashed var(--neon-dim); border-radius: 4px; padding: 10px;
+  margin-top: 10px; background: rgba(0, 229, 255, 0.03);
+}
+.mf-import-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.mf-import-head .field-label { margin: 0; color: var(--neon); }
+.mf-import-grid { display: flex; flex-wrap: wrap; gap: 5px; }
+.mf-import-grid .chip { flex: none; padding: 4px 8px; }
+.mf-import-actions { display: flex; gap: 8px; margin-top: 10px; }
+.mf-import-open { margin-top: 8px; }
+.chip.taken {
+  border-style: dashed; color: var(--ink-3); cursor: default; opacity: 0.8;
+  display: inline-flex; align-items: center; gap: 8px; padding: 4px 8px;
+  border: 1px dashed var(--line); border-radius: 3px; font-size: 12px;
+}
+.chip.taken .tick { color: var(--pink); }
+.mf-locked-dims { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; margin-top: 10px; }
+.mf-locked-dims .field-label { margin: 0; flex-basis: 100%; }
+
+/* dimension rows: chip · label · type · synonyms · remove */
+.mf-dim-row .chip { width: 240px; flex: none; }
+.mf-dim-row .syn-box { flex: 1.4; }
+.mf-dim-row select { width: 124px; flex: none; }
+.mf-dim-row .rm {
+  flex: none; width: 26px; background: transparent; color: var(--ink-3);
+  border: 1px solid var(--line); border-radius: 3px; cursor: pointer;
+  font-family: var(--mono); padding: 5px 0;
+}
+.mf-dim-row .rm:hover { color: var(--bad); border-color: var(--bad); }
+
+/* ── shared modal overlay (measure editor, create chooser) ── */
+.modal-overlay {
+  position: fixed; inset: 0; z-index: 700; display: flex; padding: 40px 60px;
+  background: rgba(3, 5, 9, 0.82); backdrop-filter: blur(2px);
+}
+.mm-card {
+  flex: 1; min-width: 0; max-height: 100%; display: flex; flex-direction: column;
+  border: 1px solid var(--neon); border-radius: 4px;
+  background: linear-gradient(180deg, #0c1220, #0a0e17);
+  box-shadow: 0 0 60px rgba(0, 229, 255, 0.15);
+}
+.mm-fields { display: flex; gap: 10px; padding: 12px 14px 0; }
+.mm-fields .mf-field { width: 190px; }
+.mm-fields .mf-field.grow { flex: 1; width: auto; }
+.mm-body { flex: 1; min-height: 0; display: flex; gap: 16px; padding: 12px 14px 14px; overflow: hidden; }
+.mm-editor { flex: 1; min-width: 0; overflow-y: auto; padding-right: 4px; }
+textarea.mm-expr { min-height: 76px; font-size: 13px; }
+.mm-ref {
+  width: 320px; flex: none; overflow-y: auto;
+  border-left: 1px solid var(--line); padding-left: 14px;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.mm-fn {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+  background: transparent; border: 1px solid var(--line); border-radius: 3px;
+  color: var(--ink-2); font-family: var(--mono); font-size: 11px; text-align: left;
+  padding: 4px 8px; cursor: pointer;
+}
+.mm-fn:hover { border-color: var(--neon); color: var(--ink); }
+.mm-fn .fn { color: var(--neon); white-space: nowrap; }
+.mm-fn .hint { color: var(--ink-3); font-size: 10px; text-align: right; }
+
+/* create chooser */
+.cc-card { max-width: 720px; margin: auto; flex: none; width: 100%; }
+.cc-body { display: flex; flex-direction: column; gap: 12px; padding: 14px; }
+.cc-option { border: 1px solid var(--line); border-radius: 4px; padding: 14px; background: var(--panel-2); }
+.cc-option:hover { border-color: var(--neon-dim); }
+.cc-name { color: var(--neon); letter-spacing: 2px; font-size: 12px; margin-bottom: 6px; }
+.cc-desc { color: var(--ink-2); font-size: 11.5px; line-height: 1.55; margin-bottom: 10px; }
+.cc-start { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cc-start .chip { flex: none; padding: 5px 10px; cursor: pointer; }
+.cc-start .field-label { margin: 0; }
 
 /* ── auth: login view + user badge (spec 011) ──────────────── */
 #login-view {

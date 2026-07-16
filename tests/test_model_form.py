@@ -293,10 +293,16 @@ def test_modelform_view_present(client):
 
 
 def test_new_model_opens_the_form_not_the_editor(client):
-    """+ MODEL routes (via the router) to the guided form, not straight to the
-    yaml editor; the raw yaml escape hatch stays reachable separately."""
+    """+ MODEL opens the create chooser, whose every path lands on a guided
+    form (fact model — blank or seeded from a common model — or common
+    model), never straight on the yaml editor; the raw yaml escape hatch
+    stays reachable separately."""
     main = client.get("/static/js/main.js").text
-    assert '$("#mk-new-model").addEventListener("click", () => navigate(paths.modellingNewModel()))' in main
+    assert '$("#mk-new-model").addEventListener("click", () => openCreateChooser())' in main
+    modelling_src = client.get("/static/js/modelling.js").text
+    assert "go(paths.modellingNewModel())" in modelling_src            # blank fact model
+    assert "go(paths.modellingNewModel(), b.name)" in modelling_src    # seeded from a common model
+    assert "go(paths.modellingNewBundle())" in modelling_src           # common dimension model
     router = client.get("/static/js/router.js").text
     assert 'modellingNewModel: () => "/modelling/model/new"' in router
     assert 'return hooks.openModelForm && hooks.openModelForm(isNew ? null : name);' in router

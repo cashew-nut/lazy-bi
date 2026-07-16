@@ -22,7 +22,7 @@ import "./home.js";
 import { $, api } from "./lib.js";
 import { initMeasureLab } from "./measurelab.js";
 import { attachModelForm } from "./modelform.js";
-import { loadModelling } from "./modelling.js";
+import { loadModelling, openCreateChooser } from "./modelling.js";
 // side-effect only: nothing here calls into the portal module directly
 // anymore (the router dispatches to it via hooks.openPortalFolder), but the
 // module still has to be imported somewhere for that registration to run
@@ -74,7 +74,7 @@ async function init() {
     attachEditor();   // input/keydown/completion/dataset-picker/revert/beforeunload
     attachModelForm();
     attachBundleForm();
-    $("#mk-new-model").addEventListener("click", () => navigate(paths.modellingNewModel()));
+    $("#mk-new-model").addEventListener("click", () => openCreateChooser());
     $("#mk-new-bundle").addEventListener("click", () => navigate(paths.modellingNewBundle()));
     $("#editor-save").addEventListener("click", saveEditor);
     $("#editor-delete").addEventListener("click", deleteEditorItem);

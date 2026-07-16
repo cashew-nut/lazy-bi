@@ -247,9 +247,8 @@
         </div>
         <div class="mf-footer">
           <span id="mf-hint" class="mf-hint"></span>
-          <button class="btn plain" id="mf-prev">◄ BACK</button>
-          <button class="btn alt" id="mf-next">NEXT ►</button>
-          <button class="btn" id="mf-save" data-role="admin" hidden>SAVE MODEL</button>
+          <span id="mf-live" class="mf-live"></span>
+          <button class="btn" id="mf-save" data-role="admin">SAVE MODEL</button>
         </div>
       </div>
 
@@ -266,9 +265,8 @@
         </div>
         <div class="mf-footer">
           <span id="bf-hint" class="mf-hint"></span>
-          <button class="btn plain" id="bf-prev">◄ BACK</button>
-          <button class="btn alt" id="bf-next">NEXT ►</button>
-          <button class="btn" id="bf-save" data-role="admin" hidden>SAVE COMMON MODEL</button>
+          <span id="bf-live" class="mf-live"></span>
+          <button class="btn" id="bf-save" data-role="admin">SAVE COMMON MODEL</button>
         </div>
       </div>
 
@@ -400,6 +398,10 @@
     <div id="focus-chart" class="chart-box"></div>
   </div>
 </div>
+<!-- expanded measure editor (modelform.js) -->
+<div id="measure-modal" class="modal-overlay" hidden></div>
+<!-- create chooser: fact model vs common dimension model (modelling.js) -->
+<div id="create-modal" class="modal-overlay" hidden></div>
 <div id="tooltip"></div>
 <script type="module" src="/static/js/main.js"></script>
 </body>
