@@ -260,6 +260,18 @@ function renderMessage(msg) {
   return bubble;
 }
 
+// Ephemeral acknowledgement that this exchange taught the assistant a
+// model-scoped fact — the "response" event's `learned` payload. The fact
+// itself persists in the model's memory pool (fed back into every future
+// conversation's catalog, for every user), not in this message; admins
+// curate the pool from MODELLING › ◈ memory.
+function renderLearnedNote(learned) {
+  const lines = learned.map((m) =>
+    m.kind === "synonym" ? `“${m.content}” → ${m.subject} (${m.model})` : `${m.content} (${m.model})`);
+  return el("div", { class: "learned-note", title: "stored against the model — admins can edit this in Modelling" },
+    "◈ remembered: " + lines.join(" · "));
+}
+
 // ── pinning: save an answered turn as a visual / dashboard tile ──────────
 // POST /api/conversations/:id/messages/:id/pin — the server rebuilds the
 // visual from the message's persisted resolved_query, so what lands in
@@ -453,8 +465,10 @@ export function attachChat() {
           live.querySelector(".live-query").textContent = fmtPartialQuery(data.tool_input);
         } else if (event === "response") {
           chat.current.messages.push(data.response);
-          live.replaceWith(renderMessage(data.response));
+          const rendered = renderMessage(data.response);
+          live.replaceWith(rendered);
           live = null;
+          if (data.learned && data.learned.length) rendered.append(renderLearnedNote(data.learned));
         }
         thread.scrollTop = thread.scrollHeight;
       }

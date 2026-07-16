@@ -92,11 +92,14 @@ def _get_owned(conversation_id: int, user: User) -> dict:
 
 def _start_ask(conversation_id: int, user: User, question: str):
     """Shared setup for ask() and ask_stream(): persist the user's turn and
-    assemble everything a Translator needs to answer it."""
+    assemble everything a Translator needs to answer it. The catalog carries
+    every stored model memory (learned synonyms merged into the declared
+    ones, notes as learned-fact lines) — the self-learning loop's read half."""
     conv = _get_owned(conversation_id, user)
     question_msg = registry.conversation_store.add_message(
         conversation_id, "user", question_text=question)
-    catalog = nlq.build_catalog(registry.models, conv["model_scope"])
+    catalog = nlq.build_catalog(registry.models, conv["model_scope"],
+                                memories=registry.memory_store.all_by_model())
     prior_context = _prior_turns(conv)
     translator = _translator_for(conv.get("llm_model"))
     return conv, question_msg, catalog, prior_context, translator
@@ -192,7 +195,30 @@ def _handle_translator_error(conversation_id: int, user: User, question_msg: dic
         "chat_ask", user.username, actor_user_id=user.id,
         target=f"conversation:{conversation_id} outcome:error question:{question!r}",
     )
-    return {"question": question_msg, "response": response_msg}
+    return {"question": question_msg, "response": response_msg, "learned": []}
+
+
+def _persist_learned(conversation_id: int, user: User, decision: nlq.Decision) -> list[dict]:
+    """The self-learning loop's write half: store the decision's already
+    re-validated memories against their semantic models (never against the
+    user — created_by is audit attribution only) and audit-log each write.
+    MemoryStore.add returning None (duplicate / at cap) is a silent no-op,
+    so re-learning a known fact costs nothing and reports nothing."""
+    saved = []
+    for mem in decision.learned:
+        stored = registry.memory_store.add(
+            mem["model"], mem["kind"], mem["subject"], mem["content"],
+            source="chat", created_by=user.username, conversation_id=conversation_id,
+        )
+        if stored:
+            saved.append(stored)
+            registry.auth_store.record_audit(
+                "chat_memory", user.username, actor_user_id=user.id,
+                target=(f"conversation:{conversation_id} memory:{stored['id']} "
+                        f"model:{stored['model']} kind:{stored['kind']} "
+                        f"subject:{stored['subject']!r} content:{stored['content']!r}"),
+            )
+    return saved
 
 
 def _resolved_query_dict(decision) -> dict:
@@ -211,6 +237,9 @@ def _handle_decision(conversation_id: int, user: User, question_msg: dict,
     ask() and ask_stream() — a decision is handled identically regardless of
     whether it was reached via a streamed or a plain translate() call."""
     store = registry.conversation_store
+    # persisted before the outcome branches: what this exchange taught about
+    # a model is independent of whether the query it accompanied succeeded
+    learned = _persist_learned(conversation_id, user, decision)
     if isinstance(decision, nlq.Decline):
         response_msg = store.add_message(
             conversation_id, "assistant", outcome="declined", answer_text=decision.reason_text)
@@ -242,7 +271,7 @@ def _handle_decision(conversation_id: int, user: User, question_msg: dict,
                 "chat_ask", user.username, actor_user_id=user.id,
                 target=f"conversation:{conversation_id} outcome:error question:{question!r}",
             )
-            return {"question": question_msg, "response": response_msg}
+            return {"question": question_msg, "response": response_msg, "learned": learned}
         outcome = "answered_empty" if result["row_count"] == 0 else "answered"
         response_msg = store.add_message(
             conversation_id, "assistant", outcome=outcome,
@@ -255,7 +284,7 @@ def _handle_decision(conversation_id: int, user: User, question_msg: dict,
     registry.auth_store.record_audit(
         "chat_ask", user.username, actor_user_id=user.id, target=audit_target,
     )
-    return {"question": question_msg, "response": response_msg}
+    return {"question": question_msg, "response": response_msg, "learned": learned}
 
 
 @router.post("/conversations/{conversation_id}/ask", dependencies=[Depends(_require_enabled)])

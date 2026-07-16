@@ -12,16 +12,21 @@ into an executed query.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Iterator, Optional, Union
 
-from . import engine, measure_dsl, semantic
+from . import engine, measure_dsl, memorystore, semantic
 from .llm import ModelCatalogEntry, PriorTurn, RawToolCall, StreamEvent, Translator, TranslatorError
 
 __all__ = [
     "ProposeQuery", "AskClarification", "Decline", "ShowQuery", "Decision",
     "build_catalog", "resolve", "resolve_streaming",
 ]
+
+# Every Decision below carries `learned`: chat-learned model memories the
+# LLM attached to its tool call, already re-validated by _validate_memories
+# (unknown models/targets/kinds silently dropped — a bad memory must never
+# change the *answer*). The caller (app/api/chat.py) persists them.
 
 
 @dataclass(frozen=True)
@@ -33,17 +38,20 @@ class ProposeQuery:
     sort: dict | None = None
     limit: int | None = None
     inline_measures: list[dict] = field(default_factory=list)
+    learned: list[dict] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class AskClarification:
     question_text: str
     candidates: list[str]
+    learned: list[dict] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class Decline:
     reason_text: str
+    learned: list[dict] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -59,30 +67,67 @@ class ShowQuery:
     sort: dict | None = None
     limit: int | None = None
     inline_measures: list[dict] = field(default_factory=list)
+    learned: list[dict] = field(default_factory=list)
 
 
 Decision = Union[ProposeQuery, AskClarification, Decline, ShowQuery]
 
 
-def build_catalog(models: dict[str, semantic.Model], scope: list[str]) -> list[ModelCatalogEntry]:
+def build_catalog(models: dict[str, semantic.Model], scope: list[str],
+                  memories: Optional[dict[str, list[dict]]] = None) -> list[ModelCatalogEntry]:
     """The catalog shown to the LLM, built live from the loaded models
     (research.md R4) — never cached, so a model rename/reload can never make
     the assistant propose against a stale schema. `scope` (research.md R6),
-    when non-empty, restricts the catalog to just those model names."""
+    when non-empty, restricts the catalog to just those model names.
+
+    `memories` (model name -> stored memory dicts, from MemoryStore.
+    all_by_model) is the self-learning feedback loop: learned synonyms are
+    merged into the matching dimension/measure `synonyms` list, learned
+    notes ride along as the entry's learned_notes — so a fact recorded in
+    one conversation grounds every later one, for every user."""
     names = scope if scope else list(models.keys())
     entries = []
     for name in names:
         model = models.get(name)
         if model is None:  # a pinned scope named a model that no longer exists
             continue
+        learned_synonyms, learned_notes = _split_memories((memories or {}).get(name, []))
         entries.append(ModelCatalogEntry(
             name=model.name,
             label=model.label,
             description=model.description,
-            dimensions=[_dimension_catalog_entry(model, d) for d in model.dimensions.values()],
-            measures=[_measure_catalog_entry(m) for m in model.measures.values()],
+            dimensions=[_dimension_catalog_entry(model, d, learned_synonyms)
+                        for d in model.dimensions.values()],
+            measures=[_measure_catalog_entry(m, learned_synonyms) for m in model.measures.values()],
+            learned_notes=learned_notes,
         ))
     return entries
+
+
+def _split_memories(memories: list[dict]) -> tuple[dict[str, list[str]], list[str]]:
+    """Stored memories for one model, split into ({target: [terms]}, [notes]).
+    A stored memory whose subject no longer resolves is simply never merged
+    (the target lookup in _merged_synonyms misses) — a model edit can't be
+    broken by a stale memory."""
+    synonyms: dict[str, list[str]] = {}
+    notes: list[str] = []
+    for mem in memories:
+        if mem["kind"] == "synonym":
+            synonyms.setdefault(mem["subject"], []).append(mem["content"])
+        elif mem["kind"] == "note":
+            notes.append(mem["content"])
+    return synonyms, notes
+
+
+def _merged_synonyms(declared: list[str], name: str, learned_synonyms: dict[str, list[str]]) -> list[str]:
+    merged = list(declared)
+    seen = {s.lower() for s in merged}
+    seen.add(name.lower())
+    for term in learned_synonyms.get(name, []):
+        if term.lower() not in seen:
+            seen.add(term.lower())
+            merged.append(term)
+    return merged
 
 
 # How many distinct real values a categorical dimension can have and still
@@ -93,9 +138,10 @@ def build_catalog(models: dict[str, semantic.Model], scope: list[str]) -> list[M
 SAMPLE_VALUES_LIMIT = 200
 
 
-def _dimension_catalog_entry(model: semantic.Model, d: semantic.Dimension) -> dict:
+def _dimension_catalog_entry(model: semantic.Model, d: semantic.Dimension,
+                              learned_synonyms: Optional[dict[str, list[str]]] = None) -> dict:
     entry = {"name": d.name, "label": d.label, "type": d.type, "description": d.description,
-             "synonyms": list(d.synonyms)}
+             "synonyms": _merged_synonyms(d.synonyms, d.name, learned_synonyms or {})}
     sample_values = _dimension_sample_values(model, d)
     if sample_values:
         entry["sample_values"] = sample_values
@@ -126,7 +172,8 @@ def _dimension_sample_values(model: semantic.Model, d: semantic.Dimension) -> Op
     return values
 
 
-def _measure_catalog_entry(m: semantic.Measure) -> dict:
+def _measure_catalog_entry(m: semantic.Measure,
+                            learned_synonyms: Optional[dict[str, list[str]]] = None) -> dict:
     """A name/description alone often isn't enough to pick the right measure
     (e.g. 'avg_unit_price' = mean(unit_price) vs. 'aov' = revenue per order —
     indistinguishable by name, and roughly half of this project's demo
@@ -142,7 +189,8 @@ def _measure_catalog_entry(m: semantic.Measure) -> dict:
     references (e.g. `unit_price`, never a declared dimension) in front of
     the LLM, which is new relative to the rest of the catalog — see README's
     "Conversational analytics" section (FR-015)."""
-    entry = {"name": m.name, "label": m.label, "description": m.description, "synonyms": list(m.synonyms)}
+    entry = {"name": m.name, "label": m.label, "description": m.description,
+             "synonyms": _merged_synonyms(m.synonyms, m.name, learned_synonyms or {})}
     if m.frame_source is None:
         # YAML's `>` folded block style (used by some multi-line measures)
         # keeps a trailing newline in expr_source; strip it so it doesn't
@@ -322,6 +370,45 @@ def _validate_show_last_query(prior_context: list[PriorTurn]) -> ShowQuery | Dec
     )
 
 
+# How many memories one turn may record — a single exchange rarely teaches
+# more than a term or two, and the cap bounds what a runaway tool call can
+# write per ask.
+MAX_MEMORIES_PER_TURN = 3
+
+
+def _validate_memories(raw_memories, models: dict[str, semantic.Model],
+                        scope: list[str]) -> list[dict]:
+    """Re-validate LLM-proposed memories the same way a proposed query is
+    re-validated — against the *live* models, never trusting the tool call.
+    Invalid entries are silently dropped rather than declined: memories are
+    a side channel, and a malformed one must never change the answer the
+    user actually asked for. The rulebook itself (kind vocabulary, synonym
+    target must be declared, redundancy, length caps) is shared with the
+    admin API via memorystore.validate_memory."""
+    validated: list[dict] = []
+    seen: set[tuple] = set()
+    for entry in raw_memories or []:
+        if len(validated) >= MAX_MEMORIES_PER_TURN:
+            break
+        if not isinstance(entry, dict):
+            continue
+        model_name = entry.get("model")
+        model = models.get(model_name)
+        if model is None or (scope and model_name not in scope):
+            continue
+        kind = entry.get("kind")
+        subject = str(entry.get("subject") or "").strip()
+        content = str(entry.get("content") or "").strip()
+        if memorystore.validate_memory(model, kind, subject, content) is not None:
+            continue
+        key = (model_name, kind, subject.lower(), content.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        validated.append({"model": model_name, "kind": kind, "subject": subject, "content": content})
+    return validated
+
+
 def _dispatch(
     raw: RawToolCall,
     catalog: list[ModelCatalogEntry],
@@ -334,14 +421,17 @@ def _dispatch(
     translator and makes no network call — same rules regardless of
     whether `raw` came from a streamed or a plain translate() call."""
     if raw.kind == "decline":
-        return Decline(reason_text=raw.args.get("reason_text", "I can't answer that from the declared models."))
-    if raw.kind == "ask_clarification":
-        return _validate_ask_clarification(raw.args, catalog)
-    if raw.kind == "show_last_query":
-        return _validate_show_last_query(prior_context)
-    if raw.kind == "propose_query":
-        return _validate_propose_query(raw.args, models, scope, catalog)
-    return Decline(f"unrecognized response type '{raw.kind}'.")
+        decision = Decline(reason_text=raw.args.get("reason_text", "I can't answer that from the declared models."))
+    elif raw.kind == "ask_clarification":
+        decision = _validate_ask_clarification(raw.args, catalog)
+    elif raw.kind == "show_last_query":
+        decision = _validate_show_last_query(prior_context)
+    elif raw.kind == "propose_query":
+        decision = _validate_propose_query(raw.args, models, scope, catalog)
+    else:
+        return Decline(f"unrecognized response type '{raw.kind}'.")
+    learned = _validate_memories(raw.args.get("memories"), models, scope)
+    return replace(decision, learned=learned) if learned else decision
 
 
 def resolve(
