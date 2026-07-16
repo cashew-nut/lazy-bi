@@ -97,6 +97,16 @@ def test_param_suggestion_gated_on_caller_supplying_parameters(client):
     assert "dslItems(ctx, exprColumns(), after)" in modelform
 
 
+def test_chat_pin_button_is_author_gated(client):
+    """Pinning a chat answer creates a visual (an author/admin mutation), so
+    the button must be behind auth.js's canAuthor() — a viewer who can ask
+    questions must never be shown a control their role can't use."""
+    chat = client.get("/static/js/chat.js").text
+    assert 'from "./auth.js"' in chat
+    assert "canAuthor()" in chat
+    assert "/pin" in chat
+
+
 def test_measure_lab_completion_offers_sibling_measures_and_parameters(client):
     """The measure lab's completion pool must include sibling measure names
     (for window-mode bare identifiers) and pass the visual's declared
