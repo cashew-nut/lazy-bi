@@ -19,6 +19,7 @@
   --card-top: #0c1220;       /* card-gradient top stop, distinct from --panel */
   --popover: #0c1524;        /* floating popovers: tooltip, suggest dropdowns */
   --scrim: rgba(3, 5, 9, 0.82); /* modal/focus backdrop */
+  --geo-land: #101a2c;        /* geo chart landmass fill (not a data color) */
   --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
 }
 
@@ -47,6 +48,7 @@
   --warn: #8a5a00;
   --card-top: #ffffff;
   --popover: #ffffff;
+  --geo-land: #e2e6ee;
 }
 [data-theme="slate"] {
   --bg: #14181f;
@@ -64,6 +66,7 @@
   --warn: #d9a441;
   --card-top: #171c24;
   --popover: #1c2129;
+  --geo-land: #1e242e;
 }
 [data-theme="contrast"] {
   --bg: #000000;
@@ -81,6 +84,7 @@
   --warn: #ffcc33;
   --card-top: #0a0a0a;
   --popover: #0a0a0a;
+  --geo-land: #202020;
 }
 
 * { box-sizing: border-box; }
@@ -504,7 +508,7 @@ table.data tr:hover td { background: color-mix(in srgb, var(--neon) 4%, transpar
 .tag-lg { font-size: 10px; color: var(--ink-3); border: 1px solid var(--line); padding: 2px 7px; border-radius: 2px; }
 
 /* geo + axis titles */
-.chart-box .geo-land { fill: #101a2c; stroke: #1c2940; stroke-width: 0.5; }
+.chart-box .geo-land { fill: var(--geo-land); stroke: var(--line); stroke-width: 0.5; }
 .chart-box .axis-title { fill: var(--ink-3); font-size: 10px; letter-spacing: 1px; }
 
 /* ── mode nav (studio / data / portal) ──────────────── */
