@@ -117,3 +117,32 @@ def test_measure_lab_completion_offers_sibling_measures_and_parameters(client):
     assert "state.model.measures.map" in lab
     assert "state.inlineMeasures.map" in lab
     assert "dslItems(ctx, exprPool(), after, state.parameters)" in lab
+
+
+# ── 014-polars-pipeline-module ───────────────────────────────────────────
+
+def test_editor_admin_buttons_recheck_role_on_every_visibility_change(client):
+    """Regression guard: applyRoleGates() (auth.js) only runs once, at
+    boot/login — it is never re-invoked on navigation. openEditor()/
+    saveEditor() set #editor-delete/#editor-run/#editor-lineage-suggest's
+    `hidden` unconditionally based on kind/name alone (never the signed-in
+    role), which silently re-shows admin-only controls to any authenticated
+    role the moment a saved model/pipeline is opened — caught by browser
+    verification (Constitution IV) as viewer/author accounts seeing RUN,
+    DELETE, and SUGGEST PASS-THROUGH on a pipeline they cannot mutate. Every
+    place editor.js sets one of these three elements' `hidden` must also
+    check isAdmin()."""
+    editor = client.get("/static/js/editor.js").text
+    assert 'from "./auth.js"' in editor and "isAdmin" in editor
+    for line in editor.splitlines():
+        for el_id in ("#editor-delete", "#editor-run", "#editor-lineage-suggest"):
+            if f'$("{el_id}").hidden' in line:
+                assert "isAdmin()" in line, f"{el_id}'s hidden assignment doesn't recheck isAdmin(): {line!r}"
+
+
+def test_pipeline_lineage_suggest_button_carries_admin_data_role(client):
+    """Defense-in-depth alongside the JS-level isAdmin() check above: the
+    button should also carry data-role="admin" like every other admin-only
+    editor control, for correct initial paint before any editor is opened."""
+    html = client.get("/").text
+    assert 'id="editor-lineage-suggest" data-role="admin"' in html

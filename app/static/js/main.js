@@ -16,13 +16,15 @@ import { attachAccount } from "./admin.js";
 import { initAuth } from "./auth.js";
 import { attachBundleForm } from "./bundleform.js";
 import { attachChat, probeChatAvailability } from "./chat.js";
-import { attachEditor, deleteEditorItem, saveEditor } from "./editor.js";
+import { attachEditor, deleteEditorItem, saveEditor, stopRunPolling } from "./editor.js";
+// side-effect only: registers hooks.loadLineageGraph for the router
+import "./lineagegraph.js";
 // side-effect only: registers hooks.renderHome for the router
 import "./home.js";
 import { $, api } from "./lib.js";
 import { initMeasureLab } from "./measurelab.js";
 import { attachModelForm } from "./modelform.js";
-import { loadModelling, openCreateChooser } from "./modelling.js";
+import { loadModelling, openCreateChooser, openLayersModal } from "./modelling.js";
 // side-effect only: nothing here calls into the portal module directly
 // anymore (the router dispatches to it via hooks.openPortalFolder), but the
 // module still has to be imported somewhere for that registration to run
@@ -78,9 +80,13 @@ async function init() {
     attachBundleForm();
     $("#mk-new-model").addEventListener("click", () => openCreateChooser());
     $("#mk-new-bundle").addEventListener("click", () => navigate(paths.modellingNewBundle()));
+    $("#mk-new-pipeline").addEventListener("click", () => navigate(paths.modellingNewPipelineYaml()));
+    $("#mk-lineage-graph").addEventListener("click", () => navigate(paths.modellingLineage()));
+    $("#mk-layers").addEventListener("click", () => openLayersModal());
+    $("#lineage-back").addEventListener("click", () => navigate(paths.modelling()));
     $("#editor-save").addEventListener("click", saveEditor);
     $("#editor-delete").addEventListener("click", deleteEditorItem);
-    $("#editor-back").addEventListener("click", () => navigate(paths.modelling()));
+    $("#editor-back").addEventListener("click", () => { stopRunPolling(); navigate(paths.modelling()); });
 
     // ── dashboards ──
     $("#new-dash").addEventListener("click", async () => {

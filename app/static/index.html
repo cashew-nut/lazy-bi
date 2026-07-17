@@ -209,6 +209,7 @@
           <span id="editor-file" class="editor-file">model.yaml</span>
           <span id="editor-status"></span>
           <button class="btn plain" id="editor-pick-dataset">◇ DATASET</button>
+          <button class="btn alt" id="editor-run" data-role="admin" hidden>▶ RUN</button>
           <button class="btn plain" id="editor-delete" data-role="admin">DELETE MODEL</button>
           <button class="btn plain" id="editor-revert">REVERT</button>
           <button class="btn alt" id="editor-save" data-role="admin">SAVE + RELOAD</button>
@@ -223,10 +224,30 @@
             <div id="editor-datasets" hidden></div>
             <div class="sec-title">Validation</div>
             <div id="editor-report" class="editor-report"></div>
-            <div class="sec-title" style="margin-top:16px">Source Columns</div>
-            <div class="empty-note" id="editor-cols-note">click to insert at cursor</div>
-            <div id="editor-cols" class="editor-cols"></div>
+            <div id="editor-cols-panel">
+              <div class="sec-title" style="margin-top:16px">Source Columns</div>
+              <div class="empty-note" id="editor-cols-note">click to insert at cursor</div>
+              <div id="editor-cols" class="editor-cols"></div>
+            </div>
             <div id="editor-imports" hidden></div>
+            <div id="editor-pipeline-panel" hidden>
+              <div class="sec-title" style="margin-top:16px">Lineage</div>
+              <div id="editor-lineage-list" class="editor-cols"></div>
+              <button class="btn plain" id="editor-lineage-suggest" data-role="admin" hidden>SUGGEST PASS-THROUGH</button>
+              <div class="sec-title" style="margin-top:16px">Layer</div>
+              <div id="editor-layer-picker"></div>
+              <div class="sec-title" style="margin-top:16px">Runs</div>
+              <div id="editor-run-status" class="empty-note">not run yet</div>
+              <div class="editor-runs-scroll">
+                <table class="data" id="editor-runs-table">
+                  <thead><tr>
+                    <th>Status</th><th>Started</th><th class="num">Rows</th>
+                    <th class="num">Del</th><th class="num">Flag</th><th>Lineage</th><th>Error</th>
+                  </tr></thead>
+                  <tbody id="editor-runs-body"></tbody>
+                </table>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -245,11 +266,25 @@
           <span id="modelling-bucket" class="crumbs"></span>
           <button class="btn alt" id="mk-new-model" data-role="admin">+ MODEL</button>
           <button class="btn alt" id="mk-new-bundle" data-role="admin">+ COMMON MODEL</button>
+          <button class="btn alt" id="mk-new-pipeline" data-role="admin">+ PIPELINE</button>
+          <button class="btn plain" id="mk-lineage-graph">◈ LINEAGE</button>
+          <button class="btn plain" id="mk-layers" data-role="admin">▤ LAYERS</button>
           <button class="btn plain" id="modelling-refresh">REFRESH</button>
         </div>
         <div class="explorer-body">
           <div id="modelling-side" class="modelling-side"></div>
           <div id="modelling-files" class="explorer-files"></div>
+        </div>
+      </div>
+
+      <div id="lineage-view" class="chart-card" hidden>
+        <div class="chart-head">
+          <span class="editor-file">LINEAGE</span>
+          <span id="lineage-crumbs" class="crumbs"></span>
+          <button class="btn" id="lineage-back">◄ MODELLING</button>
+        </div>
+        <div class="editor-body">
+          <div id="lineage-graph-box" class="lineage-graph-box editor-main"></div>
         </div>
       </div>
 

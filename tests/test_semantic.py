@@ -397,3 +397,92 @@ def test_framed_measure_expr_still_uses_eval_path(monkeypatch):
     # layer rather than by the compiler itself.
     m = semantic.parse_model_text(FRAMED)
     assert m.measures["median_days"].expr() is not None
+
+
+# --- pipeline_lineage: section (specs/014-polars-pipeline-module/, US3) ----
+
+LINEAGE_SECTION = {
+    "pipeline": "silver_orders",
+    "updated": "2026-07-17T12:00:00Z",
+    "fields": [
+        {"field": "order_id", "sources": ["bronze:raw_orders.order_id"], "transform": "pass-through"},
+        {"field": "net_revenue", "sources": ["bronze:raw_orders.gross", "bronze:raw_orders.returns"],
+         "transform": "gross - returns"},
+    ],
+}
+
+
+def test_replace_lineage_yaml_appends_when_absent():
+    appended = semantic.replace_lineage_yaml(VALID, LINEAGE_SECTION)
+    assert appended.startswith(VALID.rstrip("\n"))
+    assert "pipeline_lineage:" in appended
+    assert "managed by pipeline 'silver_orders'" in appended
+
+
+def test_replace_lineage_yaml_parses_back_correctly():
+    appended = semantic.replace_lineage_yaml(VALID, LINEAGE_SECTION)
+    model = semantic.parse_model_text(appended)
+    ls = model.pipeline_lineage
+    assert ls.pipeline == "silver_orders"
+    assert ls.updated == "2026-07-17T12:00:00Z"
+    assert not ls.orphaned
+    assert [f.field for f in ls.fields] == ["order_id", "net_revenue"]
+    assert ls.fields[1].sources == ["bronze:raw_orders.gross", "bronze:raw_orders.returns"]
+    assert ls.fields[1].transform == "gross - returns"
+    assert not ls.fields[0].stale
+
+
+def test_replace_lineage_yaml_exposed_in_to_public():
+    appended = semantic.replace_lineage_yaml(VALID, LINEAGE_SECTION)
+    model = semantic.parse_model_text(appended)
+    out = model.to_public()["pipeline_lineage"]
+    assert out["pipeline"] == "silver_orders"
+    assert out["fields"][0]["field"] == "order_id"
+
+
+def test_replace_lineage_yaml_is_idempotent():
+    once = semantic.replace_lineage_yaml(VALID, LINEAGE_SECTION)
+    twice = semantic.replace_lineage_yaml(once, LINEAGE_SECTION)
+    assert once == twice
+
+
+def test_replace_lineage_yaml_replace_preserves_everything_before_section():
+    once = semantic.replace_lineage_yaml(VALID, LINEAGE_SECTION)
+    updated_section = dict(LINEAGE_SECTION, orphaned=True, fields=[
+        {"field": "order_id", "sources": ["bronze:raw_orders.order_id"],
+         "transform": "pass-through", "stale": True},
+    ])
+    twice = semantic.replace_lineage_yaml(once, updated_section)
+    prefix_before = once.split("pipeline_lineage:")[0]
+    prefix_after = twice.split("pipeline_lineage:")[0]
+    assert prefix_before == prefix_after  # everything before the section untouched, byte for byte
+
+    model = semantic.parse_model_text(twice)
+    assert model.pipeline_lineage.orphaned is True
+    assert model.pipeline_lineage.fields[0].stale is True
+
+
+def test_replace_lineage_yaml_preserves_hand_authored_content_around_it():
+    """A model with its own comments/blank lines around where the section
+    lands must keep them exactly — the section is the only thing rewritten."""
+    text = VALID + "\n# a hand-written trailing comment, unrelated to lineage\n"
+    appended = semantic.replace_lineage_yaml(text, LINEAGE_SECTION)
+    assert "# a hand-written trailing comment, unrelated to lineage" in appended
+    # re-running preserves that comment too (the section sits before it,
+    # since it was appended at end-of-file before the trailing comment existed)
+    again = semantic.replace_lineage_yaml(appended, LINEAGE_SECTION)
+    assert "# a hand-written trailing comment, unrelated to lineage" in again
+
+
+def test_pipeline_lineage_absent_when_no_section():
+    model = semantic.parse_model_text(VALID)
+    assert model.pipeline_lineage is None
+    assert model.to_public()["pipeline_lineage"] is None
+
+
+def test_pipeline_lineage_tolerant_of_malformed_section():
+    """A corrupted/hand-edited pipeline_lineage: block never blocks the
+    model from loading — it just parses as absent."""
+    text = VALID + "\npipeline_lineage:\n  not_a_valid_shape: true\n"
+    model = semantic.parse_model_text(text)
+    assert model.pipeline_lineage is None or model.pipeline_lineage.pipeline == ""

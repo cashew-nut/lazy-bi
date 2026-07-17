@@ -8,6 +8,7 @@
    picker, import panel, and completion all insert/patch that text. */
 "use strict";
 
+import { isAdmin } from "./auth.js";
 import { refreshModels } from "./builder.js";
 import { dslContext, dslItems, makeCompleter } from "./completion.js";
 import { renderImportPanel } from "./dimlab.js";
@@ -65,6 +66,33 @@ datasets:
     #     on: territory
 `;
 
+const NEW_PIPELINE_TEMPLATE = `# new pipeline — SAVE writes pipelines/<name>.yaml
+# A pipeline is a real polars script the platform hosts, runs, and
+# materializes for you — the script only produces \`output\`; the platform
+# performs the write (replace or upsert).
+name: my_pipeline
+sources:
+  - name: raw
+    format: parquet
+    path: s3://cash-intel/path/*.parquet
+target:
+  path: s3://cash-intel/path/to/target   # delta table root (or an object key for parquet)
+  format: delta                          # delta (default, required for upsert) | parquet (replace only)
+materialization:
+  mode: replace                          # replace | upsert
+  # keys: [id]                           # upsert: required
+  # on_delete: soft_delete                # ignore (default) | sync | soft_delete | predicate
+  # soft_delete_column: is_deleted        # soft_delete: required
+  # delete_predicate: "region = 'EU'"     # predicate: required
+timeout_seconds: 600
+script: |
+  output = sources["raw"]
+# lineage:                               # optional — documents transformation logic on the target model
+#   - field: id
+#     from: [raw.id]
+#     transform: pass-through
+`;
+
 // per-kind endpoints/labels so the one editor serves both artifacts
 const KINDS = {
   model: {
@@ -89,6 +117,17 @@ const KINDS = {
     del: (name) => api(`/api/dimensions/${name}`, { method: "DELETE" }),
     insert: (col) => col,                    // bundle dims/join keys are bare column names
   },
+  pipeline: {
+    template: NEW_PIPELINE_TEMPLATE,
+    noun: "pipeline",
+    deleteLabel: "DELETE PIPELINE",
+    getYaml: (name) => api(`/api/pipelines/${name}/yaml`),
+    validate: (yaml) => api("/api/pipelines/validate", { method: "POST", body: { yaml } }),
+    create: (yaml) => api("/api/pipelines", { method: "POST", body: { yaml } }),
+    put: (name, yaml) => api(`/api/pipelines/${name}/yaml`, { method: "PUT", body: { yaml } }),
+    del: (name) => api(`/api/pipelines/${name}`, { method: "DELETE" }),
+    insert: (col) => col,
+  },
 };
 
 // editor.dirty and editor.columns are ephemeral session state (never persisted;
@@ -103,9 +142,12 @@ const cfg = () => KINDS[editor.kind];
 // yaml keys whose value is a bare source-column reference (not an expression)
 const COLUMN_KEYS = new Set(["column", "on", "left_on", "right_on", "start", "end", "lat", "lon"]);
 
+const FILE_TEMPLATES = { bundle: "dimensions/<name>.yaml", pipeline: "pipelines/<name>.yaml" };
+
 export async function openEditor(kind, name, opts = {}) {
   // guard: never silently drop unsaved edits when opening another artifact
   if (state.view === "editor" && !confirmLeaveEditor()) return;
+  stopRunPolling();
   editor.kind = kind in KINDS ? kind : "model";
   const ta = $("#yaml-editor");
   if (name) {
@@ -115,7 +157,7 @@ export async function openEditor(kind, name, opts = {}) {
     editor.original = data.yaml;
   } else {
     editor.name = null;
-    editor.file = editor.kind === "bundle" ? "dimensions/<name>.yaml" : "models/<name>.yaml";
+    editor.file = FILE_TEMPLATES[editor.kind] || "models/<name>.yaml";
     editor.original = cfg().template;
   }
   // opts.text: open with handed-over content (the guided form's generated
@@ -126,11 +168,25 @@ export async function openEditor(kind, name, opts = {}) {
   $("#editor-datasets").hidden = true;
   $("#editor-file").textContent = editor.file;
   $("#editor-delete").textContent = cfg().deleteLabel;
-  $("#editor-delete").hidden = !editor.name;
+  $("#editor-delete").hidden = !editor.name || !isAdmin();
   const isModel = editor.kind === "model";
+  const isPipeline = editor.kind === "pipeline";
   $("#editor-imports").hidden = !isModel;
   $("#editor-pick-dataset").hidden = !isModel;    // dataset source applies to fact models only
+  $("#editor-cols-panel").hidden = isPipeline;    // no column palette for a real-python script
+  $("#editor-pipeline-panel").hidden = !isPipeline;
+  // a brand-new (unsaved) pipeline has nothing to run/suggest yet; both are
+  // admin-only actions like SAVE/DELETE — applyRoleGates() only runs once
+  // at boot/login, so any later visibility change here must re-check the
+  // role itself rather than rely on that one-time pass (data-role is still
+  // set in the markup for defense-in-depth / correct initial paint).
+  $("#editor-run").hidden = !isPipeline || !editor.name || !isAdmin();
+  $("#editor-lineage-suggest").hidden = !isPipeline || !editor.name || !isAdmin();
   if (isModel) renderImportPanel();      // "Common Dimensions" import affordance
+  if (isPipeline) {
+    loadLayerPicker();
+    if (editor.name) loadRunHistory(); else renderRuns([]);
+  }
   showView("editor");
   validateEditor();
 }
@@ -205,11 +261,36 @@ async function validateBundle(yaml) {
   return { ok: true };
 }
 
+async function validatePipeline(yaml) {
+  const res = await cfg().validate(yaml);
+  if (!res.ok) return { ok: false, error: res.error };
+  const p = res.pipeline;
+  const m = p.materialization;
+  editorStatus(`<span class="ok">✓ valid</span> · ${p.name} · ${m.mode}${m.mode === "upsert" ? ` (${m.on_delete})` : ""}`);
+  $("#editor-report").innerHTML = `<b>${p.label}</b> (${p.name})<br>`
+    + `target: <code>${p.target.path}</code> (${p.target.format})<br>`
+    + `mode: ${m.mode}` + (m.mode === "upsert"
+      ? ` · keys: ${m.keys.join(", ")} · on_delete: ${m.on_delete}`
+        + (m.soft_delete_column ? ` (${m.soft_delete_column})` : "")
+      : "");
+  const lineageBox = $("#editor-lineage-list");
+  lineageBox.innerHTML = "";
+  if (p.lineage.length) {
+    for (const entry of p.lineage) {
+      lineageBox.append(el("div", { class: "col-chip", title: entry.transform || "" },
+        el("span", {}, entry.field), el("span", { class: "dt" }, entry.from.join(", "))));
+    }
+  } else {
+    lineageBox.append(el("div", { class: "empty-note" }, "no lineage declared"));
+  }
+  return { ok: true };
+}
+
 export async function validateEditor() {
   editorStatus("validating…");
   try {
-    const result = editor.kind === "bundle"
-      ? await validateBundle($("#yaml-editor").value)
+    const result = editor.kind === "bundle" ? await validateBundle($("#yaml-editor").value)
+      : editor.kind === "pipeline" ? await validatePipeline($("#yaml-editor").value)
       : await validateModel($("#yaml-editor").value);
     if (!result.ok) {
       lastOk = false;
@@ -362,18 +443,27 @@ export async function saveEditor() {
     editor.original = yaml;
     editor.dirty = false;
     $("#editor-file").textContent = saved.file;
-    $("#editor-delete").hidden = false;
-    // both kinds affect the model set: editing a bundle re-resolves importers,
-    // and a fresh bundle becomes importable; keep every surface coherent
-    await refreshModels();
-    if (editor.kind === "bundle") { if (hooks.loadModelling) await hooks.loadModelling(); }
-    else { await renderImportPanel(); }
+    $("#editor-delete").hidden = !isAdmin();
+    if (editor.kind === "pipeline") {
+      $("#editor-run").hidden = !isAdmin();
+      $("#editor-lineage-suggest").hidden = !isAdmin();
+      if (hooks.loadModelling) await hooks.loadModelling();
+      await loadRunHistory();
+    } else {
+      // both kinds affect the model set: editing a bundle re-resolves importers,
+      // and a fresh bundle becomes importable; keep every surface coherent
+      await refreshModels();
+      if (editor.kind === "bundle") { if (hooks.loadModelling) await hooks.loadModelling(); }
+      else { await renderImportPanel(); }
+    }
     await validateEditor();
     editorStatus($("#editor-status").innerHTML + ' · <span class="ok">saved ✓</span>');
     // a brand-new artifact just got its real name — catch the URL up to it
     if (wasNew) {
-      navigate(editor.kind === "bundle" ? paths.modellingBundleYaml(saved.name) : paths.modellingModelYaml(saved.name),
-        { replace: true });
+      const target = editor.kind === "bundle" ? paths.modellingBundleYaml(saved.name)
+        : editor.kind === "pipeline" ? paths.modellingPipelineYaml(saved.name)
+        : paths.modellingModelYaml(saved.name);
+      navigate(target, { replace: true });
     }
   } catch (err) {
     editorStatus('<span class="err">✗ save failed</span>');
@@ -385,19 +475,177 @@ export async function deleteEditorItem() {
   if (!editor.name) return;
   const warn = editor.kind === "bundle"
     ? `Delete common model '${editor.name}' (${editor.file})?`
+    : editor.kind === "pipeline"
+    ? `Delete pipeline '${editor.name}' (${editor.file})? Run history is kept; the target model's lineage section (if any) is marked orphaned.`
     : `Delete model '${editor.name}' (${editor.file})? Saved visuals pointing at it will stop working.`;
   if (!confirm(warn)) return;
   try {
     await cfg().del(editor.name);
   } catch (err) {
-    // e.g. a bundle still imported by a model — refused with a naming message
+    // e.g. a bundle still imported by a model, or a pipeline with a run
+    // pending — refused with a naming message
     editorStatus('<span class="err">✗ delete refused</span>');
     $("#editor-report").innerHTML = `<span class="err">${err.message}</span>`;
     return;
   }
   editor.dirty = false;
-  await refreshModels();
+  stopRunPolling();
+  if (editor.kind === "pipeline") { if (hooks.loadModelling) await hooks.loadModelling(); }
+  else await refreshModels();
   navigate(paths.modelling());
+}
+
+// ── pipeline run panel (US1/US2/US3) — ephemeral polling state, never
+// persisted (Constitution V): a reload always starts from the saved run
+// history, never a resumed poll. ──
+
+let runPollTimer = null;
+
+export function stopRunPolling() {
+  clearInterval(runPollTimer);
+  runPollTimer = null;
+}
+
+const RUN_STATUS_LABEL = {
+  queued: "queued", running: "running…", succeeded: "✓ succeeded", failed: "✗ failed",
+  timed_out: "⏱ timed out", interrupted: "⚠ interrupted",
+};
+
+function renderRuns(runs) {
+  const body = $("#editor-runs-body");
+  body.innerHTML = "";
+  const latest = runs[0];
+  $("#editor-run-status").textContent = latest
+    ? `latest: ${RUN_STATUS_LABEL[latest.status] || latest.status}` : "not run yet";
+  if (!runs.length) return;
+  for (const run of runs) {
+    const lineage = run.lineage_ok === null || run.lineage_ok === undefined ? "—"
+      : run.lineage_ok ? "✓" : `⚠ ${(run.lineage_issues || []).map((i) => i.field).join(", ")}`;
+    body.append(el("tr", {},
+      el("td", {}, RUN_STATUS_LABEL[run.status] || run.status),
+      el("td", {}, (run.started_at || run.queued_at || "").replace("T", " ").slice(0, 19)),
+      el("td", { class: "num" }, run.rows_written ?? "—"),
+      el("td", { class: "num" }, run.rows_deleted ?? "—"),
+      el("td", { class: "num" }, run.rows_flagged ?? "—"),
+      el("td", {}, lineage),
+      el("td", { title: run.error || "" }, run.error ? run.error.slice(0, 60) : "—")));
+  }
+}
+
+async function loadRunHistory() {
+  if (!editor.name || editor.kind !== "pipeline") return;
+  try {
+    renderRuns(await api(`/api/pipelines/${editor.name}/runs`));
+  } catch { /* pipeline just deleted mid-view, or transient — leave prior render */ }
+}
+
+export async function runPipeline() {
+  if (!editor.name || editor.kind !== "pipeline") return;
+  try {
+    await api(`/api/pipelines/${editor.name}/run`, { method: "POST" });
+  } catch (err) {
+    alert(`Could not start run: ${err.message}`);
+    return;
+  }
+  await loadRunHistory();
+  stopRunPolling();
+  runPollTimer = setInterval(async () => {
+    if (state.view !== "editor" || editor.kind !== "pipeline") { stopRunPolling(); return; }
+    const runs = await api(`/api/pipelines/${editor.name}/runs`);
+    renderRuns(runs);
+    if (runs[0] && runs[0].status !== "queued" && runs[0].status !== "running") stopRunPolling();
+  }, 1000);
+}
+
+// ── layer picker (US3): a click-to-insert shortcut for the target's layer —
+// source layers and anything more exotic stay hand-edited in the yaml,
+// which the parser already fully supports. ──
+
+function _topLevelBlockEnd(lines, keyIdx) {
+  let end = lines.length;
+  for (let i = keyIdx + 1; i < lines.length; i++) {
+    if (lines[i].trim() && !lines[i].startsWith(" ") && !lines[i].startsWith("\t") && !lines[i].startsWith("#")) {
+      end = i;
+      break;
+    }
+  }
+  return end;
+}
+
+function applyTargetLayer(layerName) {
+  const ta = $("#yaml-editor");
+  const lines = ta.value.split("\n");
+  const targetIdx = lines.findIndex((l) => l.replace(/\s+$/, "") === "target:");
+  if (targetIdx === -1) { alert("no 'target:' block found in this pipeline yaml"); return; }
+  const end = _topLevelBlockEnd(lines, targetIdx);
+  const body = lines.slice(targetIdx + 1, end).filter((l) => !/^\s*layer:/.test(l));
+  const next = [...lines.slice(0, targetIdx + 1), ...body, `  layer: ${layerName}`, ...lines.slice(end)];
+  ta.value = next.join("\n");
+  markDirty();
+}
+
+async function loadLayerPicker() {
+  const box = $("#editor-layer-picker");
+  box.innerHTML = "";
+  let layers;
+  try {
+    layers = (await api("/api/lineage/layers")).layers;
+  } catch {
+    box.append(el("div", { class: "empty-note" }, "layers unavailable"));
+    return;
+  }
+  if (!layers.length) {
+    box.append(el("div", { class: "empty-note" }, "none declared — see pipelines/layers.yaml"));
+    return;
+  }
+  box.append(el("div", { class: "empty-note" }, "click to set the target's layer"));
+  for (const l of layers) {
+    const chip = el("div", { class: "col-chip", title: `set target layer → ${l.name}` }, el("span", {}, l.label));
+    chip.addEventListener("click", () => applyTargetLayer(l.name));
+    box.append(chip);
+  }
+}
+
+// ── lineage pass-through suggestions (US3) — never auto-persisted (FR-017):
+// SUGGEST only inserts draft entries into the yaml text; nothing is saved
+// until SAVE + RELOAD. ──
+
+function applyLineageSuggestions(suggestions) {
+  const ta = $("#yaml-editor");
+  const lines = ta.value.split("\n");
+  const entryLines = suggestions.flatMap((s) => [
+    `  - field: ${s.field}`,
+    `    from: [${s.from.join(", ")}]`,
+    `    transform: ${s.transform}`,
+  ]);
+  const lineageIdx = lines.findIndex((l) => l.replace(/\s+$/, "") === "lineage:");
+  let next;
+  if (lineageIdx === -1) {
+    next = [...lines, "lineage:", ...entryLines];
+  } else {
+    const end = _topLevelBlockEnd(lines, lineageIdx);
+    next = [...lines.slice(0, end), ...entryLines, ...lines.slice(end)];
+  }
+  ta.value = next.join("\n");
+  markDirty();
+}
+
+async function suggestLineage() {
+  if (!editor.name || editor.kind !== "pipeline") return;
+  let data;
+  try {
+    data = await api(`/api/pipelines/${editor.name}/lineage/suggest`);
+  } catch (err) {
+    alert(`Could not fetch suggestions: ${err.message}`);
+    return;
+  }
+  const suggestions = data.suggestions || [];
+  if (!suggestions.length) {
+    alert("No pass-through suggestions available — either every output field is already "
+      + "declared, or none match a source column name.");
+    return;
+  }
+  applyLineageSuggestions(suggestions);
 }
 
 // ── wiring (called once from main.js) ──
@@ -412,6 +660,8 @@ export function attachEditor() {
   });
   ta.addEventListener("blur", () => setTimeout(() => completer.hide(), 150));
   $("#editor-pick-dataset").addEventListener("click", toggleDatasetPicker);
+  $("#editor-run").addEventListener("click", runPipeline);
+  $("#editor-lineage-suggest").addEventListener("click", suggestLineage);
   $("#editor-revert").addEventListener("click", () => {
     ta.value = editor.original;
     editor.dirty = false;

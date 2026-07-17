@@ -410,6 +410,33 @@ table.data tr:hover td { background: color-mix(in srgb, var(--neon) 4%, transpar
 .editor-report .err { color: var(--bad); }
 .editor-report .warn { color: var(--warn); }
 .editor-report b { color: var(--ink); }
+.editor-runs-scroll { overflow-x: auto; margin-top: 4px; }
+.editor-runs-scroll table.data { width: max-content; min-width: 100%; }
+.lineage-graph-box { width: 100%; height: 100%; overflow: auto; }
+.layer-row {
+  display: flex; align-items: center; gap: 6px; padding: 4px 16px;
+}
+.layer-row input {
+  background: var(--bg); border: 1px solid var(--line); color: var(--ink);
+  padding: 4px 8px; border-radius: 3px; font-size: 12px; font-family: inherit;
+}
+.layer-row input:first-child { width: 140px; }
+.layer-row input:nth-child(2) { flex: 1; }
+
+/* lineage graph (US4) */
+.lineage-graph-layout { display: inline-block; min-width: 100%; }
+.lg-col-label { fill: var(--ink-3); font-size: 10px; letter-spacing: 1px; text-transform: uppercase; }
+.lg-node rect { fill: var(--panel-2); stroke: var(--line); stroke-width: 1; cursor: pointer; }
+.lg-node:hover rect { stroke: var(--neon); }
+.lg-node.lg-selected rect { stroke: var(--neon); stroke-width: 2; }
+.lg-node.lg-path-highlight rect { stroke: var(--pink); stroke-width: 2; }
+.lg-node-label { fill: var(--ink); font-size: 12px; }
+.lg-node-sub { fill: var(--ink-3); font-size: 9px; }
+.lg-edge { fill: none; stroke: var(--ink-3); stroke-width: 1.5; }
+.lg-edge.lg-ok { stroke: var(--ok); }
+.lg-edge.lg-err { stroke: var(--bad); }
+.lg-edge.lg-warn { stroke: var(--warn); }
+.lineage-detail-panel { overflow-y: auto; }
 .editor-cols { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; }
 .col-chip {
   display: flex; gap: 8px; align-items: baseline; cursor: pointer;

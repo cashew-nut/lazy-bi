@@ -27,6 +27,9 @@ export const paths = {
   modellingBundleYaml: (name) => `/modelling/bundle/${enc(name)}/yaml`,
   modellingNewBundle: () => "/modelling/bundle/new",
   modellingNewBundleYaml: () => "/modelling/bundle/new/yaml",
+  modellingPipelineYaml: (name) => `/modelling/pipeline/${enc(name)}/yaml`,
+  modellingNewPipelineYaml: () => "/modelling/pipeline/new/yaml",
+  modellingLineage: () => "/modelling/lineage",
   portal: () => "/portal",
   portalFolder: (path) => (path ? `/portal/folder/${path.split("/").map(enc).join("/")}` : "/portal"),
   portalDashboard: (id) => `/portal/dashboard/${id}`,
@@ -66,6 +69,10 @@ async function resolveModelling(rest) {
     showView("modelling");
     return hooks.loadModelling && hooks.loadModelling();
   }
+  if (rest[0] === "lineage") {
+    showView("lineage");
+    return hooks.loadLineageGraph && hooks.loadLineageGraph();
+  }
   const [kind, name, sub] = rest;
   const isNew = name === "new";
   if (kind === "model") {
@@ -75,6 +82,9 @@ async function resolveModelling(rest) {
   if (kind === "bundle") {
     if (sub === "yaml") return hooks.openEditor && hooks.openEditor("bundle", isNew ? null : name);
     return hooks.openBundleForm && hooks.openBundleForm(isNew ? null : name);
+  }
+  if (kind === "pipeline") {
+    return hooks.openEditor && hooks.openEditor("pipeline", isNew ? null : name);
   }
   throw new Error(`unknown modelling route: /${rest.join("/")}`);
 }

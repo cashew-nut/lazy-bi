@@ -80,6 +80,19 @@ Any future change widening who may reach the `frame:` path, or introducing
 a new eval-based construct, must re-open this principle explicitly, exactly
 as before.
 
+**Amended by the polars-pipeline-module feature** (see
+`specs/014-polars-pipeline-module/`) — a genuinely new eval-capable
+construct, not a variant of `frame:`: a pipeline's `script:` is a whole,
+unsandboxed Python script (`app/pipeline_runner.py` execs it directly),
+application-code trust level, exactly like the `frame:` carve-out above.
+Creating, editing, deleting, **and triggering a run of** a pipeline all
+require the admin role — running executes the script, so triggering a run
+is held to the same bar as authoring one, not the lower bar a measure save
+gets. Never inline, never from an unauthenticated or lower-trust path,
+regardless of credentials. Process isolation (each run in its own killable
+subprocess) is a crash-safety and timeout-enforcement measure, not the trust
+boundary — the admin gate is.
+
 ### VII. Feature Branches, One Development Per Branch
 Every development effort — a feature, a refactor, a fix worth its own
 history — happens on its own `feature/*` branch and merges via PR. Work is
@@ -123,4 +136,4 @@ consistent with these principles; where a feature genuinely needs to violate
 one (e.g. Principle II for a use case that cannot be pushed down), say so
 explicitly in that feature's spec rather than quietly drifting.
 
-**Version**: 1.2.0 | **Ratified**: 2026-07-10 | **Last Amended**: 2026-07-13
+**Version**: 1.3.0 | **Ratified**: 2026-07-10 | **Last Amended**: 2026-07-17

@@ -49,11 +49,11 @@ export const pubFor = (dashId) => state.publications.find((p) => p.dashboard_id 
 
 export function showView(view) {
   state.view = view;
-  for (const v of ["home", "builder", "dashboard", "editor", "portal", "modelling", "modelform", "bundleform", "account", "chat"]) {
+  for (const v of ["home", "builder", "dashboard", "editor", "portal", "modelling", "modelform", "bundleform", "lineage", "account", "chat"]) {
     $(`#${v}-view`).hidden = view !== v;
   }
   if (view !== "dashboard") { state.dash = null; state.tileCtxs = []; }
-  const authoring = ["editor", "modelling", "modelform", "bundleform"];
+  const authoring = ["editor", "modelling", "modelform", "bundleform", "lineage"];
   if (view === "builder" || authoring.includes(view)) state.portal = false;
   const mode = view === "portal" || (view === "dashboard" && state.portal) ? "portal"
     : authoring.includes(view) ? "modelling"

@@ -1,0 +1,51 @@
+# Demo pipeline (specs/014-polars-pipeline-module/): bronze -> silver.
+# Cleans the raw sales fact into a per-order silver table, upserted by
+# order_id with soft-delete — run this once (MODELLING -> silver_orders ->
+# RUN) before gold_daily_revenue, which reads this pipeline's target.
+name: silver_orders
+label: Silver Orders
+description: >
+  Per-order net revenue, upserted from the raw sales fact. Missing orders
+  (e.g. cancelled/archived upstream) are soft-deleted rather than dropped.
+sources:
+  - name: sales
+    format: parquet
+    path: s3://cash-intel/sales/*.parquet
+    layer: bronze
+target:
+  path: s3://cash-intel/silver/orders
+  format: delta
+  layer: silver
+materialization:
+  mode: upsert
+  keys: [order_id]
+  on_delete: soft_delete
+  soft_delete_column: is_deleted
+timeout_seconds: 120
+script: |
+  output = (
+      sources["sales"]
+      .with_columns(
+          ((pl.col("unit_price") - pl.col("unit_cost")) * pl.col("quantity")).alias("net_revenue")
+      )
+      .select(["order_id", "order_date", "region", "channel", "category", "net_revenue"])
+  )
+lineage:
+  - field: order_id
+    from: [sales.order_id]
+    transform: pass-through
+  - field: order_date
+    from: [sales.order_date]
+    transform: pass-through
+  - field: region
+    from: [sales.region]
+    transform: pass-through
+  - field: channel
+    from: [sales.channel]
+    transform: pass-through
+  - field: category
+    from: [sales.category]
+    transform: pass-through
+  - field: net_revenue
+    from: [sales.unit_price, sales.unit_cost, sales.quantity]
+    transform: "(unit_price - unit_cost) * quantity"

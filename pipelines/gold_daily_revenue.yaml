@@ -1,0 +1,42 @@
+# Demo pipeline (specs/014-polars-pipeline-module/): silver -> gold.
+# Daily revenue by region, aggregated from silver_orders' output — run
+# silver_orders first (this pipeline's source won't exist until it has).
+name: gold_daily_revenue
+label: Gold Daily Revenue
+description: Daily net revenue and order count by region, excluding soft-deleted orders.
+sources:
+  - name: silver
+    format: delta
+    path: s3://cash-intel/silver/orders
+    layer: silver
+target:
+  path: s3://cash-intel/gold/daily_revenue
+  format: delta
+  layer: gold
+materialization:
+  mode: replace
+timeout_seconds: 120
+script: |
+  output = (
+      sources["silver"]
+      .filter(~pl.col("is_deleted"))
+      .group_by(pl.col("order_date").dt.date().alias("day"), "region")
+      .agg(
+          pl.col("net_revenue").sum().alias("total_net_revenue"),
+          pl.col("order_id").count().alias("orders"),
+      )
+      .sort("day", "region")
+  )
+lineage:
+  - field: day
+    from: [silver.order_date]
+    transform: "order_date truncated to a calendar day"
+  - field: region
+    from: [silver.region]
+    transform: pass-through
+  - field: total_net_revenue
+    from: [silver.net_revenue]
+    transform: "sum(net_revenue) per day, region"
+  - field: orders
+    from: [silver.order_id]
+    transform: "count(order_id) per day, region"

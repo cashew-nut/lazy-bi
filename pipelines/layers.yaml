@@ -1,0 +1,7 @@
+layers:
+- name: bronze
+  label: Bronze
+- name: silver
+  label: Silver
+- name: gold
+  label: Gold

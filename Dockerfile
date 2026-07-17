@@ -10,10 +10,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ app/
 COPY models/ models/
+COPY pipelines/ pipelines/
 
 # state lives outside the image: sqlite db (+ optional big-file cache)
 ENV CI_DB_PATH=/data/cash_intel.db \
     CI_MODELS_DIR=/srv/models \
+    CI_PIPELINES_DIR=/srv/pipelines \
     PYTHONUNBUFFERED=1
 RUN mkdir /data
 VOLUME /data

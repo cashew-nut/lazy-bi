@@ -1,0 +1,52 @@
+# Semantic model: gold_revenue — the target of the demo pipeline chain
+# (pipelines/silver_orders.yaml -> pipelines/gold_daily_revenue.yaml, see
+# specs/014-polars-pipeline-module/). Run both pipelines once from
+# MODELLING (silver_orders, then gold_daily_revenue) to materialize this
+# model's source; MODELLING -> LINEAGE traces its fields back to the raw
+# sales fact across both hops, and the model's own yaml gains a
+# `pipeline_lineage:` section once gold_daily_revenue has run successfully.
+name: gold_revenue
+label: Gold Daily Revenue
+description: >
+  Daily net revenue and order count by region — materialized by the
+  bronze/silver/gold pipeline chain, not hand-loaded like the other demo
+  models.
+source:
+  format: delta
+  path: s3://cash-intel/gold/daily_revenue
+
+dimensions:
+  - name: day
+    type: time
+  - name: region
+
+measures:
+  - name: total_net_revenue
+    label: Net Revenue
+    format: currency
+    expr: sum(total_net_revenue)
+  - name: orders
+    label: Orders
+    expr: sum(orders)
+
+# ── managed by pipeline 'gold_daily_revenue' — do not hand-edit this section ──
+pipeline_lineage:
+  pipeline: gold_daily_revenue
+  updated: '2026-07-17T21:53:40+00:00'
+  fields:
+  - field: day
+    sources:
+    - silver:silver.order_date
+    transform: order_date truncated to a calendar day
+  - field: region
+    sources:
+    - silver:silver.region
+    transform: pass-through
+  - field: total_net_revenue
+    sources:
+    - silver:silver.net_revenue
+    transform: sum(net_revenue) per day, region
+  - field: orders
+    sources:
+    - silver:silver.order_id
+    transform: count(order_id) per day, region
