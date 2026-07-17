@@ -22,7 +22,9 @@
   document.documentElement.dataset.theme = theme;
 })();
 </script>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%230a0e17'/><path d='M3 10h2v3H3zM7 6h2v7H7zM11 3h2v10h-2z' fill='%2300e5ff'/></svg>">
+<!-- theme-neutral: a plain mark works against any browser tab background,
+     regardless of which app theme (cyberpunk/daylight/slate/contrast) is active -->
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M3 10h2v3H3zM7 6h2v7H7zM11 3h2v10h-2z' fill='%23607086'/></svg>">
 </head>
 <body>
 <div id="login-view" hidden>
@@ -292,6 +294,11 @@
           <span class="editor-file">ACCOUNT</span>
         </div>
         <div class="acct-body">
+          <section class="acct-panel">
+            <div class="sec-title">Appearance</div>
+            <div class="empty-note">pick a theme — remembered on this device, and on your account when signed in</div>
+            <div id="theme-picker" class="seg" role="radiogroup" aria-label="Theme"></div>
+          </section>
           <section class="acct-panel">
             <div class="sec-title">Personal Access Tokens</div>
             <div class="empty-note">tokens authenticate scripts as you, with your role — send as <code>Authorization: Bearer …</code></div>

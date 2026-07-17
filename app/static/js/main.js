@@ -29,9 +29,11 @@ import { loadModelling, openCreateChooser } from "./modelling.js";
 import "./portal.js";
 import { initRouter, navigate, pathForMode, paths } from "./router.js";
 import { refreshPubs, state } from "./state.js";
+import { initTheme } from "./theme.js";
 
 async function init() {
   try {
+    initTheme();  // sync the chart palette to whatever theme the boot script already applied
     await initAuth();   // renders the login view first when no session exists
     const [health, models] = await Promise.all([api("/api/health"), api("/api/models")]);
     $("#conn").innerHTML = `<span class="dot">◉</span> S3 ${health.s3_endpoint.replace(/^https?:\/\//, "")} · POLARS ONLINE`;

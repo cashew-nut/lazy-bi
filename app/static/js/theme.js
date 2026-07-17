@@ -110,3 +110,23 @@ export function applyTheme(id) {
   setOtherColor(theme.chartOtherColor);
   return theme.id;
 }
+
+// Boot-time sync: the inline bootstrap <script> in index.html's <head>
+// already set data-theme on <html> (before first paint, from the same
+// localStorage key), but as a non-module script it can't reach PALETTE/
+// OTHER_COLOR — call this once during app init so the chart palette matches
+// whatever theme is already showing, instead of defaulting to cyberpunk's
+// until the user happens to touch the picker.
+export function initTheme() {
+  const local = readLocalTheme();
+  applyTheme(local ? local.theme : DEFAULT_THEME);
+}
+
+// User-driven selection (the theme picker): apply + remember locally. Kept
+// here (not in the UI code) so US2's account-sync/reconciliation logic can
+// reuse the exact same apply+persist step instead of duplicating it.
+export function selectTheme(id) {
+  const theme = applyTheme(id);
+  const updatedAt = writeLocalTheme(theme);
+  return { theme, updatedAt };
+}

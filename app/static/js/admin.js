@@ -6,14 +6,40 @@
 import { isAdmin, user } from "./auth.js";
 import { $, api, el } from "./lib.js";
 import { hooks } from "./state.js";
+import { getCurrentTheme, selectTheme, THEMES } from "./theme.js";
 
 const ROLES = ["viewer", "author", "admin"];
 
 export async function loadAccount() {
+  renderThemePicker();
   await Promise.all([renderTokens(), isAdmin() ? renderUsers() : Promise.resolve()]);
   $("#account-users-panel").hidden = !isAdmin();
 }
 hooks.loadAccount = loadAccount;
+
+// ── appearance (spec 013) ────────────────────────────────────
+
+function renderThemePicker() {
+  const box = $("#theme-picker");
+  box.innerHTML = "";
+  const active = getCurrentTheme();
+  for (const theme of Object.values(THEMES)) {
+    const btn = el("button", { type: "button", role: "radio", "aria-checked": String(theme.id === active) },
+      theme.label);
+    btn.classList.toggle("on", theme.id === active);
+    btn.dataset.themeId = theme.id;
+    box.append(btn);
+  }
+}
+
+function wireThemePicker() {
+  $("#theme-picker").addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-theme-id]");
+    if (!btn) return;
+    selectTheme(btn.dataset.themeId);
+    renderThemePicker();
+  });
+}
 
 // ── my tokens ────────────────────────────────────────────────
 
@@ -142,6 +168,7 @@ function wireUserForm() {
 }
 
 export function attachAccount() {
+  wireThemePicker();
   wireTokenForm();
   wirePasswordForm();
   wireUserForm();
