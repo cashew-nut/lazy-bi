@@ -22,6 +22,67 @@
   --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
 }
 
+/* ── theme catalog (spec 013) ──────────────────────────
+   :root above IS the cyberpunk theme (the default, applied whenever
+   [data-theme] is absent — see the html:not([data-theme]) rules further
+   down). Each block below overrides only the tokens that differ; anything
+   not redeclared here (--mono, --scrim, etc.) inherits from :root since
+   both an attribute selector and :root match <html> at equal specificity,
+   and source order lets these later blocks win per-property. Each theme's
+   chart categorical palette lives in theme.js, not here — see research.md
+   §1/§7 and data-model.md's Theme entity for the full split. */
+[data-theme="daylight"] {
+  --bg: #f4f6fa;
+  --panel: #ffffff;
+  --panel-2: #eef1f6;
+  --line: #d8dee8;
+  --neon: #0a66c2;
+  --neon-dim: #0a66c266;
+  --pink: #c2185b;
+  --ink: #1a2233;
+  --ink-2: #4b5768;
+  --ink-3: #66748a;
+  --bad: #c81e3a;
+  --ok: #157a3f;
+  --warn: #8a5a00;
+  --card-top: #ffffff;
+  --popover: #ffffff;
+}
+[data-theme="slate"] {
+  --bg: #14181f;
+  --panel: #1a1f28;
+  --panel-2: #20262f;
+  --line: #2c3340;
+  --neon: #5b8dd6;
+  --neon-dim: #5b8dd666;
+  --pink: #b06bc9;
+  --ink: #dfe3ea;
+  --ink-2: #9aa3b2;
+  --ink-3: #626b7a;
+  --bad: #e5677e;
+  --ok: #4caf7d;
+  --warn: #d9a441;
+  --card-top: #171c24;
+  --popover: #1c2129;
+}
+[data-theme="contrast"] {
+  --bg: #000000;
+  --panel: #0a0a0a;
+  --panel-2: #141414;
+  --line: #4a4a4a;
+  --neon: #33ccff;
+  --neon-dim: #33ccff66;
+  --pink: #ff5fd6;
+  --ink: #ffffff;
+  --ink-2: #d8d8d8;
+  --ink-3: #ababab;
+  --bad: #ff6b6b;
+  --ok: #4ee88a;
+  --warn: #ffcc33;
+  --card-top: #0a0a0a;
+  --popover: #0a0a0a;
+}
+
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html, body { height: 100%; }

@@ -5,6 +5,23 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CASH INTELLIGENCE</title>
 <link rel="stylesheet" href="/static/style.css">
+<script>
+/* Resolve the theme before first paint (spec 013 / research.md §3). This is
+   a blocking classic script (not type=module — modules are deferred, which
+   would paint the default theme first and then visibly snap). Kept in sync
+   with the theme id list in static/js/theme.js's THEMES; duplicated here
+   deliberately since a synchronous <script> can't import an ES module. */
+(function () {
+  var KNOWN_THEMES = ["cyberpunk", "daylight", "slate", "contrast"];
+  var theme = "cyberpunk";
+  try {
+    var raw = localStorage.getItem("ci_theme");
+    var parsed = raw && JSON.parse(raw);
+    if (parsed && KNOWN_THEMES.indexOf(parsed.theme) !== -1) theme = parsed.theme;
+  } catch (e) { /* storage blocked/unavailable — fall back to the default (FR-011) */ }
+  document.documentElement.dataset.theme = theme;
+})();
+</script>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%230a0e17'/><path d='M3 10h2v3H3zM7 6h2v7H7zM11 3h2v10h-2z' fill='%2300e5ff'/></svg>">
 </head>
 <body>

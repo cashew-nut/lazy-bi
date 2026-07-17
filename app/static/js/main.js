@@ -205,10 +205,17 @@ async function init() {
   }
 
   // dev hook: /?validate runs the palette validator in the console, against
-  // whichever theme is currently active (data-mode set per theme in theme.js)
+  // whichever theme is currently active. validate_palette.js's browser entry
+  // point reads its light/dark signal from body.dataset.mode specifically
+  // (that's its own fixed contract, left unmodified) — note this is a
+  // *different* attribute from the app's own body.dataset.mode (nav mode,
+  // set in state.js); this debug-only branch briefly overwrites it, which is
+  // harmless since ?validate is a one-off manual invocation, not a normal
+  // user flow. The value itself comes from the real source of truth,
+  // theme.js's documentElement.dataset.colorScheme.
   if (location.search.includes("validate")) {
     document.body.dataset.palette = PALETTE.join(",");
-    document.body.dataset.mode = document.body.dataset.mode || "dark";
+    document.body.dataset.mode = document.documentElement.dataset.colorScheme || "dark";
     document.body.dataset.surface = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
     import("/static/validate_palette.js");
   }
