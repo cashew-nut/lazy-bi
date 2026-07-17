@@ -1,3 +1,4 @@
 [
+  { "date": "2026-07-17", "macrostructure": "n/a (token-level theme redesign)", "theme": "custom", "theme_axes": "light+dark trio / mono display (house) / green-warm accents", "enrichment": "none", "brief": "CASH_INTELLIGENCE · redesigned the 3 alternative theme presets: Ledger (warm paper + banker's green + red ink), Canopy (forest dark + moss + copper), Phosphor (CRT green/amber on black); ids daylight/slate/contrast frozen" },
   { "date": "2026-07-15", "macrostructure": "Index-First", "theme": "existing house tokens (locked, not catalog/custom)", "enrichment": "none", "brief": "CASH_INTELLIGENCE · redesign of the home/operator-console view — dropped eyebrow+hero-card-grid for a numbered destination index" }
 ]

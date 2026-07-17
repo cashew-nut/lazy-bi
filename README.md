@@ -787,11 +787,15 @@ entities, not ranks; more than 8 series folds the tail into "Other".
 ## Themes
 
 **ACCOUNT → Appearance** switches between 4 pre-packed visual themes:
-**Cyberpunk** (the original dark-neon look, still the default), **Daylight**
-(light, for bright environments), **Slate** (a muted dark theme without the
-neon glow), and **Contrast** (a high-contrast dark theme for accessibility).
-Switching is instant — no reload — and re-skins everything, chart colors
-included.
+**Cyberpunk** (the original dark-neon look, still the default), **Ledger**
+(light — warm paper, banker's-green and red-ink accents, for bright
+environments), **Canopy** (a muted professional dark — forest-green surfaces
+with copper and moss accents, no neon), and **Phosphor** (high-contrast for
+accessibility — a green-phosphor CRT on true black). Switching is instant —
+no reload — and re-skins everything, chart colors included. (The three
+alternatives' internal ids — `daylight`, `slate`, `contrast` — predate their
+current designs and are frozen in stored preferences; only the looks and
+labels changed.)
 
 A theme choice is remembered on the browser it was picked in (`localStorage`)
 and, for signed-in users, also synced to their account

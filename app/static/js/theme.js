@@ -12,49 +12,52 @@ import { api } from "./lib.js";
 
 // Each theme's chartPalette + chartOtherColor is validated (FR-008) via
 // app/static/validate_palette.js against that theme's own --bg (style.css).
-// Slate and Contrast reuse the cyberpunk palette because it independently
-// passes against both of their (also-dark) surfaces — there's no requirement
-// that every theme's data colors differ, only that each one is proven for
-// its own surface. Daylight needs its own: a dark-surface palette fails
-// WCAG contrast against a light background.
-const CYBERPUNK_PALETTE = ["#0099ad", "#a68f00", "#d633b8", "#eb6234", "#3d7dd6", "#1fae57", "#8b63f2", "#d64f75"];
-const CYBERPUNK_OTHER = "#5b6b84";
-
+// Every theme carries its own palette, tuned to its surface and its chrome:
+// Ledger's print-ink hues sit on cream paper, Canopy's are warm-shifted for
+// the forest surfaces, Phosphor's run brighter chroma against true black.
+// The theme ids (daylight/slate/contrast) predate the current designs and
+// are frozen: they live in localStorage payloads, account rows
+// (authstore.VALID_THEMES), and index.html's boot script — the label is the
+// user-facing name, the id is just the storage key.
 export const THEMES = {
   cyberpunk: {
     id: "cyberpunk",
     label: "Cyberpunk",
     mode: "dark",
     decorativeEffects: true,
-    chartPalette: CYBERPUNK_PALETTE,
-    chartOtherColor: CYBERPUNK_OTHER,
+    // validated: node validate_palette.js "..." --mode dark --surface "#0a0e17"
+    chartPalette: ["#0099ad", "#a68f00", "#d633b8", "#eb6234", "#3d7dd6", "#1fae57", "#8b63f2", "#d64f75"],
+    chartOtherColor: "#5b6b84",
   },
   daylight: {
     id: "daylight",
-    label: "Daylight",
+    label: "Ledger",
     mode: "light",
-    decorativeEffects: false,
-    // validated: node validate_palette.js "..." --mode light --surface "#f4f6fa"
-    chartPalette: ["#009c78", "#938a00", "#ed00ff", "#ff3600", "#0090cc", "#009f00", "#a800ff", "#ff00ae"],
-    chartOtherColor: "#5c6470",
+    decorativeEffects: true,
+    // validated: node validate_palette.js "..." --mode light --surface "#f6f1e5"
+    chartPalette: ["#00789e", "#9a7200", "#a33d8e", "#c05a2e", "#3b62c4", "#2e8540", "#7455d4", "#bb4a63"],
+    chartOtherColor: "#6e6657",
   },
   slate: {
     id: "slate",
-    label: "Slate",
+    label: "Canopy",
     mode: "dark",
-    decorativeEffects: false,
-    // validated: node validate_palette.js "..." --mode dark --surface "#14181f"
-    chartPalette: CYBERPUNK_PALETTE,
-    chartOtherColor: CYBERPUNK_OTHER,
+    decorativeEffects: true,
+    // validated: node validate_palette.js "..." --mode dark --surface "#101711"
+    // (slot 1 is orange so a single-series chart reads copper-warm here,
+    // teal under Cyberpunk, green under Phosphor — the three dark themes
+    // stay tellable-apart even on a one-series line chart)
+    chartPalette: ["#e07038", "#5b87d8", "#3fa354", "#9576e8", "#d4607a", "#1ba3a0", "#a68a1f", "#c75da8"],
+    chartOtherColor: "#6d7a70",
   },
   contrast: {
     id: "contrast",
-    label: "Contrast",
+    label: "Phosphor",
     mode: "dark",
     decorativeEffects: false,
     // validated: node validate_palette.js "..." --mode dark --surface "#000000"
-    chartPalette: CYBERPUNK_PALETTE,
-    chartOtherColor: CYBERPUNK_OTHER,
+    chartPalette: ["#22a854", "#9b74ff", "#e04e73", "#00a3b5", "#a38f19", "#d945ae", "#df5f28", "#4f8ef2"],
+    chartOtherColor: "#8fa08f",
   },
 };
 
