@@ -131,9 +131,12 @@ Existing single web app — FastAPI backend under `app/`, hand-rolled vanilla-JS
 
 ## Phase 6: Polish & Cross-Cutting Concerns
 
-- [ ] T026 [P] Update `README.md` to document the theme feature: the 4 available themes, where to switch (ACCOUNT view), and the local+account persistence behavior — per the constitution's "update README as part of the feature" rule.
-- [ ] T027 [P] Visual regression check: confirm the cyberpunk theme is unchanged from pre-feature behavior for a user who never opens the theme picker (SC-005), spot-checking Home/Studio/Portal.
-- [ ] T028 Run the full `quickstart.md` validation end-to-end plus the full `pytest tests/` suite; fix any regressions found before calling the feature done.
+- [X] T026 [P] Update `README.md` to document the theme feature: the 4 available themes, where to switch (ACCOUNT view), and the local+account persistence behavior — per the constitution's "update README as part of the feature" rule.
+  - Added a `## Themes` section, an `ACCOUNT` bullet in the Studio/Modelling/Portal/Account nav rundown (that section's title listed Account but never described it — small pre-existing gap, filled in passing), and corrected the "Frontend notes" palette-validation blurb, which said "the dark surface" — no longer true with 4 themes including a light one.
+- [X] T027 [P] Visual regression check: confirm the cyberpunk theme is unchanged from pre-feature behavior for a user who never opens the theme picker (SC-005), spot-checking Home/Studio/Portal.
+  - Created a brand-new user via the admin API and logged in fresh (new browser context, zero localStorage, zero account theme history) specifically to get a true "never touched anything" baseline — the admin account itself had accumulated theme picks from earlier verification runs, so it wasn't a valid zero-state to check against. The fresh user's `data-theme` resolved to `cyberpunk` and computed body background matched `rgb(10, 14, 23)` (`#0a0e17`) exactly; Home, Studio, Portal, and Account all screenshot pixel-consistent with every earlier cyberpunk screenshot taken across this feature's phases. Role-based visibility (no admin user-management panel for a viewer) also unaffected by the new Appearance panel.
+- [X] T028 Run the full `quickstart.md` validation end-to-end plus the full `pytest tests/` suite; fix any regressions found before calling the feature done.
+  - Full suite: **476 passed**, 0 failed (test count grew from the pre-feature 467 via `test_theme.py`'s 9 new cases). `quickstart.md`'s scenarios were run as part of each phase's own browser verification rather than as one final pass: §1 (theme switching, persistence, defaults, storage-blocked fallback) in T014; §2 (palette validation per theme) in T006/T024; §3 (browser walkthrough across all views, chart readability) across T014/T021/T025; §4 (cyberpunk regression) in T027 above. No open issues.
 
 ---
 
