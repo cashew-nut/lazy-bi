@@ -8,6 +8,7 @@
 "use strict";
 
 import { PALETTE, setOtherColor } from "./charts/common.js";
+import { api } from "./lib.js";
 
 // Each theme's chartPalette + chartOtherColor is validated (FR-008) via
 // app/static/validate_palette.js against that theme's own --bg (style.css).
@@ -122,11 +123,64 @@ export function initTheme() {
   applyTheme(local ? local.theme : DEFAULT_THEME);
 }
 
-// User-driven selection (the theme picker): apply + remember locally. Kept
-// here (not in the UI code) so US2's account-sync/reconciliation logic can
-// reuse the exact same apply+persist step instead of duplicating it.
+// User-driven selection (the theme picker): apply + remember locally, and
+// push to the account (FR-005) rather than waiting for the next boot's
+// reconcileTheme() — otherwise a second device wouldn't see this choice
+// until this browser happened to reload. The push is fire-and-forget and
+// safe to attempt unconditionally: the picker only exists inside the
+// post-login app shell, so this always runs authenticated in practice; if
+// the session has since expired, the resulting 401 goes through the same
+// api()-driven re-auth flow every other authenticated action already uses.
 export function selectTheme(id) {
   const theme = applyTheme(id);
   const updatedAt = writeLocalTheme(theme);
+  pushLocalToAccount({ theme, updatedAt });
   return { theme, updatedAt };
+}
+
+// Reconcile the browser-local preference against the signed-in user's
+// account-level one (FR-006): whichever was chosen more recently wins, and
+// is written back to whichever side lost, so the two converge. Safe to call
+// on every authenticated boot/login — a network failure or a brand-new
+// account with nothing set on either side just leaves things as they are
+// (FR-012: sync failures never block the locally-selected theme).
+export async function reconcileTheme() {
+  let account;
+  try {
+    account = await api("/api/users/me/theme");
+  } catch {
+    return; // offline/failed — the local theme already applied, nothing to sync
+  }
+  const local = readLocalTheme();
+
+  if (!account.theme && !local) return;        // nothing recorded anywhere yet
+  if (!account.theme) {                          // local-only so far — push it up
+    await pushLocalToAccount(local);
+    return;
+  }
+  if (!local) {                                   // account-only so far — pull it down
+    applyTheme(account.theme);
+    writeLocalTheme(account.theme, account.updated_at);
+    return;
+  }
+
+  // both exist — most recent timestamp wins (ISO-8601 UTC strings compare
+  // correctly as dates; server-stamped for account, client-stamped for local)
+  if (new Date(local.updatedAt) >= new Date(account.updated_at)) {
+    if (local.theme !== account.theme) await pushLocalToAccount(local);
+    applyTheme(local.theme);
+  } else {
+    applyTheme(account.theme);
+    writeLocalTheme(account.theme, account.updated_at);
+  }
+}
+
+async function pushLocalToAccount(local) {
+  try {
+    await api("/api/users/me/theme", { method: "PUT", body: { theme: local.theme } });
+  } catch {
+    // account sync failed (offline, expired session, etc.) — the local
+    // theme already applies; this will simply be retried on the next
+    // reconcileTheme() call (FR-012)
+  }
 }
