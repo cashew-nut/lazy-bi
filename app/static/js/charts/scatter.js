@@ -11,7 +11,7 @@ export const MARKER_GLYPHS = ["●", "■", "▲", "◆", "✕", "○", "✚", "
 
 export function drawMarker(shapeIdx, x, y, r, color) {
   const i = shapeIdx % MARKER_GLYPHS.length;
-  const attrs = { fill: color, stroke: "#0a0e17", "stroke-width": 1.5, class: "cross-mark" };
+  const attrs = { fill: color, "stroke-width": 1.5, class: "cross-mark bg-ring" };
   switch (i) {
     case 1: return svgEl("rect", { ...attrs, x: x - r, y: y - r, width: 2 * r, height: 2 * r });
     case 2: return svgEl("path", { ...attrs, d: `M${x},${y - r * 1.2} L${x + r * 1.1},${y + r} L${x - r * 1.1},${y + r} Z` });

@@ -34,7 +34,7 @@ export function renderDashList() {
     const pub = pubFor(d.id);
     const item = el("div", { class: "saved-item" + (state.dash && d.id === state.dash.id ? " on" : "") },
       el("span", { class: "nm" }, d.name),
-      ...(pub ? [el("span", { class: "tag", style: "color:#2bd97c", title: `published to /${pub.folder}` }, "◉")] : []),
+      ...(pub ? [el("span", { class: "tag", style: "color:var(--ok)", title: `published to /${pub.folder}` }, "◉")] : []),
       el("span", { class: "tag" }, tag),
       el("button", {
         class: "del", title: "delete",

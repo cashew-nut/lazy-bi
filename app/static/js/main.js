@@ -204,11 +204,12 @@ async function init() {
     vizMessage($("#chart"), "BACKEND OFFLINE // " + err.message, true);
   }
 
-  // dev hook: /?validate runs the palette validator in the console
+  // dev hook: /?validate runs the palette validator in the console, against
+  // whichever theme is currently active (data-mode set per theme in theme.js)
   if (location.search.includes("validate")) {
     document.body.dataset.palette = PALETTE.join(",");
-    document.body.dataset.mode = "dark";
-    document.body.dataset.surface = "#0a0e17";
+    document.body.dataset.mode = document.body.dataset.mode || "dark";
+    document.body.dataset.surface = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
     import("/static/validate_palette.js");
   }
 }
