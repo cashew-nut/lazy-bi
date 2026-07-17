@@ -1,6 +1,7 @@
 """Small helpers shared by routers."""
 from fastapi import HTTPException
 
+from ..pipelines import Pipeline
 from ..registry import registry
 from ..semantic import DimensionBundle, Model
 
@@ -17,3 +18,10 @@ def get_bundle(name: str) -> DimensionBundle:
     if not bundle:
         raise HTTPException(status_code=404, detail=f"unknown dimension bundle '{name}'")
     return bundle
+
+
+def get_pipeline(name: str) -> Pipeline:
+    pipeline = registry.pipelines.get(name)
+    if not pipeline:
+        raise HTTPException(status_code=404, detail=f"unknown pipeline '{name}'")
+    return pipeline

@@ -23,17 +23,44 @@ export async function loadModelling() {
   $("#modelling-side").innerHTML = "";
   $("#modelling-files").innerHTML = "";
   $("#modelling-bucket").textContent = "scanning bucket…";
-  const [models, bundles, data] = await Promise.all([
-    api("/api/models"), api("/api/dimensions"), api("/api/explorer"),
+  const [models, bundles, pipelines, data] = await Promise.all([
+    api("/api/models"), api("/api/dimensions"), api("/api/pipelines"), api("/api/explorer"),
   ]);
   state.models = models;
   state.bundles = bundles;
   $("#modelling-bucket").textContent =
     `s3://${data.bucket} @ ${data.endpoint.replace(/^https?:\/\//, "")} · ${data.files.length} objects · ${fmtBytes(data.files.reduce((s, f) => s + f.size, 0))}`;
   renderSide(models, bundles, data);
+  renderPipelines(pipelines);
   renderFiles(data);
 }
 hooks.loadModelling = loadModelling;
+
+const RUN_STATUS_LABEL = {
+  queued: "queued", running: "running…", succeeded: "✓ succeeded", failed: "✗ failed",
+  timed_out: "⏱ timed out", interrupted: "⚠ interrupted",
+};
+
+function renderPipelines(pipelines) {
+  const box = $("#modelling-side");
+  box.append(el("div", { class: "sec-title", style: "margin-top:16px" }, "Pipelines"));
+  if (!pipelines.length) {
+    box.append(el("div", { class: "empty-note" }, "none yet — hosted polars transformation scripts"));
+  }
+  for (const p of pipelines) {
+    const latest = p.latest_run;
+    const statusClass = latest?.status === "succeeded" ? "ok" : latest?.status === "failed" || latest?.status === "timed_out" ? "err" : "";
+    const card = el("div", { class: "mk-card" },
+      el("div", { class: "mk-top" },
+        el("span", { class: "nm" }, p.label),
+        el("span", { class: `fmt ${statusClass}` }, latest ? RUN_STATUS_LABEL[latest.status] || latest.status : "not run yet")),
+      el("div", { class: "path" }, `${p.target.path} (${p.materialization.mode}${p.materialization.mode === "upsert" ? `/${p.materialization.on_delete}` : ""})`),
+      el("div", { class: "mk-actions" },
+        el("button", { class: "mini-btn", onclick: () => navigate(paths.modellingPipelineYaml(p.name)) }, "{ } yaml")));
+    box.append(card);
+  }
+  box.append(el("button", { class: "ghost mk-new", onclick: () => navigate(paths.modellingNewPipelineYaml()) }, "+ new pipeline"));
+}
 
 function renderSide(models, bundles, data) {
   const box = $("#modelling-side");

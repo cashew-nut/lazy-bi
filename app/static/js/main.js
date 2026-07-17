@@ -16,7 +16,7 @@ import { attachAccount } from "./admin.js";
 import { initAuth } from "./auth.js";
 import { attachBundleForm } from "./bundleform.js";
 import { attachChat, probeChatAvailability } from "./chat.js";
-import { attachEditor, deleteEditorItem, saveEditor } from "./editor.js";
+import { attachEditor, deleteEditorItem, saveEditor, stopRunPolling } from "./editor.js";
 // side-effect only: registers hooks.renderHome for the router
 import "./home.js";
 import { $, api } from "./lib.js";
@@ -78,9 +78,12 @@ async function init() {
     attachBundleForm();
     $("#mk-new-model").addEventListener("click", () => openCreateChooser());
     $("#mk-new-bundle").addEventListener("click", () => navigate(paths.modellingNewBundle()));
+    $("#mk-new-pipeline").addEventListener("click", () => navigate(paths.modellingNewPipelineYaml()));
+    $("#mk-lineage-graph").addEventListener("click", () => navigate(paths.modellingLineage()));
+    $("#lineage-back").addEventListener("click", () => navigate(paths.modelling()));
     $("#editor-save").addEventListener("click", saveEditor);
     $("#editor-delete").addEventListener("click", deleteEditorItem);
-    $("#editor-back").addEventListener("click", () => navigate(paths.modelling()));
+    $("#editor-back").addEventListener("click", () => { stopRunPolling(); navigate(paths.modelling()); });
 
     // ── dashboards ──
     $("#new-dash").addEventListener("click", async () => {

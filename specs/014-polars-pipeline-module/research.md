@@ -97,6 +97,16 @@ multi-step logic — that's why `frame:` exists as an eval carve-out already).
 - Pre-merge guards run on the collected output before any write: null/dup
   key check, schema compatibility diff vs. the existing target, and the
   empty-output + `sync` halt unless `allow_empty_sync` (FR-010, FR-011).
+- **soft_delete retrofit guard**: the flag column only ever gets added
+  automatically on a target's *first* upsert run. Switching an existing
+  target (created by `replace`, or by an earlier upsert with a different
+  `on_delete`) to `soft_delete` fails clearly instead of being silently
+  patched up — empirically, `DeltaTable.merge(merge_schema=True)` does add
+  a missing column, but its `when_not_matched_by_source_update` leaves rows
+  outside the merge's source `null` instead of the intended flag value, so
+  "fixing" the missing column this way would corrupt the flag semantics
+  rather than the write. The fix is an explicit one-off `replace` run to
+  introduce the column before the pipeline switches to `soft_delete`.
 
 **Rationale**: `deltalake` 1.6.1 ships all four merge clauses used above;
 this is the entire reason Delta is the default/required target format for

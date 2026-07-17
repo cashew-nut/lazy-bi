@@ -18,7 +18,7 @@ Pipeline (pipelines/<name>.yaml) ──── sources (≥1, declared) ──►
 
 | Field | Type | Rules |
 |---|---|---|
-| `name` | str | required; must match filename stem; unique; `[a-z0-9_]+` like models |
+| `name` | str | required; unique; `[a-z0-9_]+` like models; the API derives the filename (`{name}.yaml`) at creation and treats the name as immutable thereafter (PUT 400s on rename) — same convention as `model.origin`, no separate stem-equality assertion in the loader |
 | `label` | str | optional; auto-titled from name when absent |
 | `description` | str | optional |
 | `sources` | list | ≥1 entry: `{name, format: parquet\|csv\|delta, path, layer?}`; `name` unique within the pipeline; `path` any scan-able bucket path/glob (delta: table root) |

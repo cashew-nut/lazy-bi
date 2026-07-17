@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse, Response
 
-from . import auth, config, emulator, seed
+from . import auth, config, emulator, pipeline_jobs, seed
 from .api import api_router
 from .registry import registry
 
@@ -94,7 +94,12 @@ async def lifespan(app: FastAPI):
     registry.init()
     print(f"[cash-intel] loaded models: {', '.join(registry.models) or '(none)'}")
     seed.seed_bootstrap_admin()
+    interrupted = registry.pipeline_store.sweep_interrupted()
+    if interrupted:
+        print(f"[cash-intel] marked {interrupted} pipeline run(s) interrupted (restart mid-run)")
+    pipeline_jobs.start_worker(registry)
     yield
+    pipeline_jobs.stop_worker()
     emulator.stop()
 
 

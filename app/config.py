@@ -23,6 +23,13 @@ MODELS_DIR = Path(os.environ.get("CI_MODELS_DIR", PROJECT_ROOT / "models"))
 DIMENSIONS_DIR = Path(os.environ.get("CI_DIMENSIONS_DIR", PROJECT_ROOT / "dimensions"))
 DB_PATH = Path(os.environ.get("CI_DB_PATH", PROJECT_ROOT / "cash_intel.db"))
 
+# Pipelines (specs/014-polars-pipeline-module/) — hosted polars transformation
+# scripts; a run executes in its own subprocess, killed if it outruns its
+# timeout (runs are strictly serialized platform-wide, one at a time).
+PIPELINES_DIR = Path(os.environ.get("CI_PIPELINES_DIR", PROJECT_ROOT / "pipelines"))
+PIPELINE_TIMEOUT_DEFAULT = 600
+PIPELINE_TIMEOUT_MAX = 3600
+
 # Hard cap on rows returned to the browser
 MAX_ROWS = 10_000
 

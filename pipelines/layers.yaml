@@ -1,0 +1,13 @@
+# Optional, deployment-wide, ordered layer list for pipeline sources/targets
+# (bronze/silver/gold or any naming a deployment prefers). Purely
+# organizational: assigning layers on pipeline sources/targets groups them
+# in the data overview and the lineage graph. Absent or empty = layers are
+# simply not used anywhere (specs/014-polars-pipeline-module/).
+#
+# layers:
+#   - name: bronze
+#     label: Bronze
+#   - name: silver
+#     label: Silver
+#   - name: gold
+#     label: Gold
