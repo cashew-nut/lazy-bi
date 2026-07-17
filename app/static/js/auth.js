@@ -5,6 +5,7 @@
 "use strict";
 
 import { $, api } from "./lib.js";
+import { reconcileTheme } from "./theme.js";
 
 let currentUser = null;
 
@@ -57,6 +58,12 @@ export async function initAuth() {
   } catch {
     currentUser = await waitForLogin();
   }
+  // fire-and-forget: reconciles this account's theme against whatever's
+  // stored locally (spec 013 FR-006). Not awaited — the locally-known
+  // theme is already showing (theme.js's initTheme(), run before auth), and
+  // this is a best-effort improvement, not something first paint should
+  // wait on.
+  reconcileTheme();
   renderBadge();
   applyRoleGates();
   $("#logout").addEventListener("click", async () => {
@@ -84,6 +91,9 @@ function wireLoginForm() {
       });
       currentUser = res.user;
       hideLogin();
+      // covers re-login after a mid-session expiry (the initAuth() call
+      // only fires once, on the very first login of the page load)
+      if (!loginResolve) reconcileTheme();
       renderBadge();
       applyRoleGates();
       if (loginResolve) { loginResolve(currentUser); loginResolve = null; }

@@ -34,11 +34,11 @@ export function renderLine(ctx, pivot) {
     }
   }
 
-  // crosshair + shared tooltip
-  const cross = svgEl("line", { class: "axis-line", y1: f.m.t, y2: f.m.t + f.plotH, visibility: "hidden", stroke: "#3a4a68" });
+  // crosshair (color comes from the .axis-line CSS rule, not set here) + shared tooltip
+  const cross = svgEl("line", { class: "axis-line", y1: f.m.t, y2: f.m.t + f.plotH, visibility: "hidden" });
   f.svg.append(cross);
   for (const s of series) {
-    const dot = svgEl("circle", { r: 4, fill: s.color, stroke: "#0a0e17", "stroke-width": 2, visibility: "hidden" });
+    const dot = svgEl("circle", { class: "bg-ring", r: 4, fill: s.color, "stroke-width": 2, visibility: "hidden" });
     markers.push(dot);
     f.svg.append(dot);
   }

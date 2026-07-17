@@ -21,6 +21,8 @@ MATRIX = {
     ("GET", "/api/tokens"): "viewer",
     ("POST", "/api/tokens"): "viewer",
     ("DELETE", "/api/tokens/{token_id}"): "viewer",
+    ("GET", "/api/users/me/theme"): "viewer",
+    ("PUT", "/api/users/me/theme"): "viewer",
 
     ("GET", "/api/models"): "viewer",
     ("POST", "/api/models/validate"): "viewer",

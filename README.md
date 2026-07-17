@@ -624,6 +624,9 @@ your role — viewers see no authoring controls at all):
   a model chip jumps to it in the builder; files no model reads are flagged as
   unmapped. This is where authoring — the dataset picker, guided common-model
   import, and expression intellisense described above — lives.
+- **ACCOUNT** — self-service for every signed-in role: personal access
+  tokens, password change, and (see [Themes](#themes)) picking one of the 4
+  visual themes. Admins additionally get user management here.
 
 ## Conversational analytics
 
@@ -774,8 +777,33 @@ tiles, toggle each tile between half and full width — layout auto-saves.
 pushed down to every tile whose model has that dimension (matched by name, so
 one `region` filter can drive tiles from different models; a `⧩` badge marks
 affected tiles). Filter edits auto-save into the active view; `+ VIEW` snapshots
-the current filters under a new name and the dropdown switches between them. The categorical
-palette is validated for the dark surface (lightness band, chroma floor,
-colorblind-safe adjacent separation, ≥3:1 contrast) — open `/?validate` and
-check the browser console to re-run the checks. Series colors follow entities,
-not ranks; more than 8 series folds the tail into "Other".
+the current filters under a new name and the dropdown switches between them. Each
+theme's categorical palette is independently validated against that theme's
+surface (lightness band, chroma floor, colorblind-safe adjacent separation,
+≥3:1 contrast) — open `/?validate` and check the browser console to re-run
+the checks against whichever theme is currently active. Series colors follow
+entities, not ranks; more than 8 series folds the tail into "Other".
+
+## Themes
+
+**ACCOUNT → Appearance** switches between 4 pre-packed visual themes:
+**Cyberpunk** (the original dark-neon look, still the default), **Daylight**
+(light, for bright environments), **Slate** (a muted dark theme without the
+neon glow), and **Contrast** (a high-contrast dark theme for accessibility).
+Switching is instant — no reload — and re-skins everything, chart colors
+included.
+
+A theme choice is remembered on the browser it was picked in (`localStorage`)
+and, for signed-in users, also synced to their account
+(`GET`/`PUT /api/users/me/theme`) so it follows them to another browser or
+device. If the two ever disagree — e.g. a choice made offline on one device,
+then a different choice made elsewhere — whichever was picked most recently
+wins on next login/boot, and gets written back to the side that was behind.
+
+All of this is built on `app/static/js/theme.js`, which owns the 4-theme
+catalog (CSS custom-property overrides live in `style.css`'s
+`[data-theme="..."]` blocks; each theme's categorical chart palette lives
+alongside it, run through `validate_palette.js` before being accepted).
+Creating or uploading a custom theme is intentionally out of scope for now —
+picking among the 4 shipped ones is all that's wired up
+(`specs/013-theme-presets/`).

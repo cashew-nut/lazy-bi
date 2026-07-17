@@ -8,8 +8,15 @@ import { $, el, api, fmtDateLabel } from "../lib.js";
 import { valueCache } from "../state.js";
 
 // Validated categorical palette — fixed slot order, assigned in sequence, never cycled.
+// Both are theme-owned (see theme.js): PALETTE is swapped by mutating this
+// same array in place (every consumer indexes into it at call time, so no
+// import-contract changes were needed — research.md §2); OTHER_COLOR is a
+// primitive, so it needs an explicit setter for theme.js to update it from
+// outside this module while every consumer's live `import { OTHER_COLOR }`
+// binding still sees the new value.
 export const PALETTE = ["#0099ad", "#a68f00", "#d633b8", "#eb6234", "#3d7dd6", "#1fae57", "#8b63f2", "#d64f75"];
-export const OTHER_COLOR = "#5b6b84"; // neutral for the folded "Other" series
+export let OTHER_COLOR = "#5b6b84"; // neutral for the folded "Other" series
+export function setOtherColor(v) { OTHER_COLOR = v; }
 export const MAX_SERIES = 8;
 export const GRAINS = { "1d": "day", "1w": "week", "1mo": "month", "1q": "quarter", "1y": "year" };
 

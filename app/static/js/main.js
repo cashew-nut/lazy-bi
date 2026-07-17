@@ -29,9 +29,11 @@ import { loadModelling, openCreateChooser } from "./modelling.js";
 import "./portal.js";
 import { initRouter, navigate, pathForMode, paths } from "./router.js";
 import { refreshPubs, state } from "./state.js";
+import { initTheme } from "./theme.js";
 
 async function init() {
   try {
+    initTheme();  // sync the chart palette to whatever theme the boot script already applied
     await initAuth();   // renders the login view first when no session exists
     const [health, models] = await Promise.all([api("/api/health"), api("/api/models")]);
     $("#conn").innerHTML = `<span class="dot">◉</span> S3 ${health.s3_endpoint.replace(/^https?:\/\//, "")} · POLARS ONLINE`;
@@ -204,11 +206,19 @@ async function init() {
     vizMessage($("#chart"), "BACKEND OFFLINE // " + err.message, true);
   }
 
-  // dev hook: /?validate runs the palette validator in the console
+  // dev hook: /?validate runs the palette validator in the console, against
+  // whichever theme is currently active. validate_palette.js's browser entry
+  // point reads its light/dark signal from body.dataset.mode specifically
+  // (that's its own fixed contract, left unmodified) — note this is a
+  // *different* attribute from the app's own body.dataset.mode (nav mode,
+  // set in state.js); this debug-only branch briefly overwrites it, which is
+  // harmless since ?validate is a one-off manual invocation, not a normal
+  // user flow. The value itself comes from the real source of truth,
+  // theme.js's documentElement.dataset.colorScheme.
   if (location.search.includes("validate")) {
     document.body.dataset.palette = PALETTE.join(",");
-    document.body.dataset.mode = "dark";
-    document.body.dataset.surface = "#0a0e17";
+    document.body.dataset.mode = document.documentElement.dataset.colorScheme || "dark";
+    document.body.dataset.surface = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
     import("/static/validate_palette.js");
   }
 }

@@ -15,6 +15,10 @@ from pathlib import Path
 from typing import Optional
 
 ROLES = ("viewer", "author", "admin")
+# spec 013: kept in sync by hand with the 4 ids in app/static/js/theme.js's
+# THEMES catalog — this backend has no shared-code path to the frontend, and
+# a 4-entry list changing rarely is a fine place to accept that duplication.
+VALID_THEMES = ("cyberpunk", "daylight", "slate", "contrast")
 USERNAME_RE = re.compile(r"^[a-z0-9_.-]{2,32}$")
 
 SCHEMA = """
@@ -77,6 +81,14 @@ class AuthStore:
         self.absolute = timedelta(days=max_days)
         with self._conn() as conn:
             conn.executescript(SCHEMA)
+            # spec 013: account-level theme preference, guarded so an
+            # existing database upgrades in place (same pattern as
+            # VisualStore.measure_provenance.user_id / ConversationStore's
+            # conversations.llm_model).
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)")}
+            if "theme" not in cols:
+                conn.execute("ALTER TABLE users ADD COLUMN theme TEXT")
+                conn.execute("ALTER TABLE users ADD COLUMN theme_updated_at TEXT")
 
     def _conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -98,6 +110,8 @@ class AuthStore:
             "locked_until": row["locked_until"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
+            "theme": row["theme"],
+            "theme_updated_at": row["theme_updated_at"],
         }
 
     @staticmethod
@@ -184,6 +198,32 @@ class AuthStore:
                 "UPDATE users SET failed_attempts = ?, locked_until = ? WHERE id = ?",
                 (failed_attempts, locked_until, user_id),
             )
+
+    # ── theme preference (spec 013) ─────────────────────────────
+    # A user's own account-level pick among the 4 fixed themes; validated
+    # against the known ids by the API layer (app/api/users.py), not here —
+    # same split as `role`, which this file also stores as a bare TEXT
+    # column and leaves enum validation to the caller.
+
+    def get_theme(self, user_id: int) -> Optional[dict]:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT theme, theme_updated_at FROM users WHERE id = ?", (user_id,)
+            ).fetchone()
+        if not row:
+            return None
+        return {"theme": row["theme"], "updated_at": row["theme_updated_at"]}
+
+    def set_theme(self, user_id: int, theme: str) -> dict:
+        if theme not in VALID_THEMES:
+            raise ValueError(f"theme must be one of {VALID_THEMES}")
+        now = _iso(_now())
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE users SET theme = ?, theme_updated_at = ? WHERE id = ?",
+                (theme, now, user_id),
+            )
+        return {"theme": theme, "updated_at": now}
 
     # ── sessions ─────────────────────────────────────────────
     # The narrow seam for a future shared session store: everything below

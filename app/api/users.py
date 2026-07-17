@@ -39,6 +39,10 @@ class TokenIn(BaseModel):
     name: str
 
 
+class ThemeIn(BaseModel):
+    theme: str
+
+
 def _admin_out(row: dict) -> dict:
     return {"id": row["id"], "username": row["username"],
             "display_name": row["display_name"], "role": row["role"],
@@ -129,3 +133,18 @@ def revoke_token(token_id: int, user: User = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="unknown token")
     registry.auth_store.record_audit("token_revoked", user.username,
                                      actor_user_id=user.id, target=str(token_id))
+
+
+# ── theme preference (own account, any role) — spec 013 ──────
+
+@router.get("/users/me/theme")
+def get_my_theme(user: User = Depends(get_current_user)):
+    return registry.auth_store.get_theme(user.id)
+
+
+@router.put("/users/me/theme")
+def set_my_theme(body: ThemeIn, user: User = Depends(get_current_user)):
+    try:
+        return registry.auth_store.set_theme(user.id, body.theme)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
