@@ -74,6 +74,7 @@ features simply dormant (FR-020).
 | `rows_flagged` | INTEGER | soft-delete flags set this run |
 | `lineage_ok` | INTEGER | 1/0/NULL (NULL = no declarations to validate) |
 | `lineage_issues` | TEXT JSON | list of `{kind: declared_missing\|undeclared_field, field}` |
+| `output_schema` | TEXT JSON | nullable; `[{name, dtype}]` reported by the runner on a successful run — persisted so the lineage-suggest endpoint (R5/FR-017) can fall back to "last successful run's schema" when the target doesn't exist yet |
 | `error` | TEXT | failure/timeout/interrupt detail |
 
 ### Run status state machine
@@ -140,6 +141,9 @@ Assembled on request from loaded pipelines + models + latest runs:
   that path.
 - **edges**: `{pipeline, source_id, target_id, status (latest run or none),
   transform_summary}` — one per (source, target) pair of each pipeline.
+  `transform_summary` is the pipeline's `description` field when set, else
+  "N fields documented" (count of its `lineage` declarations), else "No
+  transformation documented".
 - **field_lineage**: `{node_id, field, upstream: [{node_id, field}],
   transform}` — flattened per-hop links; the client walks hops for
   multi-level tracing.

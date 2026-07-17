@@ -83,12 +83,17 @@ multi-step logic — that's why `frame:` exists as an eval carve-out already).
 - **replace + parquet**: buffer + single `put_object` (same as `seed.py`) —
   a single-object PUT is atomic on S3.
 - **upsert (delta only)**: `DeltaTable.merge()` keyed on the declared key
-  column(s): `when_matched_update_all` + `when_not_matched_insert_all`.
-  Delete policies map to: `ignore` → nothing extra; `sync` →
+  column(s): `when_matched_update_all` + `when_not_matched_insert_all`. A
+  first upsert run against a target that doesn't exist yet creates it (an
+  initial write, equivalent to `replace` for that one run). Delete policies
+  map to: `ignore` → nothing extra; `sync` →
   `when_not_matched_by_source_delete()`; `soft_delete` →
-  `when_not_matched_by_source_update({flag: true})` (and the merge's
-  update-all clears the flag on reappearing keys); `predicate` →
-  `DeltaTable.delete(predicate)` executed before the merge.
+  `when_not_matched_by_source_update({flag: true})`, with the merge input
+  frame carrying a literal `flag = false` column (the flag is
+  platform-managed and never present in the script's own output, so
+  `update_all` needs it added explicitly to clear the flag on a reappearing
+  key); `predicate` → `DeltaTable.delete(predicate)` executed before the
+  merge.
 - Pre-merge guards run on the collected output before any write: null/dup
   key check, schema compatibility diff vs. the existing target, and the
   empty-output + `sync` halt unless `allow_empty_sync` (FR-010, FR-011).

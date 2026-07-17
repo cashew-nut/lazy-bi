@@ -79,5 +79,6 @@ shape and staleness/orphan marks). Guarantees:
 - Regeneration is idempotent: same validated lineage ⇒ same section text.
 - A model with no `pipeline_lineage:` section gains one at the end of the
   file; an existing section is replaced in place.
-- Deleting the owning pipeline marks the section `orphaned: true` on the
-  next reload; it is never silently removed.
+- Deleting the owning pipeline marks the section `orphaned: true` as part of
+  that same audited `DELETE /api/pipelines/{name}` request (a write, not a
+  side effect of reload); the section itself is never silently removed.

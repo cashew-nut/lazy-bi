@@ -64,9 +64,12 @@ error and the previous target data is not corrupted.
 2. **Given** a pipeline whose script raises an error, **When** it is run,
    **Then** the run is recorded as failed with the error message, and the
    target dataset remains exactly as it was before the run.
-3. **Given** a run in progress, **When** a second run of any pipeline is
+3. **Given** a run in progress, **When** a run of a *different* pipeline is
    triggered, **Then** it is queued and executed after the current run
-   completes — never concurrently.
+   completes — never concurrently. **Given** a pipeline that already has a
+   run queued or running, **When** it is triggered again, **Then** the new
+   trigger is refused (that pipeline already has a pending run) rather than
+   queued a second time.
 4. **Given** a non-admin user (author or viewer), **When** they attempt to
    create, edit, or run a pipeline, **Then** the action is refused; viewers
    and authors can still see pipeline definitions, run history, and lineage.
@@ -288,7 +291,9 @@ source field.
 
 - **FR-012**: Runs MUST be manually triggered (no scheduler in this feature)
   and executed as background jobs, strictly serialized — at most one pipeline
-  run executes at a time platform-wide; additional triggers queue in order.
+  run executes at a time platform-wide; a trigger for a different pipeline
+  queues behind the current run, while a trigger for a pipeline that already
+  has a queued or running run is refused rather than queued again.
 - **FR-013**: Each run MUST record: pipeline, triggering account, start/end
   time, status (queued / running / succeeded / failed / timed out /
   interrupted), rows written, delete-policy effects (rows deleted/flagged),
