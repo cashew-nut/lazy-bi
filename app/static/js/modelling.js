@@ -7,7 +7,9 @@
    common dimension model. */
 "use strict";
 
+import { isAdmin } from "./auth.js";
 import { $, api, el, fmtBytes } from "./lib.js";
+import { openMemoriesModal } from "./memories.js";
 import { setModelSeed } from "./modelform.js";
 import { navigate, paths } from "./router.js";
 import { hooks, state } from "./state.js";
@@ -49,6 +51,12 @@ function renderSide(models, bundles, data) {
       el("div", { class: "mk-actions" },
         el("button", { class: "mini-btn", onclick: () => navigate(paths.modellingModel(m.name)) }, "✎ edit"),
         el("button", { class: "mini-btn", title: "edit the raw yaml", onclick: () => navigate(paths.modellingModelYaml(m.name)) }, "{ } yaml"),
+        // curate what the chat assistant remembers about this model —
+        // memory mutations are admin-gated server-side, so only admins
+        // ever see the entry point
+        ...(isAdmin()
+          ? [el("button", { class: "mini-btn", title: "chat-learned memories (synonyms, notes) for this model", onclick: () => openMemoriesModal(m) }, "◈ memory")]
+          : []),
         el("button", { class: "mini-btn go", onclick: () => openInBuilder(m.name) }, "build ►")));
     box.append(card);
   }

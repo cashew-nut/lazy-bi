@@ -55,6 +55,12 @@ class ModelCatalogEntry:
     description: str
     dimensions: list[dict] = field(default_factory=list)  # [{name, label, type, description, synonyms}]
     measures: list[dict] = field(default_factory=list)     # [{name, label, description, synonyms, expr?}]
+    # chat-learned free-text facts about this model (memorystore kind:"note"),
+    # shown as "learned fact" lines in the prompt catalog. Learned *synonyms*
+    # don't appear here — nlq.build_catalog merges them straight into the
+    # dimension/measure `synonyms` lists above, indistinguishable from
+    # yaml-declared ones by the time the LLM sees them.
+    learned_notes: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -265,6 +271,47 @@ _TOOLS = [
     },
 ]
 
+# Optional on every one of the four tools (learning can accompany any
+# decision — an answer, a clarification, even a decline): durable facts
+# about a *model* worth remembering for future conversations, by any user.
+# Anything the LLM proposes here is re-validated (nlq._validate_memories)
+# before it can reach the store, exactly like a proposed query.
+_MEMORIES_PROPERTY = {
+    "type": "array",
+    "maxItems": 3,
+    "description": (
+        "Optional: durable facts learned from THIS exchange about a catalog "
+        "model itself, worth remembering for every future user of that model. "
+        "kind 'synonym': the question used a business term for a declared "
+        "dimension/measure that its catalog entry doesn't list — subject is "
+        "the declared name, content is the new term. kind 'note': a short, "
+        "user-independent fact about the model's vocabulary or data (e.g. "
+        "'therapeutic_area values are title-cased English names'). NEVER "
+        "record anything about the current user: no preferences, no names, "
+        "no habits, no favorite charts or formats, nothing session-specific "
+        "— only facts about the model that hold for everyone."
+    ),
+    "items": {
+        "type": "object",
+        "properties": {
+            "model": {"type": "string", "description": "the catalog model this fact belongs to."},
+            "kind": {"type": "string", "enum": ["synonym", "note"]},
+            "subject": {
+                "type": "string",
+                "description": "synonym only: the declared dimension/measure name the term maps to.",
+            },
+            "content": {
+                "type": "string",
+                "description": "the synonym term itself, or the note text (short, one fact).",
+            },
+        },
+        "required": ["model", "kind", "content"],
+    },
+}
+
+for _tool in _TOOLS:
+    _tool["input_schema"]["properties"]["memories"] = _MEMORIES_PROPERTY
+
 
 def _tools_for_catalog(catalog: list[ModelCatalogEntry]) -> list[dict]:
     """_TOOLS, with propose_query's `model` constrained to this request's
@@ -354,7 +401,22 @@ _SYSTEM_PROMPT = (
     "reasonably map to more than one model/dimension/measure, "
     "show_last_query when the user is asking to see/return the query used "
     "for a previous answer rather than asking a new business question, or "
-    "decline when it cannot be answered from the catalog at all."
+    "decline when it cannot be answered from the catalog at all.\n\n"
+    "Self-learning: whatever tool you call may also carry `memories` — "
+    "durable facts about a catalog model learned from this exchange, stored "
+    "against that model and shown to every future conversation about it. "
+    "Record a memory only when this exchange actually revealed one: a "
+    "business term the question used for a declared dimension/measure that "
+    "its catalog entry doesn't already list (kind 'synonym', subject = the "
+    "declared name, content = the term), or a short user-independent fact "
+    "about the model's vocabulary or data (kind 'note'). A model may also "
+    "already show 'learned fact' lines — treat those as catalog truth, and "
+    "don't re-record them. STRICT PRIVACY RULE: memories describe the data "
+    "model, never the person asking. Do not store the user's preferences, "
+    "identity, role, habits, or anything else about them (no 'the user "
+    "prefers charts', no 'Alice usually asks about EMEA') — if a fact is "
+    "only true for this user or this session, it is not a memory. Most "
+    "turns should record none."
 )
 
 
@@ -362,6 +424,11 @@ def _catalog_text(catalog: list[ModelCatalogEntry]) -> str:
     lines = []
     for m in catalog:
         lines.append(f"## model: {m.name} ({m.label}) — {m.description}")
+        for note in m.learned_notes:
+            # chat-learned, admin-curated facts (memorystore kind:"note") —
+            # rendered before the declared entries so they read as context
+            # for everything below, same as the model description
+            lines.append(f"  learned fact: {note}")
         for d in m.dimensions:
             line = f"  dimension: {d['name']} ({d['type']}) — {d.get('description', '')}"
             if d.get("synonyms"):

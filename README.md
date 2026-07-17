@@ -572,6 +572,7 @@ route-by-route matrix lives in
 | `GET/POST /api/visuals`, `PUT/DELETE /api/visuals/{id}` | saved visuals (SQLite: `cash_intel.db`) |
 | `GET/POST /api/dashboards`, `GET/PUT/DELETE /api/dashboards/{id}` | dashboards — ordered tiles `{visual_id, w:1\|2}`; GET by id resolves tile visuals; create/update reject a tile set where two visuals declare a same-named, differently-defined parameter (see "Visual parameters" above) |
 | `GET/POST /api/conversations`, `GET/PATCH/DELETE /api/conversations/{id}`, `POST /api/conversations/{id}/ask` | conversational analytics (SQLite: `cash_intel.db`) — strictly owner-scoped; 503 unless `CI_LLM_API_KEY` is set (see "Conversational analytics" below) |
+| `GET /api/models/{m}/memories`, `POST/PATCH/DELETE /api/models/{m}/memories[/{id}]` | chat-learned model memories (synonyms/notes the assistant records against a model) — reads any role, mutations **admin** (see "Conversational analytics" below) |
 
 Query shape:
 
@@ -666,6 +667,29 @@ what's actually on file before filtering. As a safety net, an `eq`/`ne`/
 `in`/`not_in` filter's value is also case-insensitively corrected against
 those same sample values before the query runs, in case the model's own
 conversion falls short.
+
+**Self-learning model memories.** Chat teaches the assistant about the
+*models*, and what it learns compounds: any tool call may carry `memories` —
+durable, user-independent facts learned from that exchange, stored against
+the semantic model in SQLite (`model_memories`). Two kinds, a deliberately
+closed vocabulary: **synonym** (the question used a business term for a
+declared dimension/measure that the yaml doesn't list — e.g. users say
+"gross takings" for `revenue`) and **note** (a short fact about the model's
+vocabulary or data). Like a proposed query, a proposed memory is never
+trusted: it's re-validated against the live model (the synonym's target must
+be a declared dimension/measure, redundant/over-long/unknown-kind entries
+are dropped, max 3 per turn, deduped, capped per model) before it's stored.
+On every subsequent ask — by **any** user — stored synonyms merge into the
+catalog's `also called` lists and notes appear as `learned fact` lines, so
+a term taught once grounds every future conversation. Memories describe the
+model, **never the person asking**: the system prompt forbids recording user
+preferences/identity/habits, the kind vocabulary has no user-shaped entry,
+and the table has no user retrieval axis at all (`created_by` is audit
+attribution only). Admins curate the pool — every learned memory is
+listable, editable, and deletable via `GET /api/models/{m}/memories`
+(any authenticated role) and `POST/PATCH/DELETE` (**admin**), or from the
+**◈ memory** button on a model card in MODELLING; every write (learned or
+curated) lands in the audit log.
 
 **Off by default.** The whole feature — nav entry, API routes, everything —
 is disabled (`GET/POST /api/conversations*` return 503) unless
