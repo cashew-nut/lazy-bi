@@ -15,9 +15,11 @@ import queue
 import subprocess
 import sys
 import threading
+from datetime import datetime, timezone
 from typing import Optional
 
-from . import config
+from . import config, semantic
+from . import pipelines as pipelines_mod
 from .pipelines import Pipeline
 from .pipelinestore import PipelineStore
 
@@ -50,7 +52,34 @@ def _pipeline_job_spec(pipeline: Pipeline) -> dict:
     }
 
 
-def _execute(run_id: int, pipeline: Pipeline, store: PipelineStore) -> None:
+def _sync_lineage(registry, pipeline: Pipeline, output_schema: Optional[list]) -> tuple:
+    """Validate declared lineage against the run's output schema and, if a
+    loaded model scans this pipeline's target, regenerate that model's
+    `pipeline_lineage:` section. Returns (lineage_ok, issues) for the run
+    record — lineage_ok is None when the pipeline declares no lineage at all
+    (nothing to validate, FR-018). Validation itself is always computed;
+    the model-yaml write is best-effort — a filesystem hiccup there must
+    never be conflated with "the declared lineage is wrong"."""
+    if not pipeline.lineage:
+        return None, []
+    if output_schema is None:  # the run failed before a schema was ever reported
+        return False, [{"kind": "declared_missing", "field": e.field} for e in pipeline.lineage]
+    issues = pipelines_mod.validate_lineage(pipeline.lineage, output_schema)
+    try:
+        model_name = pipelines_mod.match_target_model(pipeline, registry.models)
+        if model_name:
+            model = registry.models[model_name]
+            updated = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            section = pipelines_mod.build_lineage_section(pipeline, output_schema, issues, updated)
+            model.origin.write_text(semantic.replace_lineage_yaml(model.origin.read_text(), section))
+            registry.reload_all()
+    except Exception:
+        pass
+    return (len(issues) == 0), issues
+
+
+def _execute(run_id: int, pipeline: Pipeline, registry) -> None:
+    store: PipelineStore = registry.pipeline_store
     store.mark_running(run_id)
     job = {
         "pipeline": _pipeline_job_spec(pipeline),
@@ -101,10 +130,12 @@ def _execute(run_id: int, pipeline: Pipeline, store: PipelineStore) -> None:
         return
 
     if result.get("ok"):
+        lineage_ok, lineage_issues = _sync_lineage(registry, pipeline, result.get("output_schema"))
         store.finish_run(
             run_id, "succeeded",
             rows_written=result.get("rows_written"), rows_deleted=result.get("rows_deleted"),
             rows_flagged=result.get("rows_flagged"), output_schema=result.get("output_schema"),
+            lineage_ok=lineage_ok, lineage_issues=lineage_issues,
         )
     else:
         store.finish_run(
@@ -128,7 +159,7 @@ def _drain(registry) -> None:
                 run_id, "failed", error=f"pipeline '{run['pipeline']}' no longer exists"
             )
             continue
-        _execute(run_id, pipeline, registry.pipeline_store)
+        _execute(run_id, pipeline, registry)
 
 
 def enqueue(run_id: int) -> None:

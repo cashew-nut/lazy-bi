@@ -50,6 +50,9 @@ MATRIX = {
     ("GET", "/api/pipelines/{name}/yaml"): "viewer",
     ("GET", "/api/pipelines/{name}/runs"): "viewer",
     ("GET", "/api/runs/{run_id}"): "viewer",
+    ("GET", "/api/lineage/layers"): "viewer",
+    ("GET", "/api/pipelines/{name}/lineage/suggest"): "viewer",
+    ("GET", "/api/lineage/graph"): "viewer",
     ("GET", "/api/conversations"): "viewer",
     ("POST", "/api/conversations"): "viewer",
     ("GET", "/api/conversations/{conversation_id}"): "viewer",
@@ -92,6 +95,7 @@ MATRIX = {
     ("PUT", "/api/pipelines/{name}/yaml"): "admin",
     ("DELETE", "/api/pipelines/{name}"): "admin",
     ("POST", "/api/pipelines/{name}/run"): "admin",
+    ("PUT", "/api/lineage/layers"): "admin",
 }
 
 ROLE_ORDER = {"viewer": 0, "author": 1, "admin": 2}

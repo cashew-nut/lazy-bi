@@ -175,9 +175,12 @@ export async function openEditor(kind, name, opts = {}) {
   $("#editor-cols-panel").hidden = isPipeline;    // no column palette for a real-python script
   $("#editor-pipeline-panel").hidden = !isPipeline;
   $("#editor-run").hidden = !isPipeline || !editor.name;   // a brand-new (unsaved) pipeline has nothing to run yet
+  $("#editor-lineage-suggest").hidden = !isPipeline || !editor.name;  // suggest needs a saved pipeline to query
   if (isModel) renderImportPanel();      // "Common Dimensions" import affordance
-  if (isPipeline && editor.name) loadRunHistory();
-  else if (isPipeline) renderRuns([]);
+  if (isPipeline) {
+    loadLayerPicker();
+    if (editor.name) loadRunHistory(); else renderRuns([]);
+  }
   showView("editor");
   validateEditor();
 }
@@ -437,6 +440,7 @@ export async function saveEditor() {
     $("#editor-delete").hidden = false;
     if (editor.kind === "pipeline") {
       $("#editor-run").hidden = false;
+      $("#editor-lineage-suggest").hidden = false;
       if (hooks.loadModelling) await hooks.loadModelling();
       await loadRunHistory();
     } else {
@@ -547,6 +551,97 @@ export async function runPipeline() {
   }, 1000);
 }
 
+// ── layer picker (US3): a click-to-insert shortcut for the target's layer —
+// source layers and anything more exotic stay hand-edited in the yaml,
+// which the parser already fully supports. ──
+
+function _topLevelBlockEnd(lines, keyIdx) {
+  let end = lines.length;
+  for (let i = keyIdx + 1; i < lines.length; i++) {
+    if (lines[i].trim() && !lines[i].startsWith(" ") && !lines[i].startsWith("\t") && !lines[i].startsWith("#")) {
+      end = i;
+      break;
+    }
+  }
+  return end;
+}
+
+function applyTargetLayer(layerName) {
+  const ta = $("#yaml-editor");
+  const lines = ta.value.split("\n");
+  const targetIdx = lines.findIndex((l) => l.replace(/\s+$/, "") === "target:");
+  if (targetIdx === -1) { alert("no 'target:' block found in this pipeline yaml"); return; }
+  const end = _topLevelBlockEnd(lines, targetIdx);
+  const body = lines.slice(targetIdx + 1, end).filter((l) => !/^\s*layer:/.test(l));
+  const next = [...lines.slice(0, targetIdx + 1), ...body, `  layer: ${layerName}`, ...lines.slice(end)];
+  ta.value = next.join("\n");
+  markDirty();
+}
+
+async function loadLayerPicker() {
+  const box = $("#editor-layer-picker");
+  box.innerHTML = "";
+  let layers;
+  try {
+    layers = (await api("/api/lineage/layers")).layers;
+  } catch {
+    box.append(el("div", { class: "empty-note" }, "layers unavailable"));
+    return;
+  }
+  if (!layers.length) {
+    box.append(el("div", { class: "empty-note" }, "none declared — see pipelines/layers.yaml"));
+    return;
+  }
+  box.append(el("div", { class: "empty-note" }, "click to set the target's layer"));
+  for (const l of layers) {
+    const chip = el("div", { class: "col-chip", title: `set target layer → ${l.name}` }, el("span", {}, l.label));
+    chip.addEventListener("click", () => applyTargetLayer(l.name));
+    box.append(chip);
+  }
+}
+
+// ── lineage pass-through suggestions (US3) — never auto-persisted (FR-017):
+// SUGGEST only inserts draft entries into the yaml text; nothing is saved
+// until SAVE + RELOAD. ──
+
+function applyLineageSuggestions(suggestions) {
+  const ta = $("#yaml-editor");
+  const lines = ta.value.split("\n");
+  const entryLines = suggestions.flatMap((s) => [
+    `  - field: ${s.field}`,
+    `    from: [${s.from.join(", ")}]`,
+    `    transform: ${s.transform}`,
+  ]);
+  const lineageIdx = lines.findIndex((l) => l.replace(/\s+$/, "") === "lineage:");
+  let next;
+  if (lineageIdx === -1) {
+    next = [...lines, "lineage:", ...entryLines];
+  } else {
+    const end = _topLevelBlockEnd(lines, lineageIdx);
+    next = [...lines.slice(0, end), ...entryLines, ...lines.slice(end)];
+  }
+  ta.value = next.join("\n");
+  markDirty();
+}
+
+async function suggestLineage() {
+  if (!editor.name || editor.kind !== "pipeline") return;
+  let data;
+  try {
+    data = await api(`/api/pipelines/${editor.name}/lineage/suggest`);
+  } catch (err) {
+    alert(`Could not fetch suggestions: ${err.message}`);
+    return;
+  }
+  const suggestions = data.suggestions || [];
+  if (!suggestions.length) {
+    alert("No pass-through suggestions available — either every output field is already "
+      + "declared, or none match a source column name.");
+    return;
+  }
+  applyLineageSuggestions(suggestions);
+}
+
 // ── wiring (called once from main.js) ──
 
 export function attachEditor() {
@@ -560,6 +655,7 @@ export function attachEditor() {
   ta.addEventListener("blur", () => setTimeout(() => completer.hide(), 150));
   $("#editor-pick-dataset").addEventListener("click", toggleDatasetPicker);
   $("#editor-run").addEventListener("click", runPipeline);
+  $("#editor-lineage-suggest").addEventListener("click", suggestLineage);
   $("#editor-revert").addEventListener("click", () => {
     ta.value = editor.original;
     editor.dirty = false;

@@ -50,10 +50,14 @@ function renderPipelines(pipelines) {
   for (const p of pipelines) {
     const latest = p.latest_run;
     const statusClass = latest?.status === "succeeded" ? "ok" : latest?.status === "failed" || latest?.status === "timed_out" ? "err" : "";
+    const layerBadge = p.target.layer ? el("span", { class: "model-chip", title: "target layer" }, p.target.layer) : null;
+    const top = [
+      el("span", { class: "nm" }, p.label),
+      el("span", { class: `fmt ${statusClass}` }, latest ? RUN_STATUS_LABEL[latest.status] || latest.status : "not run yet"),
+    ];
+    if (layerBadge) top.push(layerBadge);
     const card = el("div", { class: "mk-card" },
-      el("div", { class: "mk-top" },
-        el("span", { class: "nm" }, p.label),
-        el("span", { class: `fmt ${statusClass}` }, latest ? RUN_STATUS_LABEL[latest.status] || latest.status : "not run yet")),
+      el("div", { class: "mk-top" }, ...top),
       el("div", { class: "path" }, `${p.target.path} (${p.materialization.mode}${p.materialization.mode === "upsert" ? `/${p.materialization.on_delete}` : ""})`),
       el("div", { class: "mk-actions" },
         el("button", { class: "mini-btn", onclick: () => navigate(paths.modellingPipelineYaml(p.name)) }, "{ } yaml")));
@@ -166,6 +170,85 @@ hooks.openCreateChooser = openCreateChooser;
 
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !$("#create-modal").hidden) closeCreateChooser();
+});
+
+// ── layers editor (US3): the optional, deployment-wide ordered layer list
+// (bronze/silver/gold, or any naming a deployment prefers) pipelines assign
+// their sources/target to. Reuses the same overlay as the create chooser. ──
+
+export async function openLayersModal() {
+  const overlay = $("#create-modal");
+  overlay.innerHTML = "";
+
+  let rows;
+  try {
+    rows = (await api("/api/lineage/layers")).layers.map((l) => ({ ...l }));
+  } catch {
+    rows = [];
+  }
+
+  const body = el("div", { class: "cc-body" });
+
+  const renderRows = () => {
+    body.innerHTML = "";
+    rows.forEach((row, i) => {
+      const nameInput = el("input", { value: row.name, placeholder: "name (a-z0-9_)" });
+      nameInput.addEventListener("input", (e) => { row.name = e.target.value; });
+      const labelInput = el("input", { value: row.label || "", placeholder: "label (optional)" });
+      labelInput.addEventListener("input", (e) => { row.label = e.target.value; });
+      const up = el("button", { class: "mini-btn", title: "move up", disabled: i === 0 ? "" : undefined },
+        "▲");
+      up.addEventListener("click", () => { [rows[i - 1], rows[i]] = [rows[i], rows[i - 1]]; renderRows(); });
+      const down = el("button", {
+        class: "mini-btn", title: "move down", disabled: i === rows.length - 1 ? "" : undefined,
+      }, "▼");
+      down.addEventListener("click", () => { [rows[i], rows[i + 1]] = [rows[i + 1], rows[i]]; renderRows(); });
+      const remove = el("button", { class: "mini-btn", title: "remove" }, "✕");
+      remove.addEventListener("click", () => { rows.splice(i, 1); renderRows(); });
+      body.append(el("div", { class: "layer-row" }, nameInput, labelInput, up, down, remove));
+    });
+  };
+  renderRows();
+
+  const addBtn = el("button", { class: "ghost mk-new" }, "+ add layer");
+  addBtn.addEventListener("click", () => { rows.push({ name: "", label: "" }); renderRows(); });
+
+  const status = el("span", {});
+  const save = el("button", { class: "btn alt" }, "SAVE");
+  save.addEventListener("click", async () => {
+    const payload = rows.filter((r) => r.name.trim());
+    try {
+      await api("/api/lineage/layers", { method: "PUT", body: { layers: payload } });
+      closeLayersModal();
+      if (hooks.loadModelling) await hooks.loadModelling();
+    } catch (err) {
+      status.textContent = err.message;
+      status.className = "err";
+    }
+  });
+  const close = el("button", { class: "btn" }, "✕ CLOSE");
+  close.addEventListener("click", closeLayersModal);
+
+  overlay.append(el("div", { class: "mm-card cc-card" },
+    el("div", { class: "chart-head" },
+      el("span", { class: "editor-file" }, "layers"),
+      status,
+      el("span", { style: "flex:1" }),
+      save, close),
+    body,
+    el("div", { style: "padding:0 16px 16px" }, addBtn)));
+  overlay.hidden = false;
+  overlay.onclick = (e) => { if (e.target === overlay) closeLayersModal(); };
+}
+hooks.openLayersModal = openLayersModal;
+
+function closeLayersModal() {
+  $("#create-modal").hidden = true;
+  $("#create-modal").innerHTML = "";
+}
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("#create-modal").hidden) closeLayersModal();
 });
 
 // datasets↔models overview (carried over verbatim from the old explorer)

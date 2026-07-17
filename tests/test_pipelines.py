@@ -787,3 +787,97 @@ def test_guard_empty_output_with_sync_optin_truncates(tmp_path):
     stats = materialize(empty, target, mat, {})
     assert stats["rows_deleted"] == 2
     assert pl.read_delta(target.path, storage_options={}).height == 0
+
+
+# --- lineage helpers (US3 — T023/T026): validate_lineage, match_target_model,
+# build_lineage_section ------------------------------------------------------
+
+from app import semantic
+
+LINEAGE_PIPELINE = VALID + (
+    "lineage:\n"
+    "  - field: order_id\n"
+    "    from: [raw_orders.order_id]\n"
+    "    transform: pass-through\n"
+)
+
+
+def test_validate_lineage_flags_declared_missing():
+    p = pipelines.parse_pipeline_text(LINEAGE_PIPELINE)
+    issues = pipelines.validate_lineage(p.lineage, [{"name": "other_col", "dtype": "Int64"}])
+    assert {"kind": "declared_missing", "field": "order_id"} in issues
+
+
+def test_validate_lineage_flags_undeclared_output_field():
+    p = pipelines.parse_pipeline_text(LINEAGE_PIPELINE)
+    issues = pipelines.validate_lineage(p.lineage, [
+        {"name": "order_id", "dtype": "Int64"}, {"name": "extra_col", "dtype": "Int64"},
+    ])
+    assert {"kind": "undeclared_field", "field": "extra_col"} in issues
+    assert not any(i["field"] == "order_id" for i in issues)
+
+
+def test_validate_lineage_clean_when_matching():
+    p = pipelines.parse_pipeline_text(LINEAGE_PIPELINE)
+    issues = pipelines.validate_lineage(p.lineage, [{"name": "order_id", "dtype": "Int64"}])
+    assert issues == []
+
+
+def _model(text: str) -> semantic.Model:
+    return semantic.parse_model_text(text)
+
+
+def test_match_target_model_delta_exact_path():
+    p = pipelines.parse_pipeline_text(VALID)  # target: s3://b/silver/orders, format delta
+    model = _model(
+        "name: gold\nsource: {format: delta, path: s3://b/silver/orders}\n"
+        "dimensions: [{name: x}]\nmeasures: [{name: rows, expr: count()}]\n"
+    )
+    assert pipelines.match_target_model(p, {"gold": model}) == "gold"
+
+
+def test_match_target_model_no_match():
+    p = pipelines.parse_pipeline_text(VALID)
+    model = _model(
+        "name: unrelated\nsource: {format: parquet, path: s3://b/other/*.parquet}\n"
+        "dimensions: [{name: x}]\nmeasures: [{name: rows, expr: count()}]\n"
+    )
+    assert pipelines.match_target_model(p, {"unrelated": model}) is None
+
+
+def test_match_target_model_parquet_glob():
+    text = VALID.replace("format: delta", "format: parquet").replace(
+        "path: s3://b/silver/orders", "path: s3://b/silver/orders.parquet")
+    p = pipelines.parse_pipeline_text(text)
+    model = _model(
+        "name: gold\nsource: {format: parquet, path: s3://b/silver/*.parquet}\n"
+        "dimensions: [{name: x}]\nmeasures: [{name: rows, expr: count()}]\n"
+    )
+    assert pipelines.match_target_model(p, {"gold": model}) == "gold"
+
+
+def test_build_lineage_section_renders_layer_qualified_refs():
+    text = LINEAGE_PIPELINE.replace(
+        "    path: s3://b/bronze/orders/*.parquet\n",
+        "    path: s3://b/bronze/orders/*.parquet\n    layer: bronze\n",
+    )
+    p = pipelines.parse_pipeline_text(text)
+    section = pipelines.build_lineage_section(
+        p, [{"name": "order_id", "dtype": "Int64"}], [], "2026-07-17T00:00:00Z"
+    )
+    assert section["fields"][0]["sources"] == ["bronze:raw_orders.order_id"]
+
+
+def test_build_lineage_section_marks_stale():
+    p = pipelines.parse_pipeline_text(LINEAGE_PIPELINE)
+    issues = [{"kind": "declared_missing", "field": "order_id"}]
+    section = pipelines.build_lineage_section(p, [], issues, "2026-07-17T00:00:00Z")
+    assert section["fields"][0]["stale"] is True
+
+
+def test_build_lineage_section_orphaned_flag():
+    p = pipelines.parse_pipeline_text(LINEAGE_PIPELINE)
+    section = pipelines.build_lineage_section(
+        p, [{"name": "order_id", "dtype": "Int64"}], [], "t", orphaned=True
+    )
+    assert section["orphaned"] is True

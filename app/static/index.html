@@ -268,6 +268,7 @@
           <button class="btn alt" id="mk-new-bundle" data-role="admin">+ COMMON MODEL</button>
           <button class="btn alt" id="mk-new-pipeline" data-role="admin">+ PIPELINE</button>
           <button class="btn plain" id="mk-lineage-graph">◈ LINEAGE</button>
+          <button class="btn plain" id="mk-layers" data-role="admin">▤ LAYERS</button>
           <button class="btn plain" id="modelling-refresh">REFRESH</button>
         </div>
         <div class="explorer-body">
@@ -282,7 +283,9 @@
           <span id="lineage-crumbs" class="crumbs"></span>
           <button class="btn" id="lineage-back">◄ MODELLING</button>
         </div>
-        <div id="lineage-graph-box" class="lineage-graph-box"></div>
+        <div class="editor-body">
+          <div id="lineage-graph-box" class="lineage-graph-box editor-main"></div>
+        </div>
       </div>
 
       <div id="modelform-view" class="chart-card" hidden>

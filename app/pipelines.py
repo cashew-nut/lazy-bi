@@ -8,6 +8,7 @@ executes it). Execution lives in `app/pipeline_runner.py`.
 """
 from __future__ import annotations
 
+import fnmatch
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -364,3 +365,79 @@ def layers_to_yaml(layers: dict[str, Layer]) -> str:
     replace, unlike model/pipeline yaml)."""
     doc = {"layers": [{"name": l.name, "label": l.label} for l in layers.values()]}
     return yaml.dump(doc, sort_keys=False, default_flow_style=False, width=1000)
+
+
+# ---------------------------------------------------------------------------
+# Lineage: validating declarations against a real run's output schema,
+# matching a pipeline's target to a loaded model, and building the plain-dict
+# payload semantic.replace_lineage_yaml regenerates into that model's yaml
+# (specs/014-polars-pipeline-module/ US3).
+# ---------------------------------------------------------------------------
+
+def validate_lineage(lineage: list[LineageEntry], output_schema: list[dict]) -> list[dict]:
+    """Compare declared lineage fields against a run's actual output schema
+    (the runner-reported `[{name, dtype}]`). Never blocks the write (FR-018)
+    — issues are informational, surfaced on the run and in the model's
+    lineage section. Two kinds: `declared_missing` (declared but the output
+    no longer has it) and `undeclared_field` (an output column nobody
+    declared lineage for)."""
+    output_fields = {f["name"] for f in output_schema}
+    declared_fields = {entry.field for entry in lineage}
+    issues: list[dict] = []
+    for entry in lineage:
+        if entry.field not in output_fields:
+            issues.append({"kind": "declared_missing", "field": entry.field})
+    for name in sorted(output_fields - declared_fields):
+        issues.append({"kind": "undeclared_field", "field": name})
+    return issues
+
+
+def match_target_model(pipeline: Pipeline, models: dict) -> Optional[str]:
+    """The name of the loaded model (if any) whose source scans this
+    pipeline's target: delta targets match by exact path; parquet targets
+    match when the model's source glob fnmatches the target's object key."""
+    target = pipeline.target
+    for name, model in models.items():
+        src = model.source
+        if target.format == "delta":
+            if src.format == "delta" and src.path.rstrip("/") == target.path.rstrip("/"):
+                return name
+        elif src.format == "parquet" and fnmatch.fnmatch(target.path, src.path):
+            return name
+    return None
+
+
+def _render_lineage_ref(ref: str, pipeline: Pipeline) -> str:
+    """`source_name.column` -> `layer:source_name.column` when that source
+    has a declared layer, else unchanged (data-model.md's model-section
+    shape)."""
+    src_name, _, _ = ref.partition(".")
+    source = pipeline.sources.get(src_name)
+    if source and source.layer:
+        return f"{source.layer}:{ref}"
+    return ref
+
+
+def build_lineage_section(
+    pipeline: Pipeline, output_schema: list[dict], issues: list[dict],
+    updated: str, orphaned: bool = False,
+) -> dict:
+    """The plain dict semantic.replace_lineage_yaml regenerates into the
+    matched model's yaml: declared lineage entries with layer-qualified
+    source refs, marked stale where validation found the field missing from
+    the output."""
+    stale_fields = {i["field"] for i in issues if i["kind"] == "declared_missing"}
+    fields = []
+    for entry in pipeline.lineage:
+        item = {
+            "field": entry.field,
+            "sources": [_render_lineage_ref(ref, pipeline) for ref in entry.sources],
+            "transform": entry.transform,
+        }
+        if entry.field in stale_fields:
+            item["stale"] = True
+        fields.append(item)
+    section = {"pipeline": pipeline.name, "updated": updated, "fields": fields}
+    if orphaned:
+        section["orphaned"] = True
+    return section
