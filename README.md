@@ -5,7 +5,10 @@ the columns and row-groups a query needs leave the bucket — aggregates them, a
 returns results to a cyberpunk query-builder UI. A YAML **semantic layer**
 defines the sources (**parquet / csv / Delta Lake**), **joins**, dimensions and
 measures the builder works with; saved visuals and **dashboards** persist in
-SQLite.
+SQLite. **Pipelines** (see [below](#pipelines)) host real polars scripts that
+materialize new sources into the bucket — replace or upsert, with delete
+handling — and document their field-level lineage on the models they feed,
+visualized as a graph.
 
 ```
 browser (login + query builder + dashboards + SVG charts)
@@ -84,24 +87,31 @@ shared `CI_API_KEY` secret is retired and grants nothing.
 app/
   config.py            env-driven settings (endpoints, paths, bucket, sessions)
   main.py              app factory + lifecycle + AuthMiddleware (default-deny /api)
-  registry.py          runtime state: loaded models + stores
+  registry.py          runtime state: loaded models + pipelines + stores
   auth.py              identity core: principal, argon2id, sessions/tokens, roles
   authstore.py         sqlite persistence: users, sessions, api tokens, audit
   semantic.py          semantic layer: yaml -> Model/Dimension/Measure/Join/Spine/Geo/
-                       DimensionBundle/Import
+                       DimensionBundle/Import/pipeline_lineage section
   engine.py            query engine: semantic query -> polars lazy scan
   store.py             sqlite persistence: visuals, dashboards, publications
+  pipelines.py         pipeline layer: yaml -> Pipeline/Materialization/LineageEntry/Layer,
+                       lineage validation + model-lineage-section building
+  pipeline_runner.py   subprocess entry point: execs a pipeline's script, materializes its output
+  pipeline_jobs.py     FIFO run worker (one subprocess at a time) + post-run lineage sync
+  pipelinestore.py     sqlite persistence: pipeline_runs (append-only run history)
+  materialize.py       replace/upsert writers: delta merge + delete policies, pre-write guards
   emulator.py, s3.py, seed.py, load_taxi.py
   api/                 one router per resource: auth, users (+tokens), models,
                        dimensions, datasets, query, visuals, dashboards
-                       (+publish/portal), explorer (+health)
+                       (+publish/portal), explorer (+health), pipelines (+lineage/layers/graph)
   static/js/           ES modules: lib, state, auth, admin, filters, builder,
                        dashboard, portal, modelling, editor, completion,
-                       measurelab, main
+                       measurelab, lineagegraph, main
   static/js/charts/    one renderer per chart + shared frame/pivot/dispatch
 models/*.yaml          semantic models (the editable contract)
 dimensions/*.yaml      dimension bundles shared across models (see below)
-tests/                 pytest: semantic, engine, store, API
+pipelines/*.yaml       hosted polars transformation scripts (see below); layers.yaml
+tests/                 pytest: semantic, engine, store, API, pipelines
 Dockerfile, docker-compose.yml
 ```
 
@@ -573,6 +583,16 @@ route-by-route matrix lives in
 | `GET/POST /api/dashboards`, `GET/PUT/DELETE /api/dashboards/{id}` | dashboards — ordered tiles `{visual_id, w:1\|2}`; GET by id resolves tile visuals; create/update reject a tile set where two visuals declare a same-named, differently-defined parameter (see "Visual parameters" above) |
 | `GET/POST /api/conversations`, `GET/PATCH/DELETE /api/conversations/{id}`, `POST /api/conversations/{id}/ask` | conversational analytics (SQLite: `cash_intel.db`) — strictly owner-scoped; 503 unless `CI_LLM_API_KEY` is set (see "Conversational analytics" below) |
 | `GET /api/models/{m}/memories`, `POST/PATCH/DELETE /api/models/{m}/memories[/{id}]` | chat-learned model memories (synonyms/notes the assistant records against a model) — reads any role, mutations **admin** (see "Conversational analytics" below) |
+| `GET /api/pipelines` | pipelines with materialization config + latest-run summary |
+| `POST /api/pipelines/validate` | parse-check pipeline YAML (never executes the script) |
+| `POST /api/pipelines/reload` | re-read `pipelines/*.yaml` (**admin**) |
+| `GET/PUT /api/pipelines/{p}/yaml` | read / save a pipeline's YAML (PUT **admin**; name immutable — 400 on rename) |
+| `POST /api/pipelines`, `DELETE /api/pipelines/{p}` | create a pipeline file / delete one (**admin**; delete 409s while a run is pending, marks the target model's lineage section orphaned) |
+| `POST /api/pipelines/{p}/run` | trigger a run (**admin**; 202, 409 if this pipeline already has one pending) |
+| `GET /api/pipelines/{p}/runs`, `GET /api/runs/{id}` | run history / a single run's full record |
+| `GET /api/pipelines/{p}/lineage/suggest` | pass-through lineage suggestions by name-matching the output schema against declared sources (409 if no schema is available yet) |
+| `GET /api/lineage/layers`, `PUT /api/lineage/layers` | the ordered layer list (PUT **admin**; write `pipelines/layers.yaml`; 409 if removing a layer still referenced by a pipeline) |
+| `GET /api/lineage/graph` | the lineage graph payload (nodes/edges/field-hops/layers) — see "Pipelines" above |
 
 Query shape:
 
@@ -617,16 +637,162 @@ your role — viewers see no authoring controls at all):
   cross-filter, and expand tiles — but nothing they do edits or persists
   anything (view switches in the portal don't even save the selection).
 - **MODELLING** — the home for the semantic layer (formerly "Data"). A left
-  rail manages every fact model and common model — *edit yaml*, *build ►*, and
-  *+ MODEL* / *+ COMMON MODEL* — and the right pane is the data overview: every
-  object in the bucket with size and modified date, matched against each model's
-  source and join globs (Delta table internals map to their model too). Clicking
-  a model chip jumps to it in the builder; files no model reads are flagged as
-  unmapped. This is where authoring — the dataset picker, guided common-model
-  import, and expression intellisense described above — lives.
+  rail manages every fact model, common model, and pipeline — *edit yaml*,
+  *build ►*, and *+ MODEL* / *+ COMMON MODEL* / *+ PIPELINE* — and the right
+  pane is the data overview: every object in the bucket with size and modified
+  date, matched against each model's source and join globs (Delta table
+  internals map to their model too). Clicking a model chip jumps to it in the
+  builder; files no model reads are flagged as unmapped. This is where
+  authoring — the dataset picker, guided common-model import, expression
+  intellisense, and pipeline authoring described below — lives, along with
+  **◈ LINEAGE** (the lineage graph) and **▤ LAYERS** (the optional bronze/
+  silver/gold layer list — see [Pipelines](#pipelines) below).
 - **ACCOUNT** — self-service for every signed-in role: personal access
   tokens, password change, and (see [Themes](#themes)) picking one of the 4
   visual themes. Admins additionally get user management here.
+
+## Pipelines
+
+A **pipeline** (specs/014-polars-pipeline-module/) hosts a real polars
+transformation script — not a low-code builder, an actual `.py`-shaped
+snippet the platform runs, materializes, and documents. A script's whole
+contract is to produce a variable named `output`; the platform performs
+every write, which is what makes the materialization modes below
+enforceable and a failed run non-corrupting.
+
+```yaml
+# pipelines/silver_orders.yaml
+name: silver_orders
+sources:
+  - name: sales
+    format: parquet
+    path: s3://cash-intel/sales/*.parquet
+    layer: bronze                  # optional — see Layers below
+target:
+  path: s3://cash-intel/silver/orders
+  format: delta                    # delta (default, required for upsert) | parquet (replace only)
+  layer: silver
+materialization:
+  mode: upsert                     # replace | upsert
+  keys: [order_id]                 # upsert: required
+  on_delete: soft_delete           # ignore (default) | sync | soft_delete | predicate
+  soft_delete_column: is_deleted   # soft_delete: required
+timeout_seconds: 120               # default 600, max 3600
+script: |                          # sees `sources` (dict of source name -> LazyFrame) and `pl`
+  output = (
+      sources["sales"]
+      .with_columns(((pl.col("unit_price") - pl.col("unit_cost")) * pl.col("quantity")).alias("net_revenue"))
+      .select(["order_id", "order_date", "region", "channel", "category", "net_revenue"])
+  )
+lineage:                           # optional — documents transformation logic on the target model
+  - field: order_id
+    from: [sales.order_id]
+    transform: pass-through
+  - field: net_revenue
+    from: [sales.unit_price, sales.unit_cost, sales.quantity]
+    transform: "(unit_price - unit_cost) * quantity"
+```
+
+**Trust model**: a pipeline script is real, unsandboxed Python at
+application-code trust — the same posture as a model measure's `frame:`
+carve-out (see "Measures over an intermediary frame" above), just with a
+whole script instead of one derived frame. Creating, editing, deleting, and
+**running** a pipeline all require the **admin** role (Principle VI
+re-opened for this feature — see `.specify/memory/constitution.md`); every
+mutation and every run is written to the audit log. Every role can read
+pipeline definitions, run history, and the lineage graph.
+
+**Execution**: manual trigger only (no scheduler) — `▶ RUN` in the pipeline
+editor, or `POST /api/pipelines/{name}/run`. Each run executes in its own
+subprocess, supervised by a single FIFO worker thread: runs are strictly
+serialized platform-wide (triggering a second pipeline while one is running
+queues it; triggering the *same* pipeline again while it has a pending run
+is refused with 409), and the parent enforces `timeout_seconds` by killing
+the process outright — a runaway or crashed script can never take the app
+down. An app restart mid-run marks that run `interrupted`, never stuck.
+
+### Materialization
+
+- **`replace`** — the target is atomically overwritten (a single Delta
+  transaction, or one `PUT` for a parquet target): readers see the old data
+  or the new data, never a partial write.
+- **`upsert`** (Delta targets only) — the run's output is merged into the
+  target by `keys`: matched rows update, unmatched rows insert. Four
+  `on_delete` policies handle rows in the target that the output no longer
+  contains:
+
+  | Policy | Behavior |
+  |---|---|
+  | `ignore` (default) | left alone |
+  | `sync` | deleted (an **empty** output + `sync` halts the run unless `allow_empty_sync: true` is also set — it would otherwise delete everything) |
+  | `soft_delete` | flagged `true` in `soft_delete_column` (cleared back to `false` if the key reappears in a later run) |
+  | `predicate` | rows matching `delete_predicate` (a Delta SQL predicate) are deleted before the merge |
+
+  Guards run before any write, so a rejected run never touches the target:
+  null/duplicate key values in the output, or an output schema incompatible
+  with the existing target (a diff naming the missing/extra/mismatched
+  columns). A soft-delete pipeline's flag column is only ever added
+  automatically on a target's *first* upsert run — retrofitting
+  `soft_delete` onto a target created some other way needs one `replace`
+  run first, to introduce the column cleanly.
+
+### Traceability: layers and lineage
+
+Datasets can optionally be grouped into named, ordered **layers**
+(bronze/silver/gold, or any naming a deployment prefers) via **▤ LAYERS** in
+Modelling (writes `pipelines/layers.yaml`); a pipeline tags its own
+sources/target with `layer:`. Layers are purely organizational — everything
+works with none declared (FR-020).
+
+Field-level **lineage** — which source field(s) a target field derives
+from, plus a human-readable transform description — is declared per
+pipeline (optional per field; **SUGGEST PASS-THROUGH** in the pipeline
+editor proposes matches by name, never auto-saved). On every successful
+run, declarations are validated against the run's *real* output schema — a
+declared field the output no longer has, or an output field nobody
+declared, is flagged on the run without blocking the write — and, when a
+loaded model scans the pipeline's target, the validated lineage is
+regenerated into a dedicated `pipeline_lineage:` section of that model's
+yaml:
+
+```yaml
+# ── managed by pipeline 'gold_daily_revenue' — do not hand-edit this section ──
+pipeline_lineage:
+  pipeline: gold_daily_revenue
+  updated: '2026-07-17T21:34:04+00:00'
+  fields:
+    - field: total_net_revenue
+      sources: [silver:silver.net_revenue]
+      transform: "sum(net_revenue) per day, region"
+```
+
+The section is entirely pipeline-owned — regenerated idempotently on every
+run, appended if absent — and every byte of the model's yaml outside it is
+preserved untouched. Deleting the owning pipeline marks the section
+`orphaned: true` rather than removing it.
+
+### Lineage graph
+
+**MODELLING → ◈ LINEAGE** renders a read-only, hand-rolled SVG graph:
+datasets/models as nodes (columns by declared layer, or topological rank
+when no layers exist), pipelines as edges colored by their latest run
+status. Clicking a node opens its detail (a link to its model, if any, and
+its known fields); clicking a field traces its declared lineage upstream
+across every hop, highlighting the full chain. The graph tolerates cycles
+by construction (each edge comes from one pipeline's own source/target
+declaration, never a recursive walk) and needs no live bucket scan, so it
+stays fast regardless of graph shape.
+
+### Demo: bronze → silver → gold
+
+`pipelines/silver_orders.yaml` and `pipelines/gold_daily_revenue.yaml` ship
+a working two-stage chain over the seeded sales data — run `silver_orders`
+then `gold_daily_revenue` from Modelling to materialize
+`models/gold_revenue.yaml`'s source and see the lineage section, run
+history, and graph all populate live. (Run history lives in
+`cash_intel.db`, not the repo, so a fresh clone always starts with neither
+pipeline having run yet — that first click is the point: it's the same
+"queued → running → succeeded" flow a real pipeline goes through.)
 
 ## Conversational analytics
 

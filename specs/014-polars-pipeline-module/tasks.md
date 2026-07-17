@@ -99,8 +99,8 @@
 
 - [X] T028 [US4] Implement `GET /api/lineage/graph` in `app/api/pipelines.py` (any role): assemble `{nodes, edges, field_lineage, layers}` per data-model.md from `registry.pipelines`, `registry.models`, `registry.layers`, and latest runs — one node per distinct source/target path with `model` attached when a loaded model scans it, one edge per (source, target) pair with latest-run status, flattened per-hop field links
 - [X] T029 [P] [US4] Graph payload tests in `tests/test_pipeline_api.py`: chained pipelines (A→B→C) produce correct nodes/edges/field hops, layer grouping present/absent, latest-run status on edges, cycles (A→B, B→A) return a well-formed payload, disconnected datasets included
-- [ ] T030 [US4] Implement `app/static/js/lineagegraph.js`: hand-rolled SVG layered DAG — columns by layer order (topological rank fallback), rank-tie-breaking so cycles render (FR-023), edges colored by run status, node click → detail (model link, fields), field click → upstream highlight walked across hops client-side, all selection state ephemeral (Constitution V); theme-aware via existing CSS custom properties
-- [ ] T031 [US4] Wire the graph view: `app/static/js/router.js` (`/modelling/lineage`), entry point in `app/static/js/modelling.js`, module load in `app/static/js/main.js`; browser-verify quickstart step 8 including the failed-run edge state and zero console errors
+- [X] T030 [US4] Implement `app/static/js/lineagegraph.js`: hand-rolled SVG layered DAG — columns by layer order (topological rank fallback), rank-tie-breaking so cycles render (FR-023), edges colored by run status, node click → detail (model link, fields), field click → upstream highlight walked across hops client-side, all selection state ephemeral (Constitution V); theme-aware via existing CSS custom properties
+- [X] T031 [US4] Wire the graph view: `app/static/js/router.js` (`/modelling/lineage`), entry point in `app/static/js/modelling.js`, module load in `app/static/js/main.js`; browser-verify quickstart step 8 including the failed-run edge state and zero console errors
 
 **Checkpoint**: All four user stories independently functional
 
@@ -108,11 +108,11 @@
 
 ## Phase 7: Polish & Cross-Cutting Concerns
 
-- [ ] T032 Ship the demo content (research R9): `pipelines/layers.yaml` (bronze/silver/gold) + a two-pipeline chain over seeded sales data (`pipelines/silver_orders.yaml` upsert w/ soft_delete + lineage, `pipelines/gold_daily_revenue.yaml` replace + lineage) and a demo model over the gold target so the seeded deployment demonstrates US1–US4 out of the box
-- [ ] T033 [P] Update `README.md`: pipeline module section (file format, script contract, materialization modes + delete policies, lineage section, layers, graph, admin gating + audit, route table additions), project-layout tree, and the API table — per Constitution Development Workflow
-- [ ] T034 [P] Record the Principle VI amendment in `.specify/memory/constitution.md`: pipeline scripts as a new admin-gated eval-capable construct (pattern of the spec-008/011 amendments), bump version + amendment date
-- [ ] T035 Full-suite pass `python -m pytest tests/` + fresh-clone boot check (empty `pipelines/` dir, no layers file — everything dormant per FR-020)
-- [ ] T036 Full quickstart.md validation in the browser: golden path end to end, all failure/safety checks, persistence round-trips, role checks as author/viewer accounts, zero console errors — report per Constitution IV (what changed, what was verified, rough edges)
+- [X] T032 Ship the demo content (research R9): `pipelines/layers.yaml` (bronze/silver/gold) + a two-pipeline chain over seeded sales data (`pipelines/silver_orders.yaml` upsert w/ soft_delete + lineage, `pipelines/gold_daily_revenue.yaml` replace + lineage) and a demo model over the gold target so the seeded deployment demonstrates US1–US4 out of the box
+- [X] T033 [P] Update `README.md`: pipeline module section (file format, script contract, materialization modes + delete policies, lineage section, layers, graph, admin gating + audit, route table additions), project-layout tree, and the API table — per Constitution Development Workflow
+- [X] T034 [P] Record the Principle VI amendment in `.specify/memory/constitution.md`: pipeline scripts as a new admin-gated eval-capable construct (pattern of the spec-008/011 amendments), bump version + amendment date
+- [X] T035 Full-suite pass `python -m pytest tests/` + fresh-clone boot check (empty `pipelines/` dir, no layers file — everything dormant per FR-020)
+- [X] T036 Full quickstart.md validation in the browser: golden path end to end, all failure/safety checks, persistence round-trips, role checks as author/viewer accounts, zero console errors — report per Constitution IV (what changed, what was verified, rough edges)
 
 ---
 

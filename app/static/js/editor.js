@@ -8,6 +8,7 @@
    picker, import panel, and completion all insert/patch that text. */
 "use strict";
 
+import { isAdmin } from "./auth.js";
 import { refreshModels } from "./builder.js";
 import { dslContext, dslItems, makeCompleter } from "./completion.js";
 import { renderImportPanel } from "./dimlab.js";
@@ -167,15 +168,20 @@ export async function openEditor(kind, name, opts = {}) {
   $("#editor-datasets").hidden = true;
   $("#editor-file").textContent = editor.file;
   $("#editor-delete").textContent = cfg().deleteLabel;
-  $("#editor-delete").hidden = !editor.name;
+  $("#editor-delete").hidden = !editor.name || !isAdmin();
   const isModel = editor.kind === "model";
   const isPipeline = editor.kind === "pipeline";
   $("#editor-imports").hidden = !isModel;
   $("#editor-pick-dataset").hidden = !isModel;    // dataset source applies to fact models only
   $("#editor-cols-panel").hidden = isPipeline;    // no column palette for a real-python script
   $("#editor-pipeline-panel").hidden = !isPipeline;
-  $("#editor-run").hidden = !isPipeline || !editor.name;   // a brand-new (unsaved) pipeline has nothing to run yet
-  $("#editor-lineage-suggest").hidden = !isPipeline || !editor.name;  // suggest needs a saved pipeline to query
+  // a brand-new (unsaved) pipeline has nothing to run/suggest yet; both are
+  // admin-only actions like SAVE/DELETE — applyRoleGates() only runs once
+  // at boot/login, so any later visibility change here must re-check the
+  // role itself rather than rely on that one-time pass (data-role is still
+  // set in the markup for defense-in-depth / correct initial paint).
+  $("#editor-run").hidden = !isPipeline || !editor.name || !isAdmin();
+  $("#editor-lineage-suggest").hidden = !isPipeline || !editor.name || !isAdmin();
   if (isModel) renderImportPanel();      // "Common Dimensions" import affordance
   if (isPipeline) {
     loadLayerPicker();
@@ -437,10 +443,10 @@ export async function saveEditor() {
     editor.original = yaml;
     editor.dirty = false;
     $("#editor-file").textContent = saved.file;
-    $("#editor-delete").hidden = false;
+    $("#editor-delete").hidden = !isAdmin();
     if (editor.kind === "pipeline") {
-      $("#editor-run").hidden = false;
-      $("#editor-lineage-suggest").hidden = false;
+      $("#editor-run").hidden = !isAdmin();
+      $("#editor-lineage-suggest").hidden = !isAdmin();
       if (hooks.loadModelling) await hooks.loadModelling();
       await loadRunHistory();
     } else {
