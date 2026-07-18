@@ -130,9 +130,15 @@ const KINDS = {
   },
 };
 
-// editor.dirty and editor.columns are ephemeral session state (never persisted;
-// a reload discards them — see specs/007-modelling-workspace/data-model.md)
-export const editor = { kind: "model", name: null, file: null, original: "", dirty: false, columns: [] };
+// editor.dirty and editor.columns (& friends below) are ephemeral session
+// state (never persisted; a reload discards them — see specs/007-modelling-
+// workspace/data-model.md). sources/layers/datasetNames feed the structural
+// intellisense (schemaItems/scriptSourceItems) the same way columns feeds
+// the DSL/column completion.
+export const editor = {
+  kind: "model", name: null, file: null, original: "", dirty: false,
+  columns: [], sources: [], layers: [], datasetNames: [],
+};
 let validateTimer = null;
 let completer = null;
 let lastOk = true;   // last validation result — save is guarded when false
@@ -141,6 +147,142 @@ const cfg = () => KINDS[editor.kind];
 
 // yaml keys whose value is a bare source-column reference (not an expression)
 const COLUMN_KEYS = new Set(["column", "on", "left_on", "right_on", "start", "end", "lat", "lon"]);
+
+// ── structural (schema-aware) key & enum intellisense ──
+// A shallow, client-side mirror of each artifact's yaml shape (see
+// app/semantic.py / app/pipelines.py for the real source of truth), used
+// only to speed up typing: an empty/partial key on its own line suggests
+// the keys valid in that block, and a handful of enum-valued keys suggest
+// their legal values. This never substitutes for validateEditor() — the
+// server round trip is still the only real arbiter of a valid document.
+const SCHEMAS = {
+  model: {
+    top: ["name", "label", "description", "source", "joins", "dimension_imports", "dimensions", "measures"],
+    source: ["format", "path"],
+    joins: ["name", "on", "left_on", "right_on", "how"],
+    dimension_imports: ["bundle", "anchor_dataset", "on", "left_on", "right_on", "how", "datasets"],
+    dimensions: ["name", "column", "label", "type", "description", "spine", "geo", "synonyms"],
+    measures: ["name", "label", "expr", "format", "description"],
+    spine: ["start", "end"],
+    geo: ["lat", "lon"],
+  },
+  bundle: {
+    top: ["name", "label", "description", "datasets"],
+    datasets: ["name", "source", "dimensions", "joins"],
+    source: ["format", "path"],
+    dimensions: ["name", "column", "label", "type", "description", "spine", "geo", "synonyms"],
+    joins: ["to", "on", "left_on", "right_on", "how"],
+    spine: ["start", "end"],
+    geo: ["lat", "lon"],
+  },
+  pipeline: {
+    top: ["name", "label", "description", "sources", "target", "materialization", "timeout_seconds", "script", "lineage"],
+    sources: ["name", "format", "path", "layer"],
+    target: ["path", "format", "layer"],
+    materialization: ["mode", "keys", "on_delete", "soft_delete_column", "delete_predicate", "allow_empty_sync"],
+    lineage: ["field", "from", "transform"],
+  },
+};
+
+// static enum values, keyed by [kind][block][key]
+const ENUMS = {
+  model: {
+    source: { format: ["parquet", "csv", "delta"] },
+    joins: { how: ["left", "inner"] },
+    dimension_imports: { how: ["left", "inner"] },
+    dimensions: { type: ["categorical", "time", "numeric"] },
+    measures: { format: ["number", "currency", "percent"] },
+  },
+  bundle: {
+    source: { format: ["parquet", "csv", "delta"] },
+    joins: { how: ["left", "inner"] },
+    dimensions: { type: ["categorical", "time", "numeric"] },
+  },
+  pipeline: {
+    sources: { format: ["parquet", "csv", "delta"] },
+    target: { format: ["delta", "parquet"] },
+    materialization: { mode: ["replace", "upsert"], on_delete: ["ignore", "sync", "soft_delete", "predicate"] },
+    lineage: { transform: ["pass-through"] },
+  },
+};
+
+// dynamic (schema-external) enum values that depend on the current document
+// or bucket state rather than a fixed list — e.g. a pipeline's known layers.
+function dynamicEnum(kind, block, key) {
+  if (kind === "pipeline" && (block === "sources" || block === "target") && key === "layer") return editor.layers;
+  if (kind === "bundle" && block === "joins" && key === "to") return editor.datasetNames;
+  return null;
+}
+
+function indentOf(line) {
+  return line.match(/^[ \t]*/)[0].length;
+}
+
+// Walk backward from `lineIdx` to find the enclosing block's key: the
+// nearest shallower-indented ancestor line, skipping past list-item marker
+// lines ("- foo: bar" — an anonymous entry, not a schema block name) to the
+// mapping key that owns them, e.g. a `joins:` list nested three levels deep
+// inside a bundle's `datasets:` resolves to "joins", not "datasets". A
+// non-list container (`target:`, a dimension's `spine:`) is its own
+// immediate ancestor, so it resolves in a single hop. Returns null at the
+// document top level.
+function blockContext(lines, lineIdx) {
+  let indent = indentOf(lines[lineIdx]);
+  for (let i = lineIdx - 1; i >= 0; i--) {
+    const l = lines[i];
+    if (!l.trim()) continue;
+    const lineIndent = indentOf(l);
+    if (lineIndent >= indent) continue;
+    indent = lineIndent;
+    if (/^\s*-/.test(l)) continue;   // list-item marker — keep climbing to its list key
+    const m = l.slice(lineIndent).match(/^([A-Za-z_]+):/);
+    return m ? m[1] : null;
+  }
+  return null;
+}
+
+// yaml key-name / enum-value completion for the current line, schema-driven
+// by SCHEMAS/ENUMS above. Returns null inside a pipeline's `script:` block
+// (real python, not yaml) — see scriptSourceItems for that case instead.
+function schemaItems(kind, lines, lineIdx, line, caret) {
+  const schema = SCHEMAS[kind];
+  if (!schema) return null;
+  const block = blockContext(lines, lineIdx) || "top";
+  if (block === "script") return null;
+  let m = line.match(/^(\s*(?:-\s*)?)([A-Za-z_]+):[ \t]*(\S*)$/);
+  if (m) {
+    const key = m[2], prefix = m[3];
+    const values = dynamicEnum(kind, block, key) || ENUMS[kind]?.[block]?.[key];
+    if (!values) return null;
+    const items = values.filter((v) => v.toLowerCase().startsWith(prefix.toLowerCase()))
+      .map((v) => ({ text: v, hint: "", insert: v, caretOffset: 0 }));
+    return items.length ? { items, start: caret - prefix.length } : null;
+  }
+  m = line.match(/^(\s*(?:-\s*)?)([A-Za-z_]*)$/);
+  if (m) {
+    const prefix = m[2];
+    const keys = schema[block];
+    if (!keys) return null;
+    const items = keys.filter((k) => k.startsWith(prefix))
+      .map((k) => ({ text: k, hint: "", insert: `${k}: `, caretOffset: 0 }));
+    if (items.length) return { items, start: caret - prefix.length };
+  }
+  return null;
+}
+
+// `sources["...` completion inside a pipeline's `script:` block — the
+// python-side counterpart of the yaml `source:`/`target:` completion above.
+function scriptSourceItems(upto, after, caret) {
+  const m = upto.match(/sources\[\s*["']([A-Za-z0-9_]*)$/);
+  if (!m) return null;
+  const prefix = m[1];
+  const closer = after.startsWith('"') || after.startsWith("'") ? "" : '"]';
+  const skip = closer ? 0 : 2;
+  const items = (editor.sources || [])
+    .filter((s) => s.toLowerCase().startsWith(prefix.toLowerCase()))
+    .map((s) => ({ text: s, hint: "source", insert: s + closer, caretOffset: skip }));
+  return items.length ? { items, start: caret - prefix.length } : null;
+}
 
 const FILE_TEMPLATES = { bundle: "dimensions/<name>.yaml", pipeline: "pipelines/<name>.yaml" };
 
@@ -165,6 +307,9 @@ export async function openEditor(kind, name, opts = {}) {
   ta.value = opts.text ?? editor.original;
   editor.dirty = opts.text != null && opts.text !== editor.original;
   editor.columns = [];
+  editor.sources = [];
+  editor.layers = [];
+  editor.datasetNames = [];
   $("#editor-datasets").hidden = true;
   $("#editor-file").textContent = editor.file;
   $("#editor-delete").textContent = cfg().deleteLabel;
@@ -239,6 +384,7 @@ async function validateBundle(yaml) {
   const b = res.bundle;
   const totalDims = b.datasets.reduce((s, d) => s + d.dimensions, 0);
   editor.columns = b.datasets.flatMap((d) => d.columns || []);   // bundle-wide column pool for intellisense
+  editor.datasetNames = b.datasets.map((d) => d.name);            // feeds `to:` join-target completion
   editorStatus(`<span class="ok">✓ valid</span> · ${b.name} · ${b.datasets.length} datasets · ${totalDims} dims`);
   $("#editor-report").innerHTML = `<b>${b.label}</b> (${b.name})<br>`
     + b.datasets.map((d) => `${d.name}: ${d.dimensions} dims`
@@ -266,6 +412,7 @@ async function validatePipeline(yaml) {
   if (!res.ok) return { ok: false, error: res.error };
   const p = res.pipeline;
   const m = p.materialization;
+  editor.sources = p.sources.map((s) => s.name);   // feeds sources["..."] completion in the script block
   editorStatus(`<span class="ok">✓ valid</span> · ${p.name} · ${m.mode}${m.mode === "upsert" ? ` (${m.on_delete})` : ""}`);
   $("#editor-report").innerHTML = `<b>${p.label}</b> (${p.name})<br>`
     + `target: <code>${p.target.path}</code> (${p.target.format})<br>`
@@ -398,18 +545,27 @@ async function toggleDatasetPicker() {
   }
 }
 
-// ── expression intellisense in the yaml editor (US4) ──
+// ── expression + structural intellisense in the yaml editor (US4) ──
 
-// Context-aware completion: measure-DSL completion inside `expr:` values,
-// bare column-name completion in dimension/join/key contexts (see
+// Context-aware completion, tried in order: measure-DSL completion inside
+// a model's `expr:` value, bare column-name completion in dimension/join
+// key contexts, a pipeline script's `sources["..."]` dict lookup, and
+// finally schema-driven yaml key-name/enum-value completion (see
 // specs/007-modelling-workspace/contracts/completion.md and
-// specs/008-safe-measure-compilation/contracts/compile_measure.md).
+// specs/008-safe-measure-compilation/contracts/compile_measure.md for the
+// first two; SCHEMAS/ENUMS above for the last).
 function yamlResolve(upto, after, caret) {
-  // measure-DSL completion — wherever a DSL trigger appears (measures)
-  const pctx = dslContext(upto, caret);
-  if (pctx) return { items: dslItems(pctx, editor.columns, after), start: pctx.start };
-  // bare column-name completion in column-key contexts
   const line = upto.slice(upto.lastIndexOf("\n") + 1);
+
+  // measure-DSL completion — only inside a measure's `expr:` value (models
+  // are the only kind with measures; gating by line avoids offering DSL
+  // functions after every unrelated "key: value" colon in the document)
+  if (editor.kind === "model" && /^\s*expr:[ \t]?/.test(line)) {
+    const pctx = dslContext(upto, caret);
+    if (pctx) return { items: dslItems(pctx, editor.columns, after), start: pctx.start };
+  }
+
+  // bare column-name completion in column-key contexts
   const m = line.match(/^(\s*(?:-\s*)?)([A-Za-z_]+):[ \t]*(\S*)$/);
   if (m) {
     const isListItem = m[1].includes("-");
@@ -420,10 +576,19 @@ function yamlResolve(upto, after, caret) {
       const items = (editor.columns || [])
         .filter((c) => c.name.toLowerCase().startsWith(prefix.toLowerCase()))
         .map((c) => ({ text: c.name, hint: c.dtype, insert: c.name, caretOffset: 0 }));
-      return { items, start: caret - prefix.length };
+      if (items.length) return { items, start: caret - prefix.length };
     }
   }
-  return null;
+
+  // pipeline script: sources["..."] dict-key completion
+  if (editor.kind === "pipeline") {
+    const si = scriptSourceItems(upto, after, caret);
+    if (si) return si;
+  }
+
+  // schema-driven yaml key-name / enum-value completion
+  const lines = upto.split("\n");
+  return schemaItems(editor.kind, lines, lines.length - 1, line, caret);
 }
 
 export async function saveEditor() {
@@ -594,6 +759,7 @@ async function loadLayerPicker() {
     box.append(el("div", { class: "empty-note" }, "layers unavailable"));
     return;
   }
+  editor.layers = layers.map((l) => l.name);   // feeds `layer:` completion in the yaml editor
   if (!layers.length) {
     box.append(el("div", { class: "empty-note" }, "none declared — see pipelines/layers.yaml"));
     return;
