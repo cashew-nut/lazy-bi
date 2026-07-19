@@ -1,10 +1,10 @@
 /* Modelling workspace: the home for the semantic layer (formerly the "Data"
-   explorer mode). Left rail = manage fact models and common models (create /
-   edit / open-in-builder); right = the datasets↔models overview (which bucket
-   objects feed which models), carried over from the old explorer. All model
-   authoring lives here now — Studio only builds visuals. Creation goes
-   through a chooser: fact model (blank, or started from a common model) vs
-   common dimension model. */
+   explorer mode). Left rail = the bucket's datasets as a collapsible folder
+   tree (which objects feed which models); center = manage fact models,
+   common models and pipelines (create / edit / open-in-builder), each its
+   own collapsible section. All model authoring lives here now — Studio only
+   builds visuals. Creation goes through a chooser: fact model (blank, or
+   started from a common model) vs common dimension model. */
 "use strict";
 
 import { isAdmin } from "./auth.js";
@@ -20,34 +20,126 @@ const openInBuilder = (name) => navigate(paths.studioModel(name));
 const roleLabel = (role) => role.replace(/^join: /, "relation: ");
 
 export async function loadModelling() {
-  $("#modelling-side").innerHTML = "";
-  $("#modelling-files").innerHTML = "";
+  $("#modelling-datasets").innerHTML = "";
+  $("#modelling-main").innerHTML = "";
   $("#modelling-bucket").textContent = "scanning bucket…";
-  const [models, bundles, pipelines, data] = await Promise.all([
-    api("/api/models"), api("/api/dimensions"), api("/api/pipelines"), api("/api/explorer"),
+  const [models, bundles, pipelines, data, datasets] = await Promise.all([
+    api("/api/models"), api("/api/dimensions"), api("/api/pipelines"), api("/api/explorer"), api("/api/datasets"),
   ]);
   state.models = models;
   state.bundles = bundles;
   $("#modelling-bucket").textContent =
     `s3://${data.bucket} @ ${data.endpoint.replace(/^https?:\/\//, "")} · ${data.files.length} objects · ${fmtBytes(data.files.reduce((s, f) => s + f.size, 0))}`;
+  renderDatasetTree(datasets.datasets);
   renderSide(models, bundles, data);
   renderPipelines(pipelines);
-  renderFiles(data);
 }
 hooks.loadModelling = loadModelling;
+
+// ── datasets: bucket objects, grouped into pickable datasets (same grouping
+// the model-authoring source picker uses — a delta table or glob prefix
+// stays one node), laid out as a collapsible folder tree keyed by path ──
+
+function datasetTree(datasets) {
+  const root = { name: "", children: new Map(), dataset: null };
+  for (const ds of datasets) {
+    if (!ds.key) { root.dataset = ds; continue; }
+    let node = root;
+    for (const seg of ds.key.split("/")) {
+      if (!node.children.has(seg)) node.children.set(seg, { name: seg, children: new Map(), dataset: null });
+      node = node.children.get(seg);
+    }
+    node.dataset = ds;
+  }
+  return root;
+}
+
+const sortedChildren = (node) => [...node.children.values()].sort((a, b) => {
+  const af = a.children.size > 0;
+  const bf = b.children.size > 0;
+  return af === bf ? a.name.localeCompare(b.name) : af ? -1 : 1;   // folders before datasets
+});
+
+const countDatasets = (node) => (node.dataset ? 1 : 0)
+  + [...node.children.values()].reduce((n, c) => n + countDatasets(c), 0);
+
+function datasetLeaf(ds, label) {
+  const seen = new Set();
+  const chips = [];
+  for (const hit of ds.models) {
+    const key = hit.name + "|" + hit.role;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const chip = el("span", {
+      class: "model-chip" + (hit.role.startsWith("join") ? " join" : ""),
+      title: roleLabel(hit.role) + " — open in builder",
+    }, hit.name);
+    chip.addEventListener("click", (e) => { e.stopPropagation(); openInBuilder(hit.name); });
+    chips.push(chip);
+  }
+  const sub = el("div", { class: "tree-leaf-sub" },
+    el("span", {}, `${ds.object_count} obj · ${fmtBytes(ds.bytes)}`));
+  if (ds.format_ambiguous) sub.append(el("span", { class: "warn-note" }, "⚠ mixed types"));
+  sub.append(...(chips.length ? chips : [el("span", { class: "unmapped" }, "unmapped")]));
+  return el("div", { class: "tree-leaf", title: ds.path },
+    el("div", { class: "tree-leaf-head" },
+      el("span", { class: "nm" }, label),
+      el("span", { class: "fmt" }, ds.format)),
+    sub);
+}
+
+function datasetFolder(node, depth) {
+  const children = el("div", { class: "tree-children" });
+  if (node.dataset) children.append(datasetLeaf(node.dataset, "(this level)"));
+  for (const child of sortedChildren(node)) {
+    children.append(child.children.size > 0 ? datasetFolder(child, depth + 1) : datasetLeaf(child.dataset, child.name));
+  }
+  const attrs = { class: "tree-folder" };
+  if (depth === 0) attrs.open = "";   // top-level folders start open; deeper nesting stays tucked away
+  return el("details", attrs,
+    el("summary", {},
+      el("span", { class: "tree-caret" }, "▸"),
+      el("span", { class: "nm" }, node.name),
+      el("span", { class: "tree-count" }, String(countDatasets(node)))),
+    children);
+}
+
+function renderDatasetTree(datasets) {
+  const box = $("#modelling-datasets");
+  box.append(el("div", { class: "sec-title" }, "Datasets"));
+  if (!datasets.length) {
+    box.append(el("div", { class: "empty-note" }, "bucket is empty"));
+    return;
+  }
+  const root = datasetTree(datasets);
+  if (root.dataset) box.append(datasetLeaf(root.dataset, "(bucket root)"));
+  for (const child of sortedChildren(root)) {
+    box.append(child.children.size > 0 ? datasetFolder(child, 0) : datasetLeaf(child.dataset, child.name));
+  }
+}
 
 const RUN_STATUS_LABEL = {
   queued: "queued", running: "running…", succeeded: "✓ succeeded", failed: "✗ failed",
   timed_out: "⏱ timed out", interrupted: "⚠ interrupted",
 };
 
+// a collapsible <details> section for the center column: caret + label +
+// count in a .sec-title summary, a card grid body, tucked-in create button
+function mkSection(label, count, cards, emptyNote, newBtn) {
+  const body = el("div", { class: "mk-section-body" });
+  if (cards.length) body.append(el("div", { class: "mf-ds-grid" }, ...cards));
+  else if (emptyNote) body.append(el("div", { class: "empty-note" }, emptyNote));
+  body.append(newBtn);
+  return el("details", { class: "mk-section", open: "" },
+    el("summary", { class: "sec-title" },
+      el("span", { class: "tree-caret" }, "▸"),
+      el("span", {}, label),
+      el("span", { class: "tree-count" }, String(count))),
+    body);
+}
+
 function renderPipelines(pipelines) {
-  const box = $("#modelling-side");
-  box.append(el("div", { class: "sec-title", style: "margin-top:16px" }, "Pipelines"));
-  if (!pipelines.length) {
-    box.append(el("div", { class: "empty-note" }, "none yet — hosted polars transformation scripts"));
-  }
-  for (const p of pipelines) {
+  const cards = pipelines.map((p) => {
     const latest = p.latest_run;
     const statusClass = latest?.status === "succeeded" ? "ok" : latest?.status === "failed" || latest?.status === "timed_out" ? "err" : "";
     const layerBadge = p.target.layer ? el("span", { class: "model-chip", title: "target layer" }, p.target.layer) : null;
@@ -56,24 +148,23 @@ function renderPipelines(pipelines) {
       el("span", { class: `fmt ${statusClass}` }, latest ? RUN_STATUS_LABEL[latest.status] || latest.status : "not run yet"),
     ];
     if (layerBadge) top.push(layerBadge);
-    const card = el("div", { class: "mk-card" },
+    return el("div", { class: "mk-card" },
       el("div", { class: "mk-top" }, ...top),
       el("div", { class: "path" }, `${p.target.path} (${p.materialization.mode}${p.materialization.mode === "upsert" ? `/${p.materialization.on_delete}` : ""})`),
       el("div", { class: "mk-actions" },
         el("button", { class: "mini-btn", onclick: () => navigate(paths.modellingPipelineYaml(p.name)) }, "{ } yaml")));
-    box.append(card);
-  }
-  box.append(el("button", { class: "ghost mk-new", onclick: () => navigate(paths.modellingNewPipelineYaml()) }, "+ new pipeline"));
+  });
+  const newBtn = el("button", { class: "ghost mk-new", onclick: () => navigate(paths.modellingNewPipelineYaml()) }, "+ new pipeline");
+  $("#modelling-main").append(mkSection("Pipelines", pipelines.length, cards, "none yet — hosted polars transformation scripts", newBtn));
 }
 
 function renderSide(models, bundles, data) {
-  const box = $("#modelling-side");
+  const box = $("#modelling-main");
   const stats = Object.fromEntries(data.models.map((m) => [m.name, m]));
 
-  box.append(el("div", { class: "sec-title" }, "Models"));
-  for (const m of models) {
+  const modelCards = models.map((m) => {
     const st = stats[m.name] || { files: 0, bytes: 0 };
-    const card = el("div", { class: "mk-card" },
+    return el("div", { class: "mk-card" },
       el("div", { class: "mk-top" },
         el("span", { class: "nm" }, m.label),
         el("span", { class: "fmt" }, m.format)),
@@ -89,26 +180,20 @@ function renderSide(models, bundles, data) {
           ? [el("button", { class: "mini-btn", title: "chat-learned memories (synonyms, notes) for this model", onclick: () => openMemoriesModal(m) }, "◈ memory")]
           : []),
         el("button", { class: "mini-btn go", onclick: () => openInBuilder(m.name) }, "build ►")));
-    box.append(card);
-  }
-  box.append(el("button", { class: "ghost mk-new", onclick: () => openCreateChooser(bundles) }, "+ new fact model"));
+  });
+  const newModelBtn = el("button", { class: "ghost mk-new", onclick: () => openCreateChooser(bundles) }, "+ new fact model");
+  box.append(mkSection("Models", models.length, modelCards, "", newModelBtn));
 
-  box.append(el("div", { class: "sec-title", style: "margin-top:16px" }, "Common Models"));
-  if (!bundles.length) {
-    box.append(el("div", { class: "empty-note" }, "none yet — shared dimensions across models"));
-  }
-  for (const b of bundles) {
-    const card = el("div", { class: "mk-card" },
-      el("div", { class: "mk-top" },
-        el("span", { class: "nm" }, b.label),
-        el("span", { class: "fmt" }, `${b.datasets.length} set${b.datasets.length === 1 ? "" : "s"}`)),
-      el("div", { class: "path" }, b.datasets.map((d) => d.name).join(", ") || "—"),
-      el("div", { class: "mk-actions" },
-        el("button", { class: "mini-btn", onclick: () => navigate(paths.modellingBundle(b.name)) }, "✎ edit"),
-        el("button", { class: "mini-btn", title: "edit the raw yaml", onclick: () => navigate(paths.modellingBundleYaml(b.name)) }, "{ } yaml")));
-    box.append(card);
-  }
-  box.append(el("button", { class: "ghost mk-new", onclick: () => navigate(paths.modellingNewBundle()) }, "+ new common model"));
+  const bundleCards = bundles.map((b) => el("div", { class: "mk-card" },
+    el("div", { class: "mk-top" },
+      el("span", { class: "nm" }, b.label),
+      el("span", { class: "fmt" }, `${b.datasets.length} set${b.datasets.length === 1 ? "" : "s"}`)),
+    el("div", { class: "path" }, b.datasets.map((d) => d.name).join(", ") || "—"),
+    el("div", { class: "mk-actions" },
+      el("button", { class: "mini-btn", onclick: () => navigate(paths.modellingBundle(b.name)) }, "✎ edit"),
+      el("button", { class: "mini-btn", title: "edit the raw yaml", onclick: () => navigate(paths.modellingBundleYaml(b.name)) }, "{ } yaml"))));
+  const newBundleBtn = el("button", { class: "ghost mk-new", onclick: () => navigate(paths.modellingNewBundle()) }, "+ new common model");
+  box.append(mkSection("Common Models", bundles.length, bundleCards, "none yet — shared dimensions across models", newBundleBtn));
 }
 
 // ── create chooser: fact model (blank / seeded) vs common dimension model ──
@@ -250,39 +335,3 @@ function closeLayersModal() {
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !$("#create-modal").hidden) closeLayersModal();
 });
-
-// datasets↔models overview (carried over verbatim from the old explorer)
-function renderFiles(data) {
-  const table = el("table", { class: "data" });
-  const head = el("tr");
-  for (const h of ["Key", "Size", "Modified", "Models"]) {
-    head.append(el("th", { class: h === "Size" ? "num" : "" }, h));
-  }
-  table.append(el("thead", {}, head));
-  const body = el("tbody");
-  for (const f of data.files.sort((a, b) => a.key.localeCompare(b.key))) {
-    const models = el("td");
-    const seen = new Set();
-    for (const hit of f.models) {
-      const key = hit.model + "|" + hit.role;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const chip = el("span", {
-        class: "model-chip" + (hit.role.startsWith("join") ? " join" : ""),
-        title: roleLabel(hit.role) + " — open in builder",
-      }, hit.model);
-      chip.addEventListener("click", () => openInBuilder(hit.model));
-      models.append(chip);
-    }
-    if (!f.models.length) models.append(el("span", { class: "unmapped" }, "unmapped — no model reads this"));
-    const tr = el("tr");
-    tr.append(
-      el("td", {}, f.key),
-      el("td", { class: "num" }, fmtBytes(f.size)),
-      el("td", {}, f.modified.slice(0, 10)),
-      models);
-    body.append(tr);
-  }
-  table.append(body);
-  $("#modelling-files").append(table);
-}
