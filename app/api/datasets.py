@@ -1,9 +1,11 @@
-"""Dataset discovery for the Modelling workspace's source picker: every object
-in the bucket grouped into pickable datasets (glob or delta-root sources),
-annotated with which loaded models already read them.
+"""Dataset discovery: every object in the bucket grouped into pickable datasets
+(glob or delta-root sources), annotated with which loaded models already read
+them, plus per-model file/byte totals and the bucket-wide count. One listing
+serves both the Modelling workspace's source picker and its landing page
+(dataset tree + model stats) — the two used to hit S3 separately.
 
-Read-only. Reuses semantic.model_source_matchers (shared with app/api/explorer.py)
-and semantic.group_objects for the grouping itself."""
+Read-only. Reuses semantic.model_source_matchers (shared with app/api/explorer.py),
+semantic.per_model_stats and semantic.group_objects for the grouping itself."""
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
@@ -36,7 +38,21 @@ def list_datasets():
                     readers.append({"name": name, "role": role})
         ds["models"] = readers
 
-    return {"bucket": config.BUCKET, "endpoint": config.S3_ENDPOINT, "datasets": datasets}
+    per_model = semantic.per_model_stats(objects, matchers, registry.models)
+
+    return {
+        "bucket": config.BUCKET,
+        "endpoint": config.S3_ENDPOINT,
+        "object_count": len(objects),
+        "bytes": sum(o["size"] for o in objects),
+        "datasets": datasets,
+        "models": [
+            {"name": m.name, "label": m.label, "format": m.source.format, "path": m.source.path,
+             "joins": [{"name": j.name, "path": j.source.path, "format": j.source.format} for j in m.joins],
+             **per_model[m.name]}
+            for m in registry.models.values()
+        ],
+    }
 
 
 @router.get("/datasets/schema")

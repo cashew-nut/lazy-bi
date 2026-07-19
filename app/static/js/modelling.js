@@ -23,15 +23,15 @@ export async function loadModelling() {
   $("#modelling-datasets").innerHTML = "";
   $("#modelling-main").innerHTML = "";
   $("#modelling-bucket").textContent = "scanning bucket…";
-  const [models, bundles, pipelines, data, datasets] = await Promise.all([
-    api("/api/models"), api("/api/dimensions"), api("/api/pipelines"), api("/api/explorer"), api("/api/datasets"),
+  const [models, bundles, pipelines, datasets] = await Promise.all([
+    api("/api/models"), api("/api/dimensions"), api("/api/pipelines"), api("/api/datasets"),
   ]);
   state.models = models;
   state.bundles = bundles;
   $("#modelling-bucket").textContent =
-    `s3://${data.bucket} @ ${data.endpoint.replace(/^https?:\/\//, "")} · ${data.files.length} objects · ${fmtBytes(data.files.reduce((s, f) => s + f.size, 0))}`;
+    `s3://${datasets.bucket} @ ${datasets.endpoint.replace(/^https?:\/\//, "")} · ${datasets.object_count} objects · ${fmtBytes(datasets.bytes)}`;
   renderDatasetTree(datasets.datasets);
-  renderSide(models, bundles, data);
+  renderSide(models, bundles, datasets);
   renderPipelines(pipelines);
 }
 hooks.loadModelling = loadModelling;
