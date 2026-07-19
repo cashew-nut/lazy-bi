@@ -990,6 +990,21 @@ def model_source_matchers(
     return matchers
 
 
+def per_model_stats(
+    objects: list[dict], matchers: list[tuple[str, str, Callable[[str], bool]]], model_names,
+) -> dict[str, dict]:
+    """Per-model file count + byte total over ``objects`` (each ``{"key", "size"}``),
+    zero-filled for every name in ``model_names``. An object matching a model via more
+    than one role (its source and a join, say) still counts once — mirrors the
+    per-object dedup the explorer and dataset-picker endpoints both need."""
+    stats = {name: {"files": 0, "bytes": 0} for name in model_names}
+    for o in objects:
+        for name in {name for name, _role, match in matchers if match(o["key"])}:
+            stats[name]["files"] += 1
+            stats[name]["bytes"] += o.get("size", 0)
+    return stats
+
+
 def group_objects(objects: list[dict], bucket: str) -> list[dict]:
     """Group bucket objects (each ``{"key", "size"}``) into pickable datasets.
 

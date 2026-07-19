@@ -16,21 +16,20 @@ def explorer():
     client = s3.client()
     matchers = semantic.model_source_matchers(registry.models.values(), config.BUCKET)
 
-    files = []
-    per_model = {name: {"files": 0, "bytes": 0} for name in registry.models}
+    objects = []
     paginator = client.get_paginator("list_objects_v2")
     for page in paginator.paginate(Bucket=config.BUCKET):
-        for obj in page.get("Contents", []):
-            hits = [{"model": name, "role": role} for name, role, match in matchers if match(obj["Key"])]
-            for h in {h["model"] for h in hits}:
-                per_model[h]["files"] += 1
-                per_model[h]["bytes"] += obj["Size"]
-            files.append({
-                "key": obj["Key"],
-                "size": obj["Size"],
-                "modified": obj["LastModified"].isoformat(timespec="seconds"),
-                "models": hits,
-            })
+        objects.extend(page.get("Contents", []))
+
+    per_model = semantic.per_model_stats(
+        [{"key": o["Key"], "size": o["Size"]} for o in objects], matchers, registry.models,
+    )
+    files = [{
+        "key": o["Key"],
+        "size": o["Size"],
+        "modified": o["LastModified"].isoformat(timespec="seconds"),
+        "models": [{"model": name, "role": role} for name, role, match in matchers if match(o["Key"])],
+    } for o in objects]
     return {
         "bucket": config.BUCKET,
         "endpoint": config.S3_ENDPOINT,
