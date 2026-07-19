@@ -15,6 +15,7 @@ import { renderImportPanel } from "./dimlab.js";
 import { $, api, el, fmtBytes } from "./lib.js";
 import { navigate, paths } from "./router.js";
 import { hooks, showView, state } from "./state.js";
+import { highlightYaml } from "./yamlhighlight.js";
 
 const NEW_MODEL_TEMPLATE = `# new semantic model — SAVE writes models/<name>.yaml
 name: my_model
@@ -305,6 +306,7 @@ export async function openEditor(kind, name, opts = {}) {
   // opts.text: open with handed-over content (the guided form's generated
   // yaml) as an unsaved edit — REVERT still restores the on-disk original
   ta.value = opts.text ?? editor.original;
+  refreshHighlight();
   editor.dirty = opts.text != null && opts.text !== editor.original;
   editor.columns = [];
   editor.sources = [];
@@ -347,7 +349,16 @@ hooks.confirmLeaveEditor = confirmLeaveEditor;
 
 function markDirty() {
   editor.dirty = true;
+  refreshHighlight();
   scheduleValidate();
+}
+
+// re-render the read-only syntax-highlighted backdrop from the textarea's
+// current text — called on every edit (markDirty covers typing and every
+// programmatic patch) plus the two paths that bypass markDirty on purpose
+// (openEditor's initial load, REVERT).
+function refreshHighlight() {
+  $("#yaml-highlight-code").innerHTML = highlightYaml($("#yaml-editor").value);
 }
 
 function editorStatus(html) {
@@ -825,11 +836,21 @@ export function attachEditor() {
     if (e.key === "Tab") { e.preventDefault(); insertAtCursor(ta, "  "); }
   });
   ta.addEventListener("blur", () => setTimeout(() => completer.hide(), 150));
+  // the highlighted backdrop sits behind the (transparently-inked) textarea
+  // and never scrolls on its own (pointer-events: none) — mirror the
+  // textarea's scroll position onto it on every scroll, including the ones
+  // that come from typing/arrow-key navigation past the visible edge.
+  ta.addEventListener("scroll", () => {
+    const hl = $("#yaml-highlight");
+    hl.scrollTop = ta.scrollTop;
+    hl.scrollLeft = ta.scrollLeft;
+  });
   $("#editor-pick-dataset").addEventListener("click", toggleDatasetPicker);
   $("#editor-run").addEventListener("click", runPipeline);
   $("#editor-lineage-suggest").addEventListener("click", suggestLineage);
   $("#editor-revert").addEventListener("click", () => {
     ta.value = editor.original;
+    refreshHighlight();
     editor.dirty = false;
     $("#editor-datasets").hidden = true;
     validateEditor();
