@@ -370,12 +370,34 @@ table.data tr:hover td { background: color-mix(in srgb, var(--neon) 4%, transpar
 #editor-status .err { color: var(--bad); }
 .editor-body { flex: 1; min-height: 0; display: flex; }
 .editor-main { flex: 1; min-width: 0; position: relative; display: flex; }
-#yaml-editor {
-  flex: 1; min-width: 0; resize: none; border: none; outline: none;
-  background: var(--bg); color: var(--ink);
+/* syntax highlighting: a read-only <pre> sits behind the textarea rendering
+   the same text with colored spans (yamlhighlight.js);
+   the textarea's own text is made transparent (caret + native selection
+   still render on its layer, on top) so what's actually visible is the
+   highlighted backdrop lining up glyph-for-glyph underneath the real,
+   editable, cursor-bearing textarea. Both share this block so their font
+   metrics/padding/wrapping never drift apart. */
+.yaml-highlight, #yaml-editor {
+  position: absolute; inset: 0; margin: 0; border: none;
   font-family: var(--mono); font-size: 12.5px; line-height: 1.55;
   padding: 14px 16px; tab-size: 2;
+  white-space: pre-wrap; word-wrap: break-word; overflow-wrap: anywhere;
 }
+.yaml-highlight {
+  z-index: 1; color: var(--ink); background: var(--bg);
+  overflow: hidden; pointer-events: none;
+}
+.yaml-highlight code { font: inherit; white-space: inherit; }
+.yaml-highlight .tok-key { color: var(--neon); }
+.yaml-highlight .tok-string { color: var(--pink); }
+.yaml-highlight .tok-number { color: var(--warn); }
+.yaml-highlight .tok-bool { color: var(--ok); }
+.yaml-highlight .tok-comment { color: var(--ink-3); font-style: italic; }
+#yaml-editor {
+  z-index: 2; resize: none; outline: none;
+  background: transparent; color: transparent; caret-color: var(--ink);
+}
+#yaml-editor::selection { background: color-mix(in srgb, var(--neon) 35%, transparent); }
 #yaml-editor:focus { box-shadow: inset 2px 0 0 var(--neon); }
 /* intellisense popup in the yaml editor (shares the measure-lab look) */
 #editor-suggest {
