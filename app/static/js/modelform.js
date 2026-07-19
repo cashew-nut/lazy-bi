@@ -12,6 +12,7 @@
 import { refreshModels } from "./builder.js";
 import { DSL_FUNCTIONS, dslContext, dslItems, makeCompleter } from "./completion.js";
 import { openEditor } from "./editor.js";
+import { openMemoriesModal } from "./memories.js";
 import {
   autoGrow, colsOf, columnImportPanel, datasetCards, dimFromColumn, loadDatasets,
   manualPathRow, NAME_RE, note, pairRow, sectionRail, sourceSchema, spineCreatePanel, spineFields,
@@ -108,6 +109,10 @@ export async function openModelForm(name) {
   closeMeasureModal();
   showView("modelform");
   $("#mf-title").textContent = name ? `edit model · ${name}` : "new model";
+  // build (open in Studio) and memory curation only make sense for a model
+  // that's actually saved and registered — a fresh, unsaved model has neither
+  $("#mf-build").hidden = !name;
+  $("#mf-memory").hidden = !name;
   setStatus(name ? "loading…" : "");
   render();
   if (!state.bundles.length) state.bundles = await api("/api/dimensions").catch(() => []);
@@ -980,6 +985,14 @@ async function editAsYaml() {
 export function attachModelForm() {
   $("#mf-save").addEventListener("click", saveModelForm);
   $("#mf-yaml").addEventListener("click", editAsYaml);
+  $("#mf-build").addEventListener("click", () => {
+    if (form.editingName) navigate(paths.studioModel(form.editingName));
+  });
+  $("#mf-memory").addEventListener("click", () => {
+    if (form.editingName) {
+      openMemoriesModal({ name: form.editingName, label: form.label, dimensions: form.dimensions, measures: form.measures });
+    }
+  });
   $("#mf-back").addEventListener("click", () => {
     if (!confirmLeaveModelForm()) return;
     form.dirty = false;

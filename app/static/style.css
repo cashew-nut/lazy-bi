@@ -757,15 +757,29 @@ body.portal-dash #dash-name { pointer-events: none; }
 .tree-folder > summary .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tree-count { color: var(--ink-3); font-size: 9px; flex: none; }
 .tree-children { padding-left: 14px; margin-left: 6px; border-left: 1px dashed var(--line); }
+.tree-leaf, .tree-leaf-info { min-width: 0; }
+.tree-leaf .nm, .tree-leaf-info .nm {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-size: 11px;
+}
+.tree-leaf-sub { color: var(--ink-3); font-size: 9.5px; margin-top: 3px; }
+
+/* single-object dataset: plain, non-expandable row */
 .tree-leaf { padding: 5px 4px 6px 20px; border-radius: 3px; }
 .tree-leaf:hover { background: color-mix(in srgb, var(--neon) 4%, transparent); }
-.tree-leaf-head { display: flex; align-items: baseline; gap: 6px; }
-.tree-leaf-head .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-size: 11px; }
-.tree-leaf-sub {
-  color: var(--ink-3); font-size: 9.5px; margin-top: 3px;
-  display: flex; flex-wrap: wrap; gap: 4px; align-items: center;
+
+/* multi-object dataset: expandable to list the backing objects */
+.tree-leaf-expand > summary {
+  list-style: none; cursor: pointer; display: flex; align-items: flex-start; gap: 6px;
+  padding: 5px 4px 6px 20px; border-radius: 3px;
 }
-.tree-leaf-sub .warn-note { color: var(--warn); }
+.tree-leaf-expand > summary::-webkit-details-marker { display: none; }
+.tree-leaf-expand > summary:hover { background: color-mix(in srgb, var(--neon) 4%, transparent); }
+.tree-leaf-expand > summary:focus-visible { outline: none; box-shadow: inset 2px 0 0 var(--neon); }
+.tree-leaf-expand > summary .tree-caret { margin-top: 2px; }
+.tree-leaf-expand[open] > summary .tree-caret { transform: rotate(90deg); color: var(--neon); }
+.tree-object-list { padding: 2px 4px 6px 40px; display: flex; flex-direction: column; gap: 2px; }
+.tree-object { display: flex; justify-content: space-between; gap: 8px; font-size: 9.5px; color: var(--ink-3); }
+.tree-object .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 
 /* center: models / common models / pipelines as collapsible sections */
 .modelling-main { flex: 1; min-width: 0; overflow-y: auto; padding: 14px 20px; }
@@ -789,14 +803,12 @@ body.portal-dash #dash-name { pointer-events: none; }
 .mk-card .fmt { font-size: 9px; color: var(--pink); border: 1px solid var(--line); padding: 1px 5px; border-radius: 2px; }
 .mk-card .path { color: var(--ink-3); font-size: 10px; margin-top: 4px; word-break: break-all; }
 .mk-card .mk-sub { color: var(--ink-2); font-size: 10px; margin-top: 5px; }
-.mk-card .mk-actions { display: flex; gap: 6px; margin-top: 8px; }
 .mini-btn {
   background: transparent; border: 1px solid var(--line); border-radius: 3px;
   color: var(--ink-2); cursor: pointer; font-family: var(--mono); font-size: 10px;
   padding: 3px 9px; letter-spacing: 0.5px;
 }
 .mini-btn:hover { color: var(--neon); border-color: var(--neon); }
-.mini-btn.go:hover { color: var(--pink); border-color: var(--pink); }
 button.ghost.mk-new { margin-top: 2px; }
 .explorer-models {
   width: 300px; flex: none; overflow-y: auto; padding: 14px;
@@ -811,11 +823,8 @@ button.ghost.mk-new { margin-top: 2px; }
 .x-model .join-line { color: var(--ink-3); font-size: 10px; margin-top: 3px; }
 .model-chip {
   display: inline-block; font-size: 9px; border: 1px solid var(--neon-dim); color: var(--neon);
-  border-radius: 2px; padding: 1px 6px; margin-right: 4px; cursor: pointer;
+  border-radius: 2px; padding: 1px 6px; margin-right: 4px;
 }
-.model-chip:hover { background: color-mix(in srgb, var(--neon) 10%, transparent); }
-.model-chip.join { border-color: color-mix(in srgb, var(--pink) 40%, transparent); color: var(--pink); }
-.unmapped { color: var(--ink-3); font-size: 10px; font-style: italic; }
 
 /* ── measure lab ────────────────────────────────────── */
 #measure-lab {
