@@ -309,8 +309,9 @@ def test_new_model_opens_the_form_not_the_editor(client):
     assert 'modellingNewModel: () => "/modelling/model/new"' in router
     assert 'return hooks.openModelForm && hooks.openModelForm(isNew ? null : name);' in router
     modelling = client.get("/static/js/modelling.js").text
-    assert "navigate(paths.modellingModel(m.name))" in modelling        # ✎ edit -> guided form
-    assert "navigate(paths.modellingModelYaml(m.name))" in modelling    # { } yaml editing still reachable
+    assert "navigate(paths.modellingModel(m.name))" in modelling        # card click -> guided form
+    modelform_src = client.get("/static/js/modelform.js").text
+    assert '$("#mf-yaml").addEventListener("click", editAsYaml)' in modelform_src   # { } yaml editing reachable from the form itself
 
 
 # ── bundle form backend (guided common-model authoring) ─────────
@@ -413,5 +414,6 @@ def test_bundleform_view_present(client):
     assert 'modellingNewBundle: () => "/modelling/bundle/new"' in router
     assert 'return hooks.openBundleForm && hooks.openBundleForm(isNew ? null : name);' in router
     modelling = client.get("/static/js/modelling.js").text
-    assert "navigate(paths.modellingBundle(b.name))" in modelling         # ✎ edit -> guided form
-    assert "navigate(paths.modellingBundleYaml(b.name))" in modelling     # { } yaml editing still reachable
+    assert "navigate(paths.modellingBundle(b.name))" in modelling         # card click -> guided form
+    bundleform_src = client.get("/static/js/bundleform.js").text
+    assert '$("#bf-yaml").addEventListener("click", editAsYaml)' in bundleform_src   # { } yaml editing reachable from the form itself
