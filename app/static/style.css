@@ -651,12 +651,26 @@ body[data-mode="home"] aside, body[data-mode="modelling"] aside, body[data-mode=
    It also drops the chart-card's border/background/glow so it reads as part
    of the page background rather than a boxed panel. */
 #home-view {
-  max-width: 980px; width: 100%; margin: 0;
+  width: 100%; margin: 0;
   border: none; background: none; box-shadow: none;
 }
+.home-layout { flex: 1; min-height: 0; display: flex; }
 .home-body {
-  flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden;
+  flex: 1 1 auto; max-width: 980px; min-height: 0; overflow-y: auto; overflow-x: hidden;
   padding: 36px 40px 40px;
+}
+.home-notebooks {
+  width: 304px; flex: none; align-self: stretch; overflow-y: auto;
+  border-left: 1px solid var(--line);
+  background: var(--panel);
+  padding: 14px 14px 40px;
+}
+.home-notebooks-desc { color: var(--ink-3); font-size: 11px; line-height: 1.5; margin: 0 0 12px; }
+#home-notebook-list .mk-card { margin-bottom: 6px; }
+#home-notebook-list .mk-sub { text-transform: none; letter-spacing: 0.3px; }
+@media (max-width: 900px) {
+  .home-layout { flex-direction: column; }
+  .home-notebooks { width: auto; border-left: none; border-top: 1px solid var(--line); padding: 20px 40px; }
 }
 .home-prompt { margin: 0 0 26px; font-size: 15px; letter-spacing: 0.5px; color: var(--ink); }
 .home-prompt-glyph { color: var(--neon); margin-right: 8px; text-shadow: 0 0 6px var(--neon-dim); }
@@ -720,6 +734,51 @@ body[data-mode="home"] aside, body[data-mode="modelling"] aside, body[data-mode=
   .home-row { grid-template-columns: 22px 18px minmax(0, 1fr); gap: 10px; }
   .home-row .body { flex-direction: column; }
 }
+
+/* ── notebooks ──────────────────────────────────────── */
+.nb-title { flex: 1; letter-spacing: 1px; color: var(--pink); }
+.nb-content { flex: 1; min-height: 0; overflow-y: auto; padding: 24px 32px 40px; }
+.nb-content > * + * { margin-top: 18px; }
+.nb-content h1, .nb-content h2, .nb-content h3 { color: var(--ink); letter-spacing: 0.5px; margin: 0 0 10px; }
+.nb-content h1 { font-size: 18px; } .nb-content h2 { font-size: 14px; } .nb-content h3 { font-size: 12px; }
+.nb-content p { color: var(--ink-2); font-size: 12.5px; line-height: 1.7; margin: 0 0 10px; }
+
+.nb-collapsible {
+  border: 1px solid var(--line); border-radius: 4px; padding: 4px 14px;
+  background: var(--panel);
+}
+.nb-collapsible > summary {
+  cursor: pointer; list-style: none; user-select: none;
+  padding: 10px 0; font-size: 11px; letter-spacing: 2px; color: var(--neon); text-transform: uppercase;
+  display: flex; align-items: center; gap: 8px;
+}
+.nb-collapsible > summary::-webkit-details-marker { display: none; }
+.nb-collapsible[open] > summary { border-bottom: 1px solid var(--line); }
+.nb-collapsible[open] > summary .tree-caret { transform: rotate(90deg); }
+.nb-collapsible > summary:hover { color: var(--pink); }
+.nb-collapsible-body { padding: 14px 0 16px; }
+
+.nb-tabs { border: 1px solid var(--line); border-radius: 4px; background: var(--panel); }
+.nb-tab-list { display: flex; gap: 2px; border-bottom: 1px solid var(--line); padding: 6px 6px 0; flex-wrap: wrap; }
+.nb-tab-btn {
+  background: transparent; border: 1px solid transparent; border-bottom: none;
+  color: var(--ink-3); font-family: var(--mono); font-size: 11px; letter-spacing: 1.5px;
+  padding: 9px 16px; cursor: pointer; border-radius: 3px 3px 0 0; text-transform: uppercase;
+}
+.nb-tab-btn:hover { color: var(--ink); }
+.nb-tab-btn.on { color: var(--neon); border-color: var(--line); background: var(--bg); }
+.nb-tab-panel { padding: 18px; }
+.nb-tab-panel[hidden] { display: none; }
+.nb-tab-panel > * + * { margin-top: 16px; }
+
+.nb-visual { margin: 0; }
+.nb-visual.tile { height: 380px; }
+
+.nb-dash-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+.nb-dash-head .nm { color: var(--ink); letter-spacing: 1px; }
+.nb-dash-head .tag { font-size: 9px; color: var(--pink); border: 1px solid var(--line); padding: 1px 6px; border-radius: 2px; }
+.nb-dash-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+@media (max-width: 760px) { .nb-dash-grid { grid-template-columns: 1fr; } }
 
 /* ── portal ─────────────────────────────────────────── */
 .crumbs { flex: 1; color: var(--ink-2); font-size: 12px; letter-spacing: 1px; }

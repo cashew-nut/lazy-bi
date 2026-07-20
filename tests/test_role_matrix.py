@@ -41,6 +41,8 @@ MATRIX = {
     ("GET", "/api/visuals"): "viewer",
     ("GET", "/api/dashboards"): "viewer",
     ("GET", "/api/dashboards/{dash_id}"): "viewer",
+    ("GET", "/api/notebooks"): "viewer",
+    ("GET", "/api/notebooks/{notebook_id}"): "viewer",
     ("GET", "/api/portal"): "viewer",
     ("GET", "/api/explorer"): "viewer",
     ("GET", "/api/datasets"): "viewer",
@@ -76,6 +78,9 @@ MATRIX = {
     ("DELETE", "/api/dashboards/{dash_id}"): "author",
     ("POST", "/api/publish"): "author",
     ("DELETE", "/api/publish/{dashboard_id}"): "author",
+    ("POST", "/api/notebooks"): "author",
+    ("PUT", "/api/notebooks/{notebook_id}"): "author",
+    ("DELETE", "/api/notebooks/{notebook_id}"): "author",
 
     ("GET", "/api/users"): "admin",
     ("POST", "/api/users"): "admin",

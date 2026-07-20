@@ -69,5 +69,7 @@ export function renderHome() {
   if (!state.models.length) {
     list.append(el("tr", {}, el("td", { class: "empty-note", colspan: "4" }, "no semantic models found")));
   }
+
+  hooks.refreshNotebookList && hooks.refreshNotebookList();
 }
 hooks.renderHome = renderHome;

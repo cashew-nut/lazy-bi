@@ -36,6 +36,7 @@ export const paths = {
   chat: () => "/chat",
   chatConversation: (id) => `/chat/${id}`,
   account: () => "/account",
+  notebook: (id) => `/notebook/${id}`,
 };
 
 const MODE_PATH = {
@@ -122,6 +123,9 @@ async function resolveRoute(pathname) {
       case "account":
         showView("account");
         return hooks.loadAccount && hooks.loadAccount();
+      case "notebook":
+        if (!rest[0]) throw new Error("notebook route needs an id");
+        return hooks.openNotebook && hooks.openNotebook(+rest[0]);
       default: throw new Error(`unknown route: ${pathname}`);
     }
   } catch (err) {

@@ -171,32 +171,52 @@
 
     <main>
       <div id="home-view" class="chart-card" hidden>
-        <div class="home-body">
-          <p class="home-prompt">
-            <span class="home-prompt-glyph" aria-hidden="true">&gt;</span>
-            <span id="home-greeting">where to?</span><span class="home-cursor" aria-hidden="true">_</span>
-          </p>
+        <div class="home-layout">
+          <div class="home-body">
+            <p class="home-prompt">
+              <span class="home-prompt-glyph" aria-hidden="true">&gt;</span>
+              <span id="home-greeting">where to?</span><span class="home-cursor" aria-hidden="true">_</span>
+            </p>
 
-          <div id="home-cards" class="home-index"></div>
+            <div id="home-cards" class="home-index"></div>
 
-          <div id="home-admin" class="home-admin" hidden>
-            <div class="home-admin-label">admin</div>
-            <div id="home-admin-cards" class="home-admin-row"></div>
+            <div id="home-admin" class="home-admin" hidden>
+              <div class="home-admin-label">admin</div>
+              <div id="home-admin-cards" class="home-admin-row"></div>
+            </div>
+
+            <div class="home-status">
+              <div class="home-status-head">
+                <span>semantic models</span>
+                <span id="home-models-count" class="home-status-count"></span>
+              </div>
+              <div class="home-status-scroll">
+                <table class="data">
+                  <thead><tr><th>model</th><th>format</th><th class="num">dim</th><th class="num">msr</th></tr></thead>
+                  <tbody id="home-models-list"></tbody>
+                </table>
+              </div>
+            </div>
           </div>
 
-          <div class="home-status">
-            <div class="home-status-head">
-              <span>semantic models</span>
-              <span id="home-models-count" class="home-status-count"></span>
-            </div>
-            <div class="home-status-scroll">
-              <table class="data">
-                <thead><tr><th>model</th><th>format</th><th class="num">dim</th><th class="num">msr</th></tr></thead>
-                <tbody id="home-models-list"></tbody>
-              </table>
-            </div>
+          <div class="home-notebooks">
+            <details class="mk-section" open>
+              <summary class="sec-title"><span class="tree-caret">▸</span>Notebooks</summary>
+              <div class="mk-section-body">
+                <p class="home-notebooks-desc">AI-composed pages that mix your saved visuals and dashboards into a single narrative — tabs, collapsibles, whatever the page calls for.</p>
+                <div id="home-notebook-list"></div>
+              </div>
+            </details>
           </div>
         </div>
+      </div>
+
+      <div id="notebook-view" class="chart-card" hidden>
+        <div class="chart-head">
+          <button class="btn plain" id="notebook-back">◄ HOME</button>
+          <span id="notebook-name" class="nb-title"></span>
+        </div>
+        <div id="notebook-content" class="nb-content"></div>
       </div>
 
       <div id="builder-view" class="chart-card">

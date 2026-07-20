@@ -22,6 +22,8 @@ import "./lineagegraph.js";
 // side-effect only: registers hooks.renderHome for the router
 import "./home.js";
 import { $, api } from "./lib.js";
+// side-effect only: registers hooks.openNotebook/renderNotebookList for the router/home
+import "./notebook.js";
 import { initMeasureLab } from "./measurelab.js";
 import { attachModelForm } from "./modelform.js";
 import { loadModelling, openCreateChooser, openLayersModal } from "./modelling.js";
@@ -115,6 +117,7 @@ async function init() {
     $("#dash-back").addEventListener("click", () => {
       navigate(state.portal ? paths.portalFolder(state.portalFolder) : paths.studio());
     });
+    $("#notebook-back").addEventListener("click", () => navigate(paths.home()));
     $("#dash-publish").addEventListener("click", publishCurrent);
     $("#dash-name").addEventListener("change", saveDash);
     $("#dash-add").addEventListener("click", async () => {

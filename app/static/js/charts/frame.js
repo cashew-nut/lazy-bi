@@ -155,21 +155,35 @@ export function drawAxisTitle(f, container, axis, text, onCommit) {
 
 export function drawXLabels(ctx, f, xs, xToPx, xCol, grain, rotate) {
   const axis = svgEl("g", { class: "axis" });
-  const maxLabels = Math.max(2, Math.floor(f.plotW / 78));
+  const minGapPx = 78;   // same budget used to size maxLabels below — one label's worth of room
+  const maxLabels = Math.max(2, Math.floor(f.plotW / minGapPx));
   const step = Math.ceil(xs.length / maxLabels);
-  xs.forEach((xv, i) => {
-    if (i % step !== 0 && i !== xs.length - 1) return;
-    if (i === xs.length - 1 && xs.length > 1 && (i % step) < step / 2 && i - (i % step) !== i) {
-      if (i % step !== 0 && (i - (i % step)) > i - step / 2) return;
-    }
-    let text = fmtDimValue(ctx, xv, xCol && ctxDim(ctx, xCol.name), grain);
+  const last = xs.length - 1;
+
+  const indices = [];
+  for (let i = 0; i < xs.length; i += step) indices.push(i);
+  if (indices[indices.length - 1] !== last) {
+    // the final label is always forced on regardless of step spacing — if the
+    // nearest regular tick would land close enough (in actual pixels) to
+    // crowd/overlap it, drop that regular tick and let the final one stand alone
+    const prev = indices[indices.length - 1];
+    if (prev !== undefined && xToPx(last) - xToPx(prev) < minGapPx) indices.pop();
+    indices.push(last);
+  }
+
+  for (const i of indices) {
+    let text = fmtDimValue(ctx, xs[i], xCol && ctxDim(ctx, xCol.name), grain);
     if (text.length > 14) text = text.slice(0, 13) + "…";
     const x = xToPx(i);
+    // the last label sits right at the plot's edge — center-anchoring it
+    // would overflow into (and get clipped by) the right margin, so it
+    // grows leftward off the tick instead, same as the first label already
+    // does implicitly (nothing to its left to overflow into)
     const label = svgEl("text", rotate
       ? { x, y: f.m.t + f.plotH + 12, "text-anchor": "end", transform: `rotate(-28 ${x} ${f.m.t + f.plotH + 12})` }
-      : { x, y: f.m.t + f.plotH + 16, "text-anchor": "middle" });
+      : { x, y: f.m.t + f.plotH + 16, "text-anchor": i === last ? "end" : "middle" });
     label.textContent = text;
     axis.append(label);
-  });
+  }
   f.svg.append(axis);
 }
