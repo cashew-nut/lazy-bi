@@ -25,6 +25,7 @@ import { $, api } from "./lib.js";
 import { initMeasureLab } from "./measurelab.js";
 import { attachModelForm } from "./modelform.js";
 import { loadModelling, openCreateChooser, openLayersModal } from "./modelling.js";
+import { attachPanelChat } from "./panelchat.js";
 // side-effect only: nothing here calls into the portal module directly
 // anymore (the router dispatches to it via hooks.openPortalFolder), but the
 // module still has to be imported somewhere for that registration to run
@@ -90,6 +91,7 @@ async function init() {
     // ── semantic editor + guided forms (opened from Modelling) ──
     attachEditor();   // input/keydown/completion/dataset-picker/revert/beforeunload
     attachModelForm();
+    attachPanelChat();  // ephemeral right-hand chat panel, scoped to the model being edited
     attachBundleForm();
     $("#mk-new-model").addEventListener("click", () => openCreateChooser());
     $("#mk-new-bundle").addEventListener("click", () => navigate(paths.modellingNewBundle()));

@@ -332,12 +332,27 @@
           <span id="mf-status"></span>
           <button class="btn plain" id="mf-memory" data-role="admin" title="chat-learned memories (synonyms, notes) for this model" hidden>◈ MEMORY</button>
           <button class="btn plain" id="mf-build" hidden>BUILD ►</button>
+          <button class="btn plain" id="mf-chat-toggle" title="ask questions about this model — exploratory only, not saved" hidden>◈ CHAT</button>
           <button class="btn plain" id="mf-yaml">{ } EDIT YAML DIRECTLY</button>
           <button class="btn" id="mf-back">◄ MODELLING</button>
         </div>
         <div class="mf-body">
           <div id="mf-steps" class="mf-steps"></div>
           <div id="mf-main" class="mf-main"></div>
+          <div id="mf-chat-panel" class="mf-chat-panel" hidden>
+            <div class="mf-chat-head">
+              <span class="field-label">CHAT · <span id="mf-chat-model-label"></span></span>
+              <button class="btn plain" id="mf-chat-clear" title="clear this exploratory conversation">CLEAR</button>
+              <button class="btn plain" id="mf-chat-close" title="close chat panel">✕</button>
+            </div>
+            <div id="mf-chat-thread" class="chat-thread">
+              <div class="empty-note">ask about this model — exploratory only, nothing here is saved</div>
+            </div>
+            <form id="mf-chat-form" class="chat-input-row">
+              <input id="mf-chat-input" placeholder="e.g. revenue by category last quarter" spellcheck="false" autocomplete="off">
+              <button class="btn alt" type="submit">ASK</button>
+            </form>
+          </div>
         </div>
         <div class="mf-footer">
           <span id="mf-hint" class="mf-hint"></span>

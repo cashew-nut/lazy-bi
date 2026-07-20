@@ -169,7 +169,7 @@ function fmtFilter(f) {
 // model picked (chat.py's "tool_name" SSE event) — shown only while a
 // question is in flight, replaced by the real outcome tag once "response"
 // arrives and renderMessage() takes over.
-const TOOL_LABELS = {
+export const TOOL_LABELS = {
   propose_query: "BUILDING A QUERY…",
   ask_clarification: "ASKING A CLARIFYING QUESTION…",
   show_last_query: "LOOKING UP THE LAST QUERY…",
@@ -179,7 +179,7 @@ const TOOL_LABELS = {
 // The query as it's being built, from a "tool_input" event's accumulated-
 // so-far (and possibly incomplete) args — best-effort formatting of
 // whatever fields have landed already, never throwing on a partial shape.
-function fmtPartialQuery(input) {
+export function fmtPartialQuery(input) {
   if (!input || typeof input !== "object") return "";
   const parts = [];
   if (input.model) parts.push(`model: ${input.model}`);
@@ -205,7 +205,7 @@ function fmtPartialQuery(input) {
 // Reads a fetch() response body shaped as Server-Sent Events (chat.py's
 // _sse()) — not EventSource, which is GET-only and can't carry the
 // X-Requested-With CSRF header this app requires for cookie-authed POSTs.
-async function* parseSSE(response) {
+export async function* parseSSE(response) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buf = "";
@@ -232,7 +232,7 @@ async function* parseSSE(response) {
 // not just model/dimensions/measures — every answered turn is independently
 // verifiable this way, and it's what a "query_shown" message (the assistant
 // answering "show me the query") actually shows.
-function renderMessage(msg) {
+export function renderMessage(msg) {
   if (msg.role === "user") {
     return el("div", { class: "chat-msg user" }, msg.question_text);
   }
@@ -265,7 +265,7 @@ function renderMessage(msg) {
 // itself persists in the model's memory pool (fed back into every future
 // conversation's catalog, for every user), not in this message; admins
 // curate the pool from MODELLING › ◈ memory.
-function renderLearnedNote(learned) {
+export function renderLearnedNote(learned) {
   const lines = learned.map((m) =>
     m.kind === "synonym" ? `“${m.content}” → ${m.subject} (${m.model})` : `${m.content} (${m.model})`);
   return el("div", { class: "learned-note", title: "stored against the model — admins can edit this in Modelling" },
