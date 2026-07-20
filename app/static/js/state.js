@@ -16,6 +16,9 @@ export const state = {
   parameterValues: {},   // current picks {name: value}; missing name -> that parameter's default
   filters: [],          // [{field, op, value, values}]
   chartType: "auto",
+  xAxisTitle: "",        // user override; "" falls back to the auto-derived label
+  yAxisTitle: "",
+  yScale: "linear",      // "linear" | "log" — y/value axis scale
   sort: { by: "", desc: true },
   limit: 1000,
   visualId: null,

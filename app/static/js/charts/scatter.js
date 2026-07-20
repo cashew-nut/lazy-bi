@@ -5,7 +5,7 @@
 
 import { svgEl, fmtMeasure } from "../lib.js";
 import { MAX_SERIES, PALETTE, ctxDim, ctxGrain, fmtDimValue, renderLegend, tooltipHide, tooltipShow, vizMessage } from "./common.js";
-import { drawYAxis, niceTicks, plotFrame } from "./frame.js";
+import { drawAxisTitle, drawYAxis, niceTicks, plotFrame } from "./frame.js";
 
 export const MARKER_GLYPHS = ["●", "■", "▲", "◆", "✕", "○", "✚", "★"];
 
@@ -45,8 +45,13 @@ export function renderScatter(ctx) {
   if (!xs.length) return vizMessage(ctx.container, "no data points");
   const pad = (lo, hi) => { const s = (hi - lo) * 0.06 || Math.abs(hi) * 0.06 || 1; return [lo - s, hi + s]; };
   const [xlo, xhi] = pad(Math.min(...xs), Math.max(...xs));
-  const [ylo, yhi] = pad(Math.min(...ys), Math.max(...ys));
-  const yPx = drawYAxis(f, ylo, yhi, my.format);
+  let [ylo, yhi] = pad(Math.min(...ys), Math.max(...ys));
+  const isLog = ctx.yScale === "log";
+  if (isLog) {
+    const positives = ys.filter((v) => v > 0);
+    if (positives.length) { ylo = Math.min(...positives); yhi = Math.max(...positives) * 1.08 || 1; }
+  }
+  const yPx = drawYAxis(f, ylo, yhi, my.format, { scale: ctx.yScale });
   const xPx = (v) => f.m.l + ((v - xlo) / (xhi - xlo)) * f.plotW;
 
   const xAxis = svgEl("g", { class: "axis" });
@@ -57,11 +62,9 @@ export function renderScatter(ctx) {
     xAxis.append(label);
   }
   f.svg.append(xAxis);
-  const xt = svgEl("text", { class: "axis-title", x: f.m.l + f.plotW, y: f.m.t + f.plotH + 32, "text-anchor": "end" });
-  xt.textContent = mx.label + " →";
-  const yt = svgEl("text", { class: "axis-title", x: f.m.l, y: f.m.t - 4 });
-  yt.textContent = "↑ " + my.label;
-  f.svg.append(xt, yt);
+  const onTitleChange = ctx.onAxisTitleChange;
+  drawAxisTitle(f, ctx.container, "x", ctx.xAxisTitle || mx.label, onTitleChange && ((v) => onTitleChange("x", v)));
+  drawAxisTitle(f, ctx.container, "y", ctx.yAxisTitle || my.label, onTitleChange && ((v) => onTitleChange("y", v)));
 
   if (seriesCol) {
     renderLegend(ctx, { series: seriesKeys.slice(0, MAX_SERIES).map((k, i) => ({

@@ -61,76 +61,112 @@
 
   <div class="layout">
     <aside>
-      <section>
-        <div class="sec-title">Model</div>
-        <select id="model-select"></select>
-        <div id="model-desc" class="empty-note"></div>
-        <div class="empty-note" style="margin-top:6px">author models in the <b>MODELLING</b> workspace</div>
-      </section>
-
-      <section>
-        <div class="sec-title">Dimensions</div>
-        <div id="dim-list" class="chip-list"></div>
-      </section>
-
-      <section>
-        <div class="sec-title">Measures</div>
-        <div id="measure-list" class="chip-list"></div>
-        <button class="ghost" id="lab-open" style="margin-top:6px">+ new measure</button>
-      </section>
-
-      <section>
-        <div class="sec-title">Filters</div>
-        <div id="filter-list"></div>
-        <button class="ghost" id="add-filter">+ add filter</button>
-      </section>
-
-      <section>
-        <div class="sec-title">Parameters</div>
-        <div id="param-list"></div>
-        <button class="ghost" id="add-param">+ add parameter</button>
-      </section>
-
-      <section>
-        <div class="sec-title">Display</div>
-        <div class="field-label">CHART</div>
-        <div class="seg wrap" id="chart-seg">
-          <button data-t="auto">AUTO</button>
-          <button data-t="bar">BAR</button>
-          <button data-t="line">LINE</button>
-          <button data-t="scatter">SCTR</button>
-          <button data-t="sankey">SNKY</button>
-          <button data-t="ribbon">RIBN</button>
-          <button data-t="geo">GEO</button>
-          <button data-t="stat">STAT</button>
-          <button data-t="table">TABLE</button>
+      <details class="mk-section" open>
+        <summary class="sec-title"><span class="tree-caret">▸</span>Model</summary>
+        <div class="mk-section-body">
+          <select id="model-select"></select>
+          <div id="model-desc" class="empty-note"></div>
+          <div class="empty-note" style="margin-top:6px">author models in the <b>MODELLING</b> workspace</div>
         </div>
-        <div class="row2" style="margin-top:8px">
-          <div>
-            <div class="field-label">SORT</div>
-            <select id="sort-by"><option value="">auto</option></select>
+      </details>
+
+      <details class="mk-section" open>
+        <summary class="sec-title"><span class="tree-caret">▸</span>Display</summary>
+        <div class="mk-section-body">
+          <div class="field-label">CHART</div>
+          <div class="seg wrap" id="chart-seg">
+            <button data-t="auto">AUTO</button>
+            <button data-t="bar">BAR</button>
+            <button data-t="line">LINE</button>
+            <button data-t="scatter">SCTR</button>
+            <button data-t="sankey">SNKY</button>
+            <button data-t="ribbon">RIBN</button>
+            <button data-t="geo">GEO</button>
+            <button data-t="stat">STAT</button>
+            <button data-t="table">TABLE</button>
           </div>
-          <div>
-            <div class="field-label">DIR</div>
-            <select id="sort-dir"><option value="desc">desc</option><option value="asc">asc</option></select>
+          <div class="row2" style="margin-top:8px">
+            <div>
+              <div class="field-label">SORT</div>
+              <select id="sort-by"><option value="">auto</option></select>
+            </div>
+            <div>
+              <div class="field-label">DIR</div>
+              <select id="sort-dir"><option value="desc">desc</option><option value="asc">asc</option></select>
+            </div>
+            <div>
+              <div class="field-label">LIMIT</div>
+              <input type="number" id="limit" value="1000" min="1" max="10000">
+            </div>
           </div>
-          <div>
-            <div class="field-label">LIMIT</div>
-            <input type="number" id="limit" value="1000" min="1" max="10000">
+          <div class="field-label" style="margin-top:10px">AXIS TITLES</div>
+          <div class="row2">
+            <div>
+              <div class="field-label">X AXIS</div>
+              <input type="text" id="axis-title-x" placeholder="auto" spellcheck="false">
+            </div>
+            <div>
+              <div class="field-label">Y AXIS</div>
+              <input type="text" id="axis-title-y" placeholder="auto" spellcheck="false">
+            </div>
+          </div>
+          <div class="field-label" style="margin-top:10px">Y SCALE</div>
+          <div class="seg" id="yscale-seg">
+            <button data-s="linear">LINEAR</button>
+            <button data-s="log">LOG</button>
           </div>
         </div>
-      </section>
+      </details>
 
-      <section>
-        <div class="sec-title">Saved Visuals</div>
-        <div id="saved-list"></div>
-      </section>
+      <details class="mk-section" open>
+        <summary class="sec-title"><span class="tree-caret">▸</span>Dimensions</summary>
+        <div class="mk-section-body">
+          <input type="text" id="dim-filter" class="sb-filter" placeholder="type to filter…" spellcheck="false">
+          <div id="dim-list" class="chip-list"></div>
+        </div>
+      </details>
 
-      <section>
-        <div class="sec-title">Dashboards</div>
-        <div id="dash-list"></div>
-        <button class="ghost" id="new-dash" data-role="author">+ new dashboard</button>
-      </section>
+      <details class="mk-section" open>
+        <summary class="sec-title"><span class="tree-caret">▸</span>Measures</summary>
+        <div class="mk-section-body">
+          <input type="text" id="measure-filter" class="sb-filter" placeholder="type to filter…" spellcheck="false">
+          <div id="measure-list" class="chip-list"></div>
+          <button class="ghost" id="lab-open" style="margin-top:6px">+ new measure</button>
+        </div>
+      </details>
+
+      <details class="mk-section" open>
+        <summary class="sec-title"><span class="tree-caret">▸</span>Filters</summary>
+        <div class="mk-section-body">
+          <div id="filter-list"></div>
+          <button class="ghost" id="add-filter">+ add filter</button>
+        </div>
+      </details>
+
+      <details class="mk-section" open>
+        <summary class="sec-title"><span class="tree-caret">▸</span>Parameters</summary>
+        <div class="mk-section-body">
+          <div id="param-list"></div>
+          <button class="ghost" id="add-param">+ add parameter</button>
+        </div>
+      </details>
+
+      <details class="mk-section" open>
+        <summary class="sec-title"><span class="tree-caret">▸</span>Saved Visuals</summary>
+        <div class="mk-section-body">
+          <input type="text" id="saved-filter" class="sb-filter" placeholder="type to filter…" spellcheck="false">
+          <div id="saved-list"></div>
+        </div>
+      </details>
+
+      <details class="mk-section" open>
+        <summary class="sec-title"><span class="tree-caret">▸</span>Dashboards</summary>
+        <div class="mk-section-body">
+          <input type="text" id="dash-list-filter" class="sb-filter" placeholder="type to filter…" spellcheck="false">
+          <div id="dash-list"></div>
+          <button class="ghost" id="new-dash" data-role="author">+ new dashboard</button>
+        </div>
+      </details>
     </aside>
 
     <main>
@@ -199,6 +235,7 @@
             <button class="btn plain" id="lab-cancel">CANCEL</button>
           </div>
         </div>
+        <div id="role-map" class="role-map-box" hidden></div>
         <div id="legend" class="legend-box"></div>
         <div id="chart" class="chart-box"><div class="msg">initialising…</div></div>
         <div id="table-wrap" hidden></div>

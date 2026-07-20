@@ -3,7 +3,7 @@
 
 import { svgEl, fmtMeasure } from "../lib.js";
 import { ctxDim, ctxGrain, fmtDimValue, tooltipHide, tooltipShow, vizMessage } from "./common.js";
-import { drawXLabels, drawYAxis, plotFrame } from "./frame.js";
+import { drawAxisTitle, drawXLabels, drawYAxis, plotFrame } from "./frame.js";
 
 export function renderRibbon(ctx, pivot) {
   const f = plotFrame(ctx.container);
@@ -11,9 +11,16 @@ export function renderRibbon(ctx, pivot) {
   if (xs.length < 2) return vizMessage(ctx.container, "ribbon needs at least two points on the x axis");
   const grain = xCol ? ctxGrain(ctx, xCol.name) : null;
   const sums = xs.map((_, i) => series.reduce((s, sr) => s + Math.max(0, sr.values[i] || 0), 0));
-  const yPx = drawYAxis(f, 0, Math.max(...sums) * 1.05 || 1, measure.format);
+  const isLog = ctx.yScale === "log";
+  const positiveSums = sums.filter((v) => v > 0);
+  const lo = isLog && positiveSums.length ? Math.min(...positiveSums) : 0;
+  const yPx = drawYAxis(f, lo, Math.max(...sums) * 1.05 || 1, measure.format, { scale: ctx.yScale });
   const xToPx = (i) => f.m.l + (i / (xs.length - 1)) * f.plotW;
   drawXLabels(ctx, f, xs, xToPx, xCol, grain, false);
+  const onTitleChange = ctx.onAxisTitleChange;
+  const xTitle = ctx.xAxisTitle || (xCol && (ctxDim(ctx, xCol.name) || xCol).label) || "";
+  drawAxisTitle(f, ctx.container, "x", xTitle, onTitleChange && ((v) => onTitleChange("x", v)));
+  drawAxisTitle(f, ctx.container, "y", ctx.yAxisTitle || measure.label, onTitleChange && ((v) => onTitleChange("y", v)));
 
   // per-x stacked intervals in rank order (largest on top)
   const layout = xs.map((_, i) => {

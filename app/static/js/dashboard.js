@@ -21,6 +21,9 @@ export async function refreshDashList() {
   renderDashList();
 }
 
+let dashListFilter = "";
+export function setDashListFilter(text) { dashListFilter = text.trim().toLowerCase(); renderDashList(); }
+
 export function renderDashList() {
   const box = $("#dash-list");
   box.innerHTML = "";
@@ -28,7 +31,11 @@ export function renderDashList() {
     box.append(el("div", { class: "empty-note" }, "no dashboards yet"));
     return;
   }
-  for (const d of state.dashboards) {
+  const dashboards = dashListFilter
+    ? state.dashboards.filter((d) => d.name.toLowerCase().includes(dashListFilter))
+    : state.dashboards;
+  if (!dashboards.length) { box.append(el("div", { class: "empty-note" }, "no matches")); return; }
+  for (const d of dashboards) {
     const tag = `${d.items.length} tile${d.items.length === 1 ? "" : "s"}`
       + (d.views.length > 1 ? ` · ${d.views.length} views` : "");
     const pub = pubFor(d.id);
@@ -450,6 +457,10 @@ async function runTile(rec) {
   const ctx = {
     model, dims,
     chartType: visual.spec.chartType || "auto",
+    sort: query.sort,
+    xAxisTitle: visual.spec.xAxisTitle || "",
+    yAxisTitle: visual.spec.yAxisTitle || "",
+    yScale: visual.spec.yScale || "linear",
     container: body, legendBox: legend,
     onCross: (field, value) => toggleCross(idx, field, value),
   };
@@ -576,6 +587,10 @@ async function runFocus() {
   const ctx = {
     model, dims,
     chartType: focus.visual.spec.chartType || "auto",
+    sort: query.sort,
+    xAxisTitle: focus.visual.spec.xAxisTitle || "",
+    yAxisTitle: focus.visual.spec.yAxisTitle || "",
+    yScale: focus.visual.spec.yScale || "linear",
     container: $("#focus-chart"), legendBox: $("#focus-legend"),
   };
   ctx.rerender = () => renderViz(ctx);

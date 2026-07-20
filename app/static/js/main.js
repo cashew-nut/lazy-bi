@@ -2,15 +2,15 @@
 "use strict";
 
 import {
-  addParameter, refreshSaved, renderBuilderViz, renderChartSeg, renderFilters, saveVisual,
-  scheduleRun,
+  addParameter, refreshSaved, renderBuilderViz, renderChartSeg, renderFilters, renderYScaleSeg,
+  saveVisual, scheduleRun, setDimFilter, setMeasureFilter, setSavedFilter,
 } from "./builder.js";
 import { PALETTE } from "./charts/common.js";
 import { renderViz, vizMessage } from "./charts/index.js";
 import {
   activeView, closeFocus, dashDimUnion, focus,
   paramConflictMessage, publishCurrent, refreshDashList, renderDashboard, renderDashFilters,
-  renderFocusFilters, saveDash,
+  renderFocusFilters, saveDash, setDashListFilter,
 } from "./dashboard.js";
 import { attachAccount } from "./admin.js";
 import { initAuth } from "./auth.js";
@@ -62,6 +62,19 @@ async function init() {
     $("#sort-by").addEventListener("change", (e) => { state.sort.by = e.target.value; scheduleRun(); });
     $("#sort-dir").addEventListener("change", (e) => { state.sort.desc = e.target.value === "desc"; scheduleRun(); });
     $("#limit").addEventListener("change", (e) => { state.limit = Math.max(1, +e.target.value || 1000); scheduleRun(); });
+    $("#axis-title-x").addEventListener("change", (e) => { state.xAxisTitle = e.target.value.trim(); renderBuilderViz(); });
+    $("#axis-title-y").addEventListener("change", (e) => { state.yAxisTitle = e.target.value.trim(); renderBuilderViz(); });
+    $("#yscale-seg").addEventListener("click", (e) => {
+      const btn = e.target.closest("button");
+      if (!btn) return;
+      state.yScale = btn.dataset.s;
+      renderYScaleSeg();
+      renderBuilderViz();
+    });
+    $("#dim-filter").addEventListener("input", (e) => setDimFilter(e.target.value));
+    $("#measure-filter").addEventListener("input", (e) => setMeasureFilter(e.target.value));
+    $("#saved-filter").addEventListener("input", (e) => setSavedFilter(e.target.value));
+    $("#dash-list-filter").addEventListener("input", (e) => setDashListFilter(e.target.value));
     $("#save").addEventListener("click", () => saveVisual(false));
     $("#save-as").addEventListener("click", () => saveVisual(true));
     $("#toggle-table").addEventListener("click", () => {
