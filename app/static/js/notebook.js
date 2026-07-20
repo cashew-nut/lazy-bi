@@ -1,22 +1,33 @@
 /* Notebooks: freeform HTML pages — tabs/collapsibles authored directly in
    the saved `html`, with live visuals and dashboards hydrated into place
-   after render. Not a grid: the layout is whatever the author (today, by
-   hand; later, an LLM) wrote, using a few conventions this module knows how
-   to bring to life:
+   after render. Not a grid: the layout is whatever the author (by hand, or
+   via the COMPOSER's LLM) wrote, using a few conventions this module knows
+   how to bring to life:
      <details class="nb-collapsible">…</details>        — native collapsible
      <div class="nb-tabs"><div class="nb-tab-list">
        <button class="nb-tab-btn" data-tab="x">X</button>…</div>
        <div class="nb-tab-panel" data-tab="x">…</div>…</div>   — tabs
      <div class="nb-visual" data-visual-id="7"></div>          — one chart
+       (add class "compact" for a short stat-height tile)
      <div class="nb-dashboard" data-dashboard-id="3"
           data-view="1"></div>                    — an embedded dashboard,
                                                       rendered at a given
                                                       saved view (defaults to
                                                       the dashboard's own
-                                                      active_view) */
+                                                      active_view)
+     <aside class="nb-explainer" data-title="…"
+            data-tone="info|method|warn">…</aside> — explainer window: a
+                                                      callout that decodes a
+                                                      chart or flags a caveat
+     <div class="nb-split"><div class="nb-side">…</div>
+       <div class="nb-side">…</div></div>         — claim | proof diptych row
+   The same vocabulary is enforced server-side for LLM-composed pages
+   (app/composer.py's sanitize_notebook_html). */
 "use strict";
 
+import { canAuthor } from "./auth.js";
 import { renderViz, vizMessage } from "./charts/index.js";
+import { isChatEnabled } from "./chat.js";
 import { toApiFilter } from "./filters.js";
 import { $, api, el } from "./lib.js";
 import { navigate, paths } from "./router.js";
@@ -33,7 +44,6 @@ export function renderNotebookList() {
   box.innerHTML = "";
   if (!state.notebooks.length) {
     box.append(el("div", { class: "empty-note" }, "no notebooks yet"));
-    return;
   }
   for (const n of state.notebooks) {
     const item = el("div", { class: "mk-card clickable" },
@@ -41,6 +51,13 @@ export function renderNotebookList() {
       el("div", { class: "mk-sub" }, `updated ${n.updated_at.slice(0, 10)}`));
     item.addEventListener("click", () => navigate(paths.notebook(n.id)));
     box.append(item);
+  }
+  // the composer needs both authoring rights (it saves notebooks) and a
+  // configured LLM (health.llm_enabled, same probe the CHAT nav uses)
+  if (canAuthor() && isChatEnabled()) {
+    const compose = el("button", { class: "ghost" }, "+ compose a page");
+    compose.addEventListener("click", () => navigate(paths.composerNew()));
+    box.append(compose);
   }
 }
 hooks.renderNotebookList = renderNotebookList;
@@ -51,6 +68,8 @@ export async function openNotebook(id) {
   const content = $("#notebook-content");
   content.innerHTML = "";
   $("#notebook-name").textContent = "";
+  const composeBtn = $("#notebook-compose");
+  composeBtn.hidden = true;
   let nb;
   try {
     nb = await api(`/api/notebooks/${id}`);
@@ -58,6 +77,10 @@ export async function openNotebook(id) {
     return vizMessage(content, "notebook not found — " + err.message, true);
   }
   $("#notebook-name").textContent = nb.name;
+  if (canAuthor() && isChatEnabled()) {
+    composeBtn.hidden = false;
+    composeBtn.onclick = () => navigate(paths.composerEdit(id));
+  }
   content.innerHTML = stripScripts(nb.html);
   await hydrate(content);
 }
@@ -65,22 +88,36 @@ hooks.openNotebook = openNotebook;
 
 // author-authored (role-gated) content, same trust boundary as the model
 // yaml/measure DSL authors can already write server-side — this strip is
-// belt-and-braces against an accidental paste, not a security boundary
-function stripScripts(html) {
+// belt-and-braces against an accidental paste, not a security boundary.
+// Exported for the composer's live preview, which renders in-flight LLM
+// output that hasn't reached the server-side sanitizer yet.
+export function stripScripts(html) {
   const tmp = document.createElement("div");
   tmp.innerHTML = html;
   tmp.querySelectorAll("script").forEach((s) => s.remove());
   return tmp.innerHTML;
 }
 
-async function hydrate(root) {
+// exported so the composer's preview pane renders drafts through the exact
+// pipeline the saved page will use — what you preview is what you publish
+export async function hydrate(root) {
   wireTabs(root);
+  wireExplainers(root);
   const visuals = await api("/api/visuals");
   const jobs = [
     ...[...root.querySelectorAll(".nb-visual[data-visual-id]")].map((elm) => hydrateVisual(elm, visuals)),
     ...[...root.querySelectorAll(".nb-dashboard[data-dashboard-id]")].map((elm) => hydrateDashboard(elm)),
   ];
   await Promise.all(jobs);
+}
+
+// an explainer's data-title becomes a rendered header row; idempotent so
+// re-hydrating a preview doesn't stack headers
+function wireExplainers(root) {
+  root.querySelectorAll(".nb-explainer[data-title]").forEach((box) => {
+    if (box.querySelector(":scope > .nb-explainer-title")) return;
+    box.prepend(el("div", { class: "nb-explainer-title" }, box.dataset.title));
+  });
 }
 
 function wireTabs(root) {

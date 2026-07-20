@@ -568,8 +568,15 @@ def seed_notebook_demo() -> bool:
   </div>
 
   <div class="nb-tab-panel" data-tab="enrollment">
-    <div class="nb-visual" data-visual-id="{v_total["id"]}"></div>
-    <div class="nb-visual" data-visual-id="{v_trend["id"]}"></div>
+    <div class="nb-split">
+      <div class="nb-side">
+        <p>Recruitment is the pacing item for every study in the portfolio. The headline count on the right is live — it moves as new screening logs land.</p>
+        <div class="nb-visual compact" data-visual-id="{v_total["id"]}"></div>
+      </div>
+      <div class="nb-side">
+        <div class="nb-visual" data-visual-id="{v_trend["id"]}"></div>
+      </div>
+    </div>
     <details class="nb-collapsible">
       <summary><span class="tree-caret">▸</span>Methodology</summary>
       <div class="nb-collapsible-body">
@@ -579,7 +586,10 @@ def seed_notebook_demo() -> bool:
   </div>
 
   <div class="nb-tab-panel" data-tab="screening" hidden>
-    <div class="nb-visual" data-visual-id="{v_failrate["id"]}"></div>
+    <aside class="nb-explainer" data-tone="method" data-title="Reading the funnel">
+      <p>Screened splits into randomised and screen-fail — the two bars below always sum to the screened count for that month. A rising fail share with flat screening is an eligibility problem, not a sourcing one.</p>
+    </aside>
+    <div class="nb-visual compact" data-visual-id="{v_failrate["id"]}"></div>
     <div class="nb-visual" data-visual-id="{v_funnel["id"]}"></div>
   </div>
 

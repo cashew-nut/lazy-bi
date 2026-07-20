@@ -582,6 +582,8 @@ route-by-route matrix lives in
 | `GET/POST /api/visuals`, `PUT/DELETE /api/visuals/{id}` | saved visuals (SQLite: `cash_intel.db`) |
 | `GET/POST /api/dashboards`, `GET/PUT/DELETE /api/dashboards/{id}` | dashboards — ordered tiles `{visual_id, w:1\|2}`; GET by id resolves tile visuals; create/update reject a tile set where two visuals declare a same-named, differently-defined parameter (see "Visual parameters" above) |
 | `GET/POST /api/conversations`, `GET/PATCH/DELETE /api/conversations/{id}`, `POST /api/conversations/{id}/ask` | conversational analytics (SQLite: `cash_intel.db`) — strictly owner-scoped; 503 unless `CI_LLM_API_KEY` is set (see "Conversational analytics" below) |
+| `GET/POST /api/notebooks`, `GET/PUT/DELETE /api/notebooks/{id}` | notebooks — freeform HTML narrative pages with live visuals/dashboards embedded (mutations **author**; see "Notebooks & the Composer" below) |
+| `GET /api/composer/context`, `POST /api/composer/compose/stream` | the Composer — LLM-drafted notebook pages, SSE-streamed and sanitized server-side (**author**; 503 unless `CI_LLM_API_KEY` is set) |
 | `GET /api/models/{m}/memories`, `POST/PATCH/DELETE /api/models/{m}/memories[/{id}]` | chat-learned model memories (synonyms/notes the assistant records against a model) — reads any role, mutations **admin** (see "Conversational analytics" below) |
 | `GET /api/pipelines` | pipelines with materialization config + latest-run summary |
 | `POST /api/pipelines/validate` | parse-check pipeline YAML (never executes the script) |
@@ -906,6 +908,50 @@ builder uses) are also sent, so the assistant can generate the
 natural-language answer text. Nothing is sent to any third party unless
 `CI_LLM_API_KEY` is configured — there is no separate feature flag to
 forget, the key's presence is the flag.
+
+## Notebooks & the Composer
+
+A **notebook** is a freeform HTML narrative page — not a dashboard grid.
+The stored `html` is a body fragment written in a small fixed vocabulary
+that the client (`static/js/notebook.js`) brings to life after render:
+
+- `<div class="nb-visual" data-visual-id="…">` — a saved visual, re-executed
+  live (add class `compact` for a short stat-height tile)
+- `<div class="nb-dashboard" data-dashboard-id="…" data-view="N">` — a whole
+  dashboard embedded at one of its saved views
+- `<div class="nb-tabs">…` — tab groups; `<details class="nb-collapsible">` —
+  depth-on-demand sections
+- `<aside class="nb-explainer" data-title="…" data-tone="info|method|warn">` —
+  explainer windows: callouts that teach the reader how to read a chart,
+  define a term, or flag a caveat
+- `<div class="nb-split">` — a claim | proof diptych row (prose one side,
+  chart the other)
+
+Pages can be written by hand through the API — or chatted into existence in
+the **COMPOSER** (home → notebooks panel → *+ compose a page*, or ✎ COMPOSER
+on any open notebook). The composer is a split workspace: the *script* on
+the left (pick a template — executive report / tabbed explorer / long-form
+narrative / one-page brief / freeform — paste your narrative, tick the
+saved visuals and dashboards to build around, then issue instructions), and
+the *proof* on the right — the draft page itself, hydrated live, typing
+itself out as the model streams. Iterate conversationally ("make the funnel
+section tabs instead", "add an explainer beside the trend chart", "tighten
+the intro") — each turn revises the whole page and re-renders the proof.
+Nothing persists until you hit SAVE, which writes through the ordinary
+notebooks CRUD.
+
+Trust model (same seam discipline as conversational analytics): the LLM's
+output is *unvalidated* until `app/composer.py`'s `sanitize_notebook_html`
+re-checks it — allowed tags/attributes only (no scripts, handlers, inline
+styles, or external resources; disallowed markup is stripped and reported),
+and every embedded visual/dashboard id is re-verified against the live
+registry. A page referencing an id that doesn't exist fails the turn
+outright rather than saving dead embeds. The composer's prompt also forbids
+invented numbers: the live charts carry the figures, the narrative only
+frames them. 503 unless `CI_LLM_API_KEY` is configured, like chat. What is
+sent to the third party per turn: the instruction/narrative/history you
+typed, the catalog of saved visual/dashboard names + their declared query
+fields, and the current draft html — never result rows.
 
 ## Frontend notes
 

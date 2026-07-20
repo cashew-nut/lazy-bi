@@ -37,6 +37,8 @@ export const paths = {
   chatConversation: (id) => `/chat/${id}`,
   account: () => "/account",
   notebook: (id) => `/notebook/${id}`,
+  composerNew: () => "/composer/new",
+  composerEdit: (id) => `/composer/${id}`,
 };
 
 const MODE_PATH = {
@@ -51,6 +53,7 @@ function guardLeave() {
   if (state.view === "editor" && hooks.confirmLeaveEditor && !hooks.confirmLeaveEditor()) return false;
   if (hooks.confirmLeaveModelForm && !hooks.confirmLeaveModelForm()) return false;
   if (hooks.confirmLeaveBundleForm && !hooks.confirmLeaveBundleForm()) return false;
+  if (hooks.confirmLeaveComposer && !hooks.confirmLeaveComposer()) return false;
   return true;
 }
 
@@ -126,6 +129,9 @@ async function resolveRoute(pathname) {
       case "notebook":
         if (!rest[0]) throw new Error("notebook route needs an id");
         return hooks.openNotebook && hooks.openNotebook(+rest[0]);
+      case "composer":
+        if (!rest[0]) throw new Error("composer route needs an id or 'new'");
+        return hooks.openComposer && hooks.openComposer(rest[0] === "new" ? null : +rest[0]);
       default: throw new Error(`unknown route: ${pathname}`);
     }
   } catch (err) {
