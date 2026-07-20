@@ -165,11 +165,17 @@ header {
 .logo {
   font-size: 19px; font-weight: 700; letter-spacing: 3px; color: var(--neon);
   text-shadow: 0 0 8px var(--neon-dim), 0 0 24px color-mix(in srgb, var(--neon) 25%, transparent);
-  white-space: nowrap;
+  white-space: nowrap; flex: none;
 }
 .logo b { color: var(--pink); text-shadow: 0 0 8px color-mix(in srgb, var(--pink) 50%, transparent); font-weight: 700; }
-.tagline { color: var(--ink-3); letter-spacing: 1px; font-size: 11px; flex: 1; }
-.conn { font-size: 11px; color: var(--ink-2); letter-spacing: 1px; }
+/* flex:1 + min-width:0 lets the tagline shrink below its content size instead
+   of forcing the whole flex line to wrap; nowrap+ellipsis keeps the header a
+   single aligned line at any zoom level rather than wrapping into a stack. */
+.tagline {
+  color: var(--ink-3); letter-spacing: 1px; font-size: 11px; flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.conn { font-size: 11px; color: var(--ink-2); letter-spacing: 1px; white-space: nowrap; flex: none; }
 .conn .dot { color: var(--ok); text-shadow: 0 0 6px var(--ok); }
 
 .layout { display: flex; flex: 1; min-height: 0; }
@@ -626,7 +632,7 @@ table.data tr:hover td { background: color-mix(in srgb, var(--neon) 4%, transpar
 .chart-box .axis-title { fill: var(--ink-3); font-size: 10px; letter-spacing: 1px; }
 
 /* ── mode nav (studio / data / portal) ──────────────── */
-#mode-nav { display: flex; border: 1px solid var(--line); border-radius: 3px; overflow: hidden; align-self: center; }
+#mode-nav { display: flex; flex: none; border: 1px solid var(--line); border-radius: 3px; overflow: hidden; align-self: center; }
 #mode-nav button {
   background: transparent; border: none; border-right: 1px solid var(--line);
   color: var(--ink-3); font-family: var(--mono); font-size: 10px; letter-spacing: 2px;
@@ -635,7 +641,7 @@ table.data tr:hover td { background: color-mix(in srgb, var(--neon) 4%, transpar
 #mode-nav button:last-child { border-right: none; }
 #mode-nav button:hover { color: var(--ink); }
 #mode-nav button.on { color: var(--bg); background: var(--neon); font-weight: 700; }
-body[data-mode="home"] aside, body[data-mode="modelling"] aside, body[data-mode="portal"] aside, body[data-mode="chat"] aside { display: none; }
+body[data-mode="home"] aside, body[data-mode="modelling"] aside, body[data-mode="portal"] aside, body[data-mode="chat"] aside, body[data-mode="account"] aside { display: none; }
 
 /* Hallmark · macrostructure: Index-First · redesign of the home view.
  * The operator console is a destination index, not a marketing hero — this
@@ -660,9 +666,9 @@ body[data-mode="home"] aside, body[data-mode="modelling"] aside, body[data-mode=
   padding: 36px 40px 40px;
 }
 .home-notebooks {
-  width: 304px; flex: none; align-self: stretch; overflow-y: auto;
+  width: 304px; flex: none; margin-left: auto; align-self: stretch; overflow-y: auto;
   border-left: 1px solid var(--line);
-  background: var(--panel);
+  background: none;
   padding: 14px 14px 40px;
 }
 .home-notebooks-desc { color: var(--ink-3); font-size: 11px; line-height: 1.5; margin: 0 0 12px; }
@@ -670,7 +676,7 @@ body[data-mode="home"] aside, body[data-mode="modelling"] aside, body[data-mode=
 #home-notebook-list .mk-sub { text-transform: none; letter-spacing: 0.3px; }
 @media (max-width: 900px) {
   .home-layout { flex-direction: column; }
-  .home-notebooks { width: auto; border-left: none; border-top: 1px solid var(--line); padding: 20px 40px; }
+  .home-notebooks { width: auto; margin-left: 0; border-left: none; border-top: 1px solid var(--line); padding: 20px 40px; }
 }
 .home-prompt { margin: 0 0 26px; font-size: 15px; letter-spacing: 0.5px; color: var(--ink); }
 .home-prompt-glyph { color: var(--neon); margin-right: 8px; text-shadow: 0 0 6px var(--neon-dim); }
@@ -716,18 +722,6 @@ body[data-mode="home"] aside, body[data-mode="modelling"] aside, body[data-mode=
 }
 .home-admin-chip .ic { color: var(--pink); font-size: 12px; }
 .home-admin-chip:hover, .home-admin-chip:focus-visible { border-color: var(--pink); color: var(--ink); outline: none; }
-
-.home-status { margin-top: 44px; }
-.home-status-head {
-  display: flex; align-items: baseline; gap: 8px;
-  font-size: 10px; letter-spacing: 2.5px; color: var(--neon); text-transform: uppercase;
-  margin-bottom: 8px;
-}
-.home-status-count { color: var(--ink-3); letter-spacing: 1px; text-transform: none; }
-.home-status-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 4px; }
-.home-status-scroll table.data { font-size: 11.5px; width: 100%; }
-.home-status-scroll table.data tbody tr { cursor: pointer; }
-.home-status-scroll table.data td.fmt { color: var(--pink); font-size: 10px; letter-spacing: 0.5px; }
 
 @media (max-width: 640px) {
   .home-body { padding: 26px 18px 32px; }
@@ -1269,7 +1263,7 @@ textarea.mm-expr { min-height: 76px; font-size: 13px; }
 .login-card .btn { margin-top: 14px; padding: 9px; }
 .login-error { min-height: 16px; font-size: 11px; color: var(--pink); letter-spacing: 1px; }
 
-.user-badge { display: flex; align-items: center; gap: 10px; margin-left: 14px; }
+.user-badge { display: flex; flex: none; align-items: center; gap: 10px; margin-left: 14px; }
 .user-badge span { font-size: 11px; color: var(--ink-2); letter-spacing: 1px; white-space: nowrap; }
 .lab-history { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 2px 0 6px; }
 .hist-entry { font-size: 10px; color: var(--ink-2); letter-spacing: 0.5px; }
