@@ -29,6 +29,13 @@ CREATE TABLE IF NOT EXISTS publications (
     published_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS notebooks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    html TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS measure_provenance (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     model TEXT NOT NULL,
@@ -175,6 +182,55 @@ class VisualStore:
         with self._conn() as conn:
             cur = conn.execute("DELETE FROM dashboards WHERE id = ?", (dash_id,))
             conn.execute("DELETE FROM publications WHERE dashboard_id = ?", (dash_id,))
+        return cur.rowcount > 0
+
+    # ── notebooks: freeform HTML pages (tabs/collapsibles/text) with live
+    # visuals and dashboards embedded via `.nb-visual`/`.nb-dashboard`
+    # marker elements the client hydrates after render ──────────────
+
+    @staticmethod
+    def _notebook_to_dict(row: sqlite3.Row) -> dict:
+        return {
+            "id": row["id"],
+            "name": row["name"],
+            "html": row["html"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def list_notebooks(self) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT id, name, created_at, updated_at FROM notebooks ORDER BY updated_at DESC"
+            ).fetchall()
+        return [{k: r[k] for k in r.keys()} for r in rows]
+
+    def get_notebook(self, notebook_id: int) -> Optional[dict]:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM notebooks WHERE id = ?", (notebook_id,)).fetchone()
+        return self._notebook_to_dict(row) if row else None
+
+    def create_notebook(self, name: str, html: str) -> dict:
+        now = self._now()
+        with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO notebooks (name, html, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                (name, html, now, now),
+            )
+        return self.get_notebook(cur.lastrowid)
+
+    def update_notebook(self, notebook_id: int, name: str, html: str) -> Optional[dict]:
+        now = self._now()
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE notebooks SET name = ?, html = ?, updated_at = ? WHERE id = ?",
+                (name, html, now, notebook_id),
+            )
+        return self.get_notebook(notebook_id) if cur.rowcount else None
+
+    def delete_notebook(self, notebook_id: int) -> bool:
+        with self._conn() as conn:
+            cur = conn.execute("DELETE FROM notebooks WHERE id = ?", (notebook_id,))
         return cur.rowcount > 0
 
     # ── publications: dashboards exposed in the portal, in nested folders ──

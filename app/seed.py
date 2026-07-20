@@ -485,3 +485,110 @@ def seed_bootstrap_admin() -> bool:
 {banner}
 """)
     return user is not None
+
+
+# ---------------------------------------------------------------------------
+# Notebook module: a sample "Recruitment Overview" notebook demonstrating
+# tabs + a collapsible + embedded live visuals + an embedded dashboard (with
+# its own saved view) — first-run only, mirrors seed_bootstrap_admin's
+# "only if nothing exists yet" gate so a production DB never regresses.
+# ---------------------------------------------------------------------------
+
+_RECRUITMENT_MODEL = "clinical_ops_recruitment"
+
+
+def _dq(model: str, dimensions: list, measures: list, chartType: str = "auto",
+        sort: dict | None = None, limit: int = 1000) -> dict:
+    """A visual's saved spec, in the same shape the studio builder writes."""
+    return {
+        "query": {
+            "model": model, "dimensions": dimensions, "measures": measures,
+            "inline_measures": [], "filters": [], "sort": sort, "limit": limit,
+            "parameters": [], "parameter_values": {},
+        },
+        "chartType": chartType, "xAxisTitle": "", "yAxisTitle": "", "yScale": "linear",
+    }
+
+
+def seed_notebook_demo() -> bool:
+    """First-run only: when no notebooks exist yet and the recruitment demo
+    model is loaded, build a handful of saved visuals plus a dashboard (with
+    a named view) around clinical_ops_recruitment, then compose them into one
+    sample notebook. Returns True if seeded."""
+    store = registry.store
+    if store.list_notebooks():
+        return False
+    if _RECRUITMENT_MODEL not in registry.models:
+        return False
+
+    v_trend = store.create(
+        "Randomised — Actual vs Baseline", _RECRUITMENT_MODEL,
+        _dq(_RECRUITMENT_MODEL, ["event_date"], ["randomised_actual", "randomised_baseline"], chartType="line"),
+    )
+    v_total = store.create(
+        "Total Randomised (Actual)", _RECRUITMENT_MODEL,
+        _dq(_RECRUITMENT_MODEL, [], ["randomised_actual"], chartType="stat"),
+    )
+    v_funnel = store.create(
+        "Screening Funnel by Month", _RECRUITMENT_MODEL,
+        _dq(_RECRUITMENT_MODEL, ["event_date"], ["screened_actual", "screen_fails_actual"], chartType="bar"),
+    )
+    v_failrate = store.create(
+        "Screen Failure Rate", _RECRUITMENT_MODEL,
+        _dq(_RECRUITMENT_MODEL, [], ["screen_failure_rate"], chartType="stat"),
+    )
+    rank_by_randomised = {"by": "randomised_actual", "desc": True}
+    v_by_country = store.create(
+        "Randomised (Actual) by Country", _RECRUITMENT_MODEL,
+        _dq(_RECRUITMENT_MODEL, ["country"], ["randomised_actual"], chartType="bar", sort=rank_by_randomised, limit=12),
+    )
+    v_by_region = store.create(
+        "Randomised (Actual) by Region", _RECRUITMENT_MODEL,
+        _dq(_RECRUITMENT_MODEL, ["region"], ["randomised_actual"], chartType="bar", sort=rank_by_randomised, limit=10),
+    )
+
+    dash = store.create_dashboard(
+        "Recruitment by Region",
+        items=[{"visual_id": v_by_region["id"], "w": 1}, {"visual_id": v_by_country["id"], "w": 1}],
+        views=[
+            {"name": "All Phases", "filters": []},
+            {"name": "Phase III only", "filters": [{"field": "phase", "op": "in", "value": "", "values": ["Phase III"]}]},
+        ],
+        active_view=0,
+    )
+
+    html = f"""
+<p>A first look at how <b>clinical_ops_recruitment</b> composes into a notebook: not a fixed grid — the sections below are tabs and a collapsible, each holding whatever mix of visuals (and a whole embedded dashboard, with its own saved view) the story needs.</p>
+
+<div class="nb-tabs">
+  <div class="nb-tab-list">
+    <button class="nb-tab-btn on" data-tab="enrollment">Enrollment</button>
+    <button class="nb-tab-btn" data-tab="screening">Screening Funnel</button>
+    <button class="nb-tab-btn" data-tab="region">By Region</button>
+  </div>
+
+  <div class="nb-tab-panel" data-tab="enrollment">
+    <div class="nb-visual" data-visual-id="{v_total["id"]}"></div>
+    <div class="nb-visual" data-visual-id="{v_trend["id"]}"></div>
+    <details class="nb-collapsible">
+      <summary><span class="tree-caret">▸</span>Methodology</summary>
+      <div class="nb-collapsible-body">
+        <p>"Baseline" is the enrollment plan set when a study was designed; "actual" is what really happened. Every measure here is the same event count, filtered to a scenario (baseline/actual) and a funnel stage (screened, randomised, screen_fail) — so "randomised actual vs baseline" is two plain sums, not two different columns.</p>
+      </div>
+    </details>
+  </div>
+
+  <div class="nb-tab-panel" data-tab="screening" hidden>
+    <div class="nb-visual" data-visual-id="{v_failrate["id"]}"></div>
+    <div class="nb-visual" data-visual-id="{v_funnel["id"]}"></div>
+  </div>
+
+  <div class="nb-tab-panel" data-tab="region" hidden>
+    <p>The same dashboard used in the studio, embedded live at its "Phase III only" saved view.</p>
+    <div class="nb-dashboard" data-dashboard-id="{dash["id"]}" data-view="1"></div>
+  </div>
+</div>
+""".strip()
+
+    store.create_notebook("Recruitment Overview", html)
+    return True

@@ -94,6 +94,8 @@ async def lifespan(app: FastAPI):
     registry.init()
     print(f"[cash-intel] loaded models: {', '.join(registry.models) or '(none)'}")
     seed.seed_bootstrap_admin()
+    if seed.seed_notebook_demo():
+        print("[cash-intel] seeded demo notebook: Recruitment Overview")
     interrupted = registry.pipeline_store.sweep_interrupted()
     if interrupted:
         print(f"[cash-intel] marked {interrupted} pipeline run(s) interrupted (restart mid-run)")
