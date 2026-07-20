@@ -16,9 +16,10 @@ import { openMemoriesModal } from "./memories.js";
 import {
   autoGrow, colsOf, columnImportPanel, datasetCards, dimFromColumn, loadDatasets,
   manualPathRow, NAME_RE, note, pairRow, sectionRail, sourceSchema, spineCreatePanel, spineFields,
-  synonymsInput, textField,
+  synonymsInput, textAreaField, textField,
 } from "./formkit.js";
 import { $, api, el } from "./lib.js";
+import { setPanelDescription, setPanelModel } from "./panelchat.js";
 import { navigate, paths, setPath } from "./router.js";
 import { hooks, showView, state } from "./state.js";
 
@@ -109,10 +110,12 @@ export async function openModelForm(name) {
   closeMeasureModal();
   showView("modelform");
   $("#mf-title").textContent = name ? `edit model · ${name}` : "new model";
-  // build (open in Studio) and memory curation only make sense for a model
-  // that's actually saved and registered — a fresh, unsaved model has neither
+  // build (open in Studio), memory curation, and the chat panel only make
+  // sense for a model that's actually saved and registered — a fresh,
+  // unsaved model has none of the three (chat needs a live model to query)
   $("#mf-build").hidden = !name;
   $("#mf-memory").hidden = !name;
+  setPanelModel(name || null, name);
   setStatus(name ? "loading…" : "");
   render();
   if (!state.bundles.length) state.bundles = await api("/api/dimensions").catch(() => []);
@@ -128,6 +131,8 @@ export async function openModelForm(name) {
       })),
       dimensions: spec.dimensions, measures: spec.measures,
     });
+    setPanelModel(name, form.label || name);
+    setPanelDescription(form.description);
     setStatus("");
     if (form.source) await sourceSchema(form.source.path, form.source.format);
     await Promise.all(form.relations.map((r) => sourceSchema(r.path, r.format)));
@@ -279,8 +284,12 @@ function renderOverview(main) {
     + "through the dimensions and measures you declare here."));
   main.append(el("div", { class: "mf-row3" },
     field("NAME (snake_case)", form.name, (v) => { form.name = v; }, "my_model"),
-    field("LABEL", form.label, (v) => { form.label = v; }, "My Model"),
-    field("DESCRIPTION", form.description, (v) => { form.description = v; }, "What this model covers.")));
+    field("LABEL", form.label, (v) => { form.label = v; }, "My Model")));
+  main.append(textAreaField("DESCRIPTION", form.description, (v) => {
+    form.description = v;
+    setPanelDescription(v);
+    markDirty();
+  }, "What this model covers — shown to Chat as context when answering questions about it."));
   if (form.imports.length && !form.editingName) {
     main.append(el("div", { class: "mf-picked", style: "margin-top:12px" },
       el("span", { class: "ok" }, "✓"),

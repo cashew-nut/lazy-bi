@@ -77,6 +77,17 @@ export function textField(label, value, oninput, ph = "") {
   return el("div", { class: "mf-field" }, el("div", { class: "field-label" }, label), input);
 }
 
+// Multi-line twin of textField, for a field worth more room than a single
+// input row (e.g. a model's description) — auto-grows with its content
+// rather than scrolling internally.
+export function textAreaField(label, value, oninput, ph = "") {
+  const ta = el("textarea", { placeholder: ph, spellcheck: "false", rows: "2", class: "mf-textarea" });
+  ta.value = value;
+  ta.addEventListener("input", () => oninput(ta.value));
+  autoGrow(ta);
+  return el("div", { class: "mf-field mf-field-wide" }, el("div", { class: "field-label" }, label), ta);
+}
+
 /* A LEFT↔RIGHT relationship pair row; either side degrades to a text input
    when its schema is unreachable. The two names do not have to match. */
 export function pairRow(pair, leftCols, rightCols, { leftPh, rightPh, onchange, onremove, oninput = () => {} }) {
