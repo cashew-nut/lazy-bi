@@ -180,14 +180,18 @@ header {
 
 .layout { display: flex; flex: 1; min-height: 0; }
 
-/* ── sidebar / query builder ────────────────────────── */
-aside {
+/* ── sidebar / query builder ────────────────────────────
+   scoped to the app shell's own sidebar (.layout > aside), not the bare
+   element: content views also use <aside> now (notebook nb-explainer
+   callouts), and an element-wide rule would style — or, worse, the
+   mode-nav rule below would display:none — every one of them */
+.layout > aside {
   width: 304px; flex: none; overflow-y: auto;
   border-right: 1px solid var(--line);
   background: var(--panel);
   padding: 14px 14px 40px;
 }
-aside section { margin-bottom: 18px; }
+.layout > aside section { margin-bottom: 18px; }
 .sb-filter { margin-bottom: 6px; }
 .sec-title {
   font-size: 10px; letter-spacing: 2.5px; color: var(--neon);
@@ -641,7 +645,7 @@ table.data tr:hover td { background: color-mix(in srgb, var(--neon) 4%, transpar
 #mode-nav button:last-child { border-right: none; }
 #mode-nav button:hover { color: var(--ink); }
 #mode-nav button.on { color: var(--bg); background: var(--neon); font-weight: 700; }
-body[data-mode="home"] aside, body[data-mode="modelling"] aside, body[data-mode="portal"] aside, body[data-mode="chat"] aside, body[data-mode="account"] aside { display: none; }
+body[data-mode="home"] .layout > aside, body[data-mode="modelling"] .layout > aside, body[data-mode="portal"] .layout > aside, body[data-mode="chat"] .layout > aside, body[data-mode="account"] .layout > aside { display: none; }
 
 /* Hallmark · macrostructure: Index-First · redesign of the home view.
  * The operator console is a destination index, not a marketing hero — this
@@ -767,12 +771,105 @@ body[data-mode="home"] aside, body[data-mode="modelling"] aside, body[data-mode=
 
 .nb-visual { margin: 0; }
 .nb-visual.tile { height: 380px; }
+.nb-visual.tile.compact { height: 190px; }
 
 .nb-dash-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
 .nb-dash-head .nm { color: var(--ink); letter-spacing: 1px; }
 .nb-dash-head .tag { font-size: 9px; color: var(--pink); border: 1px solid var(--line); padding: 1px 6px; border-radius: 2px; }
-.nb-dash-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+.nb-dash-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 @media (max-width: 760px) { .nb-dash-grid { grid-template-columns: 1fr; } }
+
+/* explainer window: a callout that decodes a chart, defines a term, or
+   flags a caveat — tone picks the inset bar + title colour only, the body
+   stays ordinary prose so it never shouts louder than the chart it serves */
+.nb-explainer {
+  border: 1px solid var(--line); border-left: 3px solid var(--neon);
+  border-radius: 0 4px 4px 0; background: var(--panel-2); padding: 12px 16px;
+}
+.nb-explainer[data-tone="method"] { border-left-color: var(--pink); }
+.nb-explainer[data-tone="warn"] { border-left-color: var(--warn); }
+.nb-explainer-title {
+  font-size: 10px; letter-spacing: 2px; text-transform: uppercase;
+  color: var(--neon); margin-bottom: 6px;
+}
+.nb-explainer[data-tone="method"] .nb-explainer-title { color: var(--pink); }
+.nb-explainer[data-tone="warn"] .nb-explainer-title { color: var(--warn); }
+.nb-explainer p { margin: 0; }
+.nb-explainer p + p { margin-top: 8px; }
+
+/* split row: claim on one side, proof on the other (page-level diptych) */
+.nb-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+.nb-split > .nb-side { min-width: 0; }
+.nb-split > .nb-side > * + * { margin-top: 14px; }
+@media (max-width: 760px) { .nb-split { grid-template-columns: 1fr; } }
+
+/* Hallmark · macrostructure: Split Studio · the COMPOSER workspace.
+ * pre-emit critique: P4 H4 E4 S4 R5 V4
+ * Diptych: the script (template / narrative / picks / chat instructions)
+ * on the left; the proof (the draft page itself, hydrated live) on the
+ * right — every instruction earns visual proof. Differs from the last
+ * stamp (Index-First, home view) per the diversification rule. All colour
+ * comes from the house :root tokens; structural redesign, not a re-theme. */
+.cp-body { flex: 1; min-height: 0; display: flex; }
+.cp-script {
+  width: 400px; flex: none; min-height: 0; display: flex; flex-direction: column;
+  border-right: 1px solid var(--line); background: var(--panel);
+}
+.cp-setup {
+  flex: none; max-height: 46%; overflow-y: auto;
+  padding: 12px 14px 6px; border-bottom: 1px solid var(--line);
+}
+.cp-script .chat-thread { flex: 1; min-height: 0; padding: 12px; }
+.cp-script .chat-msg { max-width: 100%; }
+.cp-script .chat-input-row { padding: 10px 12px; }
+#cp-name {
+  flex: 1; background: transparent; border: 1px solid transparent;
+  font-size: 14px; letter-spacing: 1px; color: var(--pink); padding: 5px 8px;
+  font-family: var(--mono);
+}
+#cp-name:hover, #cp-name:focus { border-color: var(--line); }
+.cp-status { color: var(--ink-3); font-size: 11px; letter-spacing: 0.5px; white-space: nowrap; }
+.cp-status.err { color: var(--bad); }
+
+/* template picker: radio-cards, chip discipline (selected = neon border) */
+.cp-template-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.cp-template {
+  display: flex; flex-direction: column; gap: 4px; text-align: left; cursor: pointer;
+  background: transparent; border: 1px solid var(--line); border-radius: 3px;
+  color: var(--ink-2); font-family: var(--mono); padding: 8px 9px;
+  transition: border-color 0.12s, color 0.12s;
+}
+.cp-template:hover { border-color: var(--ink-3); color: var(--ink); }
+.cp-template:focus-visible { outline: none; border-color: var(--neon); box-shadow: 0 0 6px var(--neon-dim); }
+.cp-template.on { border-color: var(--neon); color: var(--ink); background: color-mix(in srgb, var(--neon) 6%, transparent); }
+.cp-template .nm { font-size: 11px; letter-spacing: 1px; color: inherit; }
+.cp-template.on .nm { color: var(--neon); }
+.cp-template .desc { font-size: 9.5px; color: var(--ink-3); line-height: 1.45; }
+
+/* the proof pane: the draft page exactly as readers will see it */
+.cp-proof { flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; }
+.cp-proof-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 16px; border-bottom: 1px solid var(--line);
+}
+.cp-proof-hint { flex: 1; color: var(--ink-3); font-size: 10.5px; letter-spacing: 0.3px; }
+.cp-draft-badge {
+  font-size: 9px; letter-spacing: 1.5px; color: var(--warn);
+  border: 1px dashed var(--warn); border-radius: 2px; padding: 2px 7px; white-space: nowrap;
+}
+.cp-draft-badge.saved { color: var(--ok); border-style: solid; border-color: var(--ok); }
+.cp-blank {
+  position: absolute; inset: 42px 0 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 6px; text-align: center;
+  color: var(--ink-3); letter-spacing: 1px; pointer-events: none;
+}
+.cp-blank p { margin: 0; }
+.cp-blank .empty-note { line-height: 1.6; }
+@media (max-width: 980px) {
+  .cp-body { flex-direction: column; }
+  .cp-script { width: auto; max-height: 55%; border-right: none; border-bottom: 1px solid var(--line); }
+  .cp-setup { max-height: 40%; }
+}
 
 /* ── portal ─────────────────────────────────────────── */
 .crumbs { flex: 1; color: var(--ink-2); font-size: 12px; letter-spacing: 1px; }

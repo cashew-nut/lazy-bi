@@ -202,8 +202,69 @@
         <div class="chart-head">
           <button class="btn plain" id="notebook-back">◄ HOME</button>
           <span id="notebook-name" class="nb-title"></span>
+          <button class="btn alt" id="notebook-compose" title="revise this page conversationally" hidden>✎ COMPOSER</button>
         </div>
         <div id="notebook-content" class="nb-content"></div>
+      </div>
+
+      <div id="composer-view" class="chart-card" hidden>
+        <div class="chart-head">
+          <span class="editor-file">COMPOSER</span>
+          <input id="cp-name" placeholder="untitled_page" spellcheck="false">
+          <span id="cp-status" class="cp-status"></span>
+          <button class="btn plain" id="cp-open" title="open the saved page">▤ OPEN PAGE</button>
+          <button class="btn alt" id="cp-save-as" data-role="author">SAVE AS NEW</button>
+          <button class="btn" id="cp-save" data-role="author">SAVE</button>
+          <button class="btn plain" id="cp-back">◄ HOME</button>
+        </div>
+        <div class="cp-body">
+          <div class="cp-script">
+            <div class="cp-setup">
+              <details class="mk-section" open>
+                <summary class="sec-title"><span class="tree-caret">▸</span>Template</summary>
+                <div class="mk-section-body">
+                  <div id="cp-templates" class="cp-template-list"></div>
+                </div>
+              </details>
+              <details class="mk-section" open>
+                <summary class="sec-title"><span class="tree-caret">▸</span>Narrative</summary>
+                <div class="mk-section-body">
+                  <textarea id="cp-narrative" class="mf-textarea" rows="5" spellcheck="true"
+                    placeholder="the raw material for the page's prose — what happened, what matters, what the reader should take away…"></textarea>
+                </div>
+              </details>
+              <details class="mk-section" open>
+                <summary class="sec-title"><span class="tree-caret">▸</span>Visuals</summary>
+                <div class="mk-section-body">
+                  <div id="cp-visual-list" class="chip-list"></div>
+                </div>
+              </details>
+              <details class="mk-section">
+                <summary class="sec-title"><span class="tree-caret">▸</span>Dashboards</summary>
+                <div class="mk-section-body">
+                  <div id="cp-dash-list" class="chip-list"></div>
+                </div>
+              </details>
+            </div>
+            <div id="cp-thread" class="chat-thread"></div>
+            <form id="cp-form" class="chat-input-row">
+              <input id="cp-input" placeholder="e.g. tell the recruitment story for execs — tabs per region" spellcheck="false" autocomplete="off">
+              <button class="btn alt" type="submit">COMPOSE</button>
+            </form>
+          </div>
+          <div class="cp-proof">
+            <div class="cp-proof-head">
+              <span class="views-label">PROOF</span>
+              <span class="cp-proof-hint">the page as readers will see it — live charts, live data</span>
+              <span id="cp-draft-badge" class="cp-draft-badge" hidden>DRAFT · UNSAVED</span>
+            </div>
+            <div id="cp-blank" class="cp-blank">
+              <p>◇ nothing composed yet</p>
+              <p class="empty-note">pick a template, paste your narrative, select visuals —<br>then tell the composer what page to make</p>
+            </div>
+            <div id="cp-preview" class="nb-content"></div>
+          </div>
+        </div>
       </div>
 
       <div id="builder-view" class="chart-card">

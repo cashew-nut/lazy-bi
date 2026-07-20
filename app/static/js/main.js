@@ -16,6 +16,8 @@ import { attachAccount } from "./admin.js";
 import { initAuth } from "./auth.js";
 import { attachBundleForm } from "./bundleform.js";
 import { attachChat, probeChatAvailability } from "./chat.js";
+// registers hooks.openComposer for the router + wires the compose form
+import { attachComposer } from "./composer.js";
 import { attachEditor, deleteEditorItem, saveEditor, stopRunPolling } from "./editor.js";
 // side-effect only: registers hooks.loadLineageGraph for the router
 import "./lineagegraph.js";
@@ -89,6 +91,7 @@ async function init() {
     attachAccount();  // tokens / password / user-management wiring
     attachChat();     // conversational analytics wiring
     probeChatAvailability(health);  // shows the CHAT nav entry only if the server has it configured
+    attachComposer(); // notebook composer wiring (same llm_enabled gate as chat)
 
     // ── semantic editor + guided forms (opened from Modelling) ──
     attachEditor();   // input/keydown/completion/dataset-picker/revert/beforeunload

@@ -2,8 +2,8 @@
 from fastapi import APIRouter
 
 from . import (
-    auth, chat, dashboards, datasets, dimensions, explorer, memories, models,
-    notebooks, pipelines, query, users, visuals,
+    auth, chat, composer, dashboards, datasets, dimensions, explorer, memories,
+    models, notebooks, pipelines, query, users, visuals,
 )
 
 api_router = APIRouter()
@@ -20,3 +20,4 @@ api_router.include_router(notebooks.router)
 api_router.include_router(explorer.router)
 api_router.include_router(datasets.router)
 api_router.include_router(chat.router)
+api_router.include_router(composer.router)
