@@ -4,6 +4,7 @@
 import { decideChart, renderViz, vizMessage } from "./charts/index.js";
 import { GRAINS } from "./charts/common.js";
 import { renderTableInto } from "./charts/table.js";
+import { renderRoleMap } from "./charts/rolemap.js";
 import {
   filterReady, filterValueControl, normalizeCategoricalOp,
   opsForDim, resetFilterForField, toApiFilter,
@@ -22,10 +23,19 @@ function builderCtx() {
     model: state.model,
     dims: state.dims,
     chartType: state.chartType,
+    sort: state.sort,
+    xAxisTitle: state.xAxisTitle,
+    yAxisTitle: state.yAxisTitle,
+    yScale: state.yScale,
     result: state.result,
     container: $("#chart"),
     legendBox: $("#legend"),
     rerender: renderBuilderViz,
+    onAxisTitleChange: (axis, value) => {
+      if (axis === "x") state.xAxisTitle = value; else state.yAxisTitle = value;
+      $(`#axis-title-${axis}`).value = value;
+      renderBuilderViz();
+    },
   };
 }
 
@@ -88,6 +98,7 @@ function setMeta(html, busy = false) {
 
 export function renderBuilderViz() {
   const ctx = builderCtx();
+  renderRoleMap(ctx);
   renderTableInto(ctx, $("#table-wrap")); // keep the table pane in sync
   const wantTable = state.showTable || (state.result && decideChart(ctx) === "table");
   $("#chart").style.display = wantTable ? "none" : "";
@@ -109,10 +120,25 @@ function renderModelSelect() {
   $("#model-desc").textContent = state.model.description;
 }
 
+let dimFilter = "", measureFilter = "";
+
+export function setDimFilter(text) { dimFilter = text.trim().toLowerCase(); renderDims(); }
+export function setMeasureFilter(text) { measureFilter = text.trim().toLowerCase(); renderMeasures(); }
+
+function resetSidebarFilters() {
+  dimFilter = ""; measureFilter = "";
+  if ($("#dim-filter")) $("#dim-filter").value = "";
+  if ($("#measure-filter")) $("#measure-filter").value = "";
+}
+
+const matchesFilter = (q, ...fields) => !q || fields.some((f) => f && f.toLowerCase().includes(q));
+
 export function renderDims() {
   const box = $("#dim-list");
   box.innerHTML = "";
-  for (const dim of state.model.dimensions) {
+  const dims = state.model.dimensions.filter((d) => matchesFilter(dimFilter, d.label, d.name));
+  if (!dims.length) { box.append(el("div", { class: "empty-note" }, "no matches")); return; }
+  for (const dim of dims) {
     const active = state.dims.find((d) => d.name === dim.name);
     const chip = el("div", { class: "chip" + (active ? " on" : "") },
       el("span", { class: "tick" }, active ? "◈" : "◇"),
@@ -142,7 +168,10 @@ export function renderMeasures() {
     else state.measures.push(name);
     renderMeasures(); syncSortOptions(); scheduleRun();
   };
-  for (const mea of state.model.measures) {
+  const measures = state.model.measures.filter((m) => matchesFilter(measureFilter, m.label, m.name));
+  const inline = state.inlineMeasures.filter((m) => matchesFilter(measureFilter, m.label, m.name));
+  if (!measures.length && !inline.length) box.append(el("div", { class: "empty-note" }, "no matches"));
+  for (const mea of measures) {
     const active = state.measures.includes(mea.name);
     const chip = el("div", { class: "chip measure" + (active ? " on" : ""), title: mea.expr },
       el("span", { class: "tick" }, active ? "◆" : "◇"),
@@ -152,7 +181,7 @@ export function renderMeasures() {
     box.append(chip);
   }
   // visual-scoped measures from the lab — saved with the visual, not the model
-  for (const mea of state.inlineMeasures) {
+  for (const mea of inline) {
     const active = state.measures.includes(mea.name);
     const edit = el("button", { class: "mini", title: "edit in the measure lab" }, "✎");
     edit.addEventListener("click", (e) => { e.stopPropagation(); hooks.openLab(mea); });
@@ -332,13 +361,25 @@ export function renderChartSeg() {
   }
 }
 
+export function renderYScaleSeg() {
+  for (const btn of $("#yscale-seg").querySelectorAll("button")) {
+    btn.classList.toggle("on", btn.dataset.s === state.yScale);
+  }
+}
+
 // ── saved visuals ────────────────────────────────────────────
 
-export async function refreshSaved() {
-  const visuals = await api("/api/visuals");
+let savedVisualsCache = [];
+let savedFilter = "";
+
+export function setSavedFilter(text) { savedFilter = text.trim().toLowerCase(); renderSavedList(); }
+
+function renderSavedList() {
   const box = $("#saved-list");
   box.innerHTML = "";
-  if (!visuals.length) { box.append(el("div", { class: "empty-note" }, "nothing saved yet — build a query and hit SAVE")); return; }
+  if (!savedVisualsCache.length) { box.append(el("div", { class: "empty-note" }, "nothing saved yet — build a query and hit SAVE")); return; }
+  const visuals = savedVisualsCache.filter((v) => matchesFilter(savedFilter, v.name, v.model));
+  if (!visuals.length) { box.append(el("div", { class: "empty-note" }, "no matches")); return; }
   for (const v of visuals) {
     const item = el("div", { class: "saved-item" + (v.id === state.visualId && state.view === "builder" ? " on" : "") },
       el("span", { class: "nm" }, v.name),
@@ -356,10 +397,21 @@ export async function refreshSaved() {
     box.append(item);
   }
 }
+
+export async function refreshSaved() {
+  savedVisualsCache = await api("/api/visuals");
+  renderSavedList();
+}
 hooks.refreshSaved = refreshSaved;
 
 export function currentSpec() {
-  return { query: buildQuery(), chartType: state.chartType };
+  return {
+    query: buildQuery(),
+    chartType: state.chartType,
+    xAxisTitle: state.xAxisTitle,
+    yAxisTitle: state.yAxisTitle,
+    yScale: state.yScale,
+  };
 }
 
 export async function saveVisual(asNew) {
@@ -395,9 +447,13 @@ export function loadVisual(v) {
   state.sort = q.sort ? { by: q.sort.by, desc: !!q.sort.desc } : { by: "", desc: true };
   state.limit = q.limit || 1000;
   state.chartType = v.spec.chartType || "auto";
+  state.xAxisTitle = v.spec.xAxisTitle || "";
+  state.yAxisTitle = v.spec.yAxisTitle || "";
+  state.yScale = v.spec.yScale || "linear";
   state.visualId = v.id;
   state.visualName = v.name;
   state.showTable = false;
+  resetSidebarFilters();
   syncBuilderUI();
   refreshSaved();
   scheduleRun();
@@ -411,9 +467,12 @@ export function syncBuilderUI() {
   renderParameters();
   renderParamToggleBar();
   renderChartSeg();
+  renderYScaleSeg();
   syncSortOptions();
   $("#sort-dir").value = state.sort.desc ? "desc" : "asc";
   $("#limit").value = state.limit;
+  $("#axis-title-x").value = state.xAxisTitle;
+  $("#axis-title-y").value = state.yAxisTitle;
   $("#visual-name").value = state.visualName;
   $("#toggle-table").classList.toggle("on", state.showTable);
 }
@@ -428,6 +487,10 @@ export function selectModel(name) {
   if (hooks.closeLab) hooks.closeLab(false);
   state.filters = [];
   state.sort = { by: "", desc: true };
+  state.xAxisTitle = "";
+  state.yAxisTitle = "";
+  state.yScale = "linear";
+  resetSidebarFilters();
   state.visualId = null;
   // sensible starting query: time dim at month grain (if any) + first measure
   const timeDim = state.model.dimensions.find((d) => d.type === "time");

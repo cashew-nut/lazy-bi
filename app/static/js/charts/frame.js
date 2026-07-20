@@ -37,7 +37,54 @@ export function yExtent(series) {
   return [lo, hi * 1.05 || 1];
 }
 
-export function drawYAxis(f, lo, hi, format) {
+// series-aware extent adjustment for a log y-axis: log scale can't include
+// zero/negative values, so the floor becomes the smallest positive value
+// seen (falling back to a sane default when nothing is positive at all)
+export function logSafeExtent(series, lo, hi) {
+  const positives = [];
+  for (const s of series) for (const v of s.values) { if (v != null && v > 0) positives.push(v); }
+  if (!positives.length) return [(hi > 0 ? hi : 1) / 1000, hi > 0 ? hi : 1];
+  return [Math.min(...positives), hi > 0 ? hi : Math.max(...positives)];
+}
+
+function niceLogTicks(lo, hi) {
+  const startExp = Math.floor(Math.log10(lo));
+  const endExp = Math.ceil(Math.log10(hi));
+  const ticks = [];
+  for (let e = startExp; e <= endExp; e++) {
+    for (const m of [1, 2, 5]) {
+      const v = m * Math.pow(10, e);
+      if (v >= lo * 0.999 && v <= hi * 1.001) ticks.push(v);
+    }
+  }
+  return ticks.length ? ticks : [lo, hi];
+}
+
+function drawYAxisLog(f, lo, hi, format) {
+  if (lo <= 0) lo = hi > 0 ? hi / 1000 : 0.001;
+  if (hi <= lo) hi = lo * 10;
+  const ticks = niceLogTicks(lo, hi);
+  const logLo = Math.log10(lo), logHi = Math.log10(hi);
+  const toPx = (v) => {
+    const vv = v > 0 ? v : lo; // clamp non-positive values onto the axis floor rather than NaN
+    return f.m.t + f.plotH - ((Math.log10(vv) - logLo) / (logHi - logLo)) * f.plotH;
+  };
+  const grid = svgEl("g", { class: "grid" });
+  const axis = svgEl("g", { class: "axis" });
+  for (const t of ticks) {
+    const y = toPx(t);
+    grid.append(svgEl("line", { x1: f.m.l, x2: f.m.l + f.plotW, y1: y, y2: y }));
+    const label = svgEl("text", { x: f.m.l - 8, y: y + 3, "text-anchor": "end" });
+    label.textContent = fmtMeasure(t, format);
+    axis.append(label);
+  }
+  f.svg.append(grid, axis);
+  f.svg.append(svgEl("line", { class: "axis-line", x1: f.m.l, x2: f.m.l + f.plotW, y1: f.m.t + f.plotH, y2: f.m.t + f.plotH }));
+  return toPx;
+}
+
+export function drawYAxis(f, lo, hi, format, opts = {}) {
+  if (opts.scale === "log") return drawYAxisLog(f, lo, hi, format);
   const ticks = niceTicks(lo, hi);
   const grid = svgEl("g", { class: "grid" });
   const axis = svgEl("g", { class: "axis" });
@@ -51,6 +98,59 @@ export function drawYAxis(f, lo, hi, format) {
   f.svg.append(grid, axis);
   f.svg.append(svgEl("line", { class: "axis-line", x1: f.m.l, x2: f.m.l + f.plotW, y1: f.m.t + f.plotH, y2: f.m.t + f.plotH }));
   return (v) => f.m.t + f.plotH - ((v - lo) / (hi - lo)) * f.plotH;
+}
+
+// ── axis titles: rendered text with an optional click-to-edit affordance,
+// an absolutely-positioned <input> overlaid right over the clicked title
+// (the container, e.g. .chart-box, is already position:relative) ──
+
+function attachTitleEditor(container, textEl, value, onCommit) {
+  textEl.classList.add("editable");
+  textEl.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (container.querySelector(".axis-title-input")) return; // already editing
+    const boxRect = container.getBoundingClientRect();
+    const elRect = textEl.getBoundingClientRect();
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "axis-title-input";
+    input.value = value;
+    input.style.left = Math.max(0, elRect.left - boxRect.left - 4) + "px";
+    input.style.top = Math.max(0, elRect.top - boxRect.top - 3) + "px";
+    input.style.width = Math.max(70, elRect.width + 50) + "px";
+    let done = false;
+    const finish = (commit) => {
+      if (done) return;
+      done = true;
+      input.remove();
+      const v = input.value.trim();
+      if (commit && v !== value) onCommit(v);
+    };
+    input.addEventListener("keydown", (ev) => {
+      ev.stopPropagation();
+      if (ev.key === "Enter") { ev.preventDefault(); finish(true); }
+      else if (ev.key === "Escape") { ev.preventDefault(); finish(false); }
+    });
+    input.addEventListener("blur", () => finish(true));
+    input.addEventListener("click", (ev) => ev.stopPropagation());
+    container.append(input);
+    input.focus();
+    input.select();
+  });
+}
+
+// axis: "x" | "y". onCommit, if given, makes the title clickable-to-edit
+// directly in the chart box; omit it for read-only contexts (dashboard tiles).
+export function drawAxisTitle(f, container, axis, text, onCommit) {
+  if (!text) return null;
+  const attrs = axis === "y"
+    ? { class: "axis-title", x: f.m.l, y: f.m.t - 4 }
+    : { class: "axis-title", x: f.m.l + f.plotW, y: f.m.t + f.plotH + 32, "text-anchor": "end" };
+  const t = svgEl("text", attrs);
+  t.textContent = axis === "y" ? "↑ " + text : text + " →";
+  f.svg.append(t);
+  if (onCommit) attachTitleEditor(container, t, text, onCommit);
+  return t;
 }
 
 export function drawXLabels(ctx, f, xs, xToPx, xCol, grain, rotate) {

@@ -3,7 +3,7 @@
 
 import { svgEl, fmtMeasure } from "../lib.js";
 import { ctxDim, ctxGrain, fmtDimValue, tooltipHide, tooltipShow } from "./common.js";
-import { drawXLabels, drawYAxis, plotFrame, yExtent } from "./frame.js";
+import { drawAxisTitle, drawXLabels, drawYAxis, logSafeExtent, plotFrame, yExtent } from "./frame.js";
 
 function roundedBarPath(x, w, y, h, yZero) {
   const r = Math.min(4, w / 2, Math.abs(h));
@@ -18,17 +18,26 @@ export function renderBar(ctx, pivot) {
   const f = plotFrame(ctx.container);
   const { xs, series, measure, xCol } = pivot;
   const grain = xCol ? ctxGrain(ctx, xCol.name) : null;
-  const [lo, hi] = yExtent(series);
-  const yPx = drawYAxis(f, lo, hi, measure.format);
+  let [lo, hi] = yExtent(series);
+  const isLog = ctx.yScale === "log";
+  if (isLog) [lo, hi] = logSafeExtent(series, lo, hi);
+  const yPx = drawYAxis(f, lo, hi, measure.format, { scale: ctx.yScale });
   const band = f.plotW / xs.length;
   const inner = band * 0.72;
   const slot = inner / series.length;
   const barW = Math.max(1.5, slot - 2); // 2px surface gap between adjacent bars
-  const yZero = yPx(Math.max(0, lo));
+  const yZero = yPx(isLog ? lo : Math.max(0, lo));
 
   const xToPx = (i) => f.m.l + band * i + band / 2;
   const longLabels = xs.some((x) => String(fmtDimValue(ctx, x, xCol && ctxDim(ctx, xCol.name), grain)).length > 9);
-  drawXLabels(ctx, f, xs, xToPx, xCol, grain, longLabels && band < 90);
+  const rotateLabels = longLabels && band < 90;
+  drawXLabels(ctx, f, xs, xToPx, xCol, grain, rotateLabels);
+  const onTitleChange = ctx.onAxisTitleChange;
+  if (!rotateLabels) {
+    const xTitle = ctx.xAxisTitle || (xCol && (ctxDim(ctx, xCol.name) || xCol).label) || "";
+    drawAxisTitle(f, ctx.container, "x", xTitle, onTitleChange && ((v) => onTitleChange("x", v)));
+  }
+  drawAxisTitle(f, ctx.container, "y", ctx.yAxisTitle || measure.label, onTitleChange && ((v) => onTitleChange("y", v)));
 
   const marks = svgEl("g");
   xs.forEach((xv, i) => {

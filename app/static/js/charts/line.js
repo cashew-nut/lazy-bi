@@ -3,18 +3,23 @@
 
 import { svgEl, fmtMeasure } from "../lib.js";
 import { ctxDim, ctxGrain, fmtDimValue, tooltipHide, tooltipShow } from "./common.js";
-import { drawXLabels, drawYAxis, plotFrame, yExtent } from "./frame.js";
+import { drawAxisTitle, drawXLabels, drawYAxis, logSafeExtent, plotFrame, yExtent } from "./frame.js";
 
 export function renderLine(ctx, pivot) {
   const f = plotFrame(ctx.container);
   const { xs, series, measure, xCol } = pivot;
   const grain = xCol ? ctxGrain(ctx, xCol.name) : null;
-  const [lo, hi] = yExtent(series);
-  const yPx = drawYAxis(f, lo, hi, measure.format);
+  let [lo, hi] = yExtent(series);
+  if (ctx.yScale === "log") [lo, hi] = logSafeExtent(series, lo, hi);
+  const yPx = drawYAxis(f, lo, hi, measure.format, { scale: ctx.yScale });
   const xToPx = xs.length === 1
     ? () => f.m.l + f.plotW / 2
     : (i) => f.m.l + (i / (xs.length - 1)) * f.plotW;
   drawXLabels(ctx, f, xs, xToPx, xCol, grain, false);
+  const onTitleChange = ctx.onAxisTitleChange;
+  const xTitle = ctx.xAxisTitle || (xCol && (ctxDim(ctx, xCol.name) || xCol).label) || "";
+  drawAxisTitle(f, ctx.container, "x", xTitle, onTitleChange && ((v) => onTitleChange("x", v)));
+  drawAxisTitle(f, ctx.container, "y", ctx.yAxisTitle || measure.label, onTitleChange && ((v) => onTitleChange("y", v)));
 
   const markers = [];
   for (const s of series) {
