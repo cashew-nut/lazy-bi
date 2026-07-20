@@ -1,14 +1,14 @@
 /* Home: the operator console shown at "/" — a numbered destination index
-   (studio / modelling / portal / chat), admin shortcuts, and a glance at
-   the registered semantic models. Pure presentation; router.js drives it
-   via hooks.renderHome once showView("home") has unhidden #home-view. */
+   (studio / modelling / portal / chat) and admin shortcuts. Pure
+   presentation; router.js drives it via hooks.renderHome once
+   showView("home") has unhidden #home-view. */
 "use strict";
 
 import { isAdmin, user } from "./auth.js";
 import { isChatEnabled } from "./chat.js";
 import { $, el } from "./lib.js";
 import { navigate, paths } from "./router.js";
-import { hooks, state } from "./state.js";
+import { hooks } from "./state.js";
 
 const MODES = [
   { mode: "studio", icon: "▣", label: "STUDIO", desc: "Build queries, chart data, save visuals", path: paths.studio },
@@ -50,24 +50,6 @@ export function renderHome() {
       el("span", { class: "ic" }, "⌁"), "model registry");
     modelRegistry.addEventListener("click", () => navigate(paths.modelling()));
     adminRow.append(manageUsers, modelRegistry);
-  }
-
-  const list = $("#home-models-list");
-  list.innerHTML = "";
-  $("#home-models-count").textContent = state.models.length
-    ? `${state.models.length} model${state.models.length === 1 ? "" : "s"}`
-    : "";
-  for (const m of state.models) {
-    const row = el("tr", {},
-      el("td", {}, m.label || m.name),
-      el("td", { class: "fmt" }, m.format),
-      el("td", { class: "num" }, String(m.dimensions.length)),
-      el("td", { class: "num" }, String(m.measures.length)));
-    row.addEventListener("click", () => navigate(paths.studioModel(m.name)));
-    list.append(row);
-  }
-  if (!state.models.length) {
-    list.append(el("tr", {}, el("td", { class: "empty-note", colspan: "4" }, "no semantic models found")));
   }
 
   hooks.refreshNotebookList && hooks.refreshNotebookList();
