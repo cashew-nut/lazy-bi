@@ -363,7 +363,22 @@
           <span class="editor-file">DASHBOARD PORTAL</span>
           <span id="portal-crumbs" class="crumbs"></span>
         </div>
-        <div id="portal-grid"></div>
+        <div class="modelling-main">
+          <details class="mk-section">
+            <summary class="sec-title"><span class="tree-caret">▸</span><span>Folders</span><span class="tree-count" id="portal-folders-count">0</span></summary>
+            <div class="mk-section-body">
+              <input type="text" id="portal-folders-filter" class="sb-filter" placeholder="type to filter…" spellcheck="false">
+              <div id="portal-folders-list" class="mk-list"></div>
+            </div>
+          </details>
+          <details class="mk-section">
+            <summary class="sec-title"><span class="tree-caret">▸</span><span>Dashboards</span><span class="tree-count" id="portal-dashboards-count">0</span></summary>
+            <div class="mk-section-body">
+              <input type="text" id="portal-dashboards-filter" class="sb-filter" placeholder="type to filter…" spellcheck="false">
+              <div id="portal-dashboards-list" class="mk-list"></div>
+            </div>
+          </details>
+        </div>
       </div>
 
       <div id="modelling-view" class="chart-card" hidden>
@@ -378,8 +393,34 @@
           <button class="btn plain" id="modelling-refresh">REFRESH</button>
         </div>
         <div class="explorer-body">
-          <div id="modelling-datasets" class="modelling-tree"></div>
-          <div id="modelling-main" class="modelling-main"></div>
+          <div class="modelling-tree">
+            <div class="sec-title">Datasets</div>
+            <input type="text" id="modelling-ds-filter" class="sb-filter" placeholder="type to filter…" spellcheck="false">
+            <div id="modelling-datasets"></div>
+          </div>
+          <div id="modelling-main" class="modelling-main">
+            <details class="mk-section">
+              <summary class="sec-title"><span class="tree-caret">▸</span><span>Models</span><span class="tree-count" id="mk-models-count">0</span></summary>
+              <div class="mk-section-body">
+                <input type="text" id="mk-models-filter" class="sb-filter" placeholder="type to filter…" spellcheck="false">
+                <div id="mk-models-list" class="mk-list"></div>
+              </div>
+            </details>
+            <details class="mk-section">
+              <summary class="sec-title"><span class="tree-caret">▸</span><span>Common Models</span><span class="tree-count" id="mk-bundles-count">0</span></summary>
+              <div class="mk-section-body">
+                <input type="text" id="mk-bundles-filter" class="sb-filter" placeholder="type to filter…" spellcheck="false">
+                <div id="mk-bundles-list" class="mk-list"></div>
+              </div>
+            </details>
+            <details class="mk-section">
+              <summary class="sec-title"><span class="tree-caret">▸</span><span>Pipelines</span><span class="tree-count" id="mk-pipelines-count">0</span></summary>
+              <div class="mk-section-body">
+                <input type="text" id="mk-pipelines-filter" class="sb-filter" placeholder="type to filter…" spellcheck="false">
+                <div id="mk-pipelines-list" class="mk-list"></div>
+              </div>
+            </details>
+          </div>
         </div>
       </div>
 
