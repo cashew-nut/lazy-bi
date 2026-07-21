@@ -12,9 +12,9 @@ import { setModelSeed } from "./modelform.js";
 import { navigate, paths } from "./router.js";
 import { hooks, state } from "./state.js";
 
+let lastModels = [], lastBundles = [], lastPipelines = [], lastDatasetStats = {};
+
 export async function loadModelling() {
-  $("#modelling-datasets").innerHTML = "";
-  $("#modelling-main").innerHTML = "";
   $("#modelling-bucket").textContent = "scanning bucket…";
   const [models, bundles, pipelines, datasets] = await Promise.all([
     api("/api/models"), api("/api/dimensions"), api("/api/pipelines"), api("/api/datasets"),
@@ -24,14 +24,46 @@ export async function loadModelling() {
   $("#modelling-bucket").textContent =
     `s3://${datasets.bucket} @ ${datasets.endpoint.replace(/^https?:\/\//, "")} · ${datasets.object_count} objects · ${fmtBytes(datasets.bytes)}`;
   renderDatasetTree(datasets.datasets);
-  renderSide(models, bundles, datasets);
-  renderPipelines(pipelines);
+  lastModels = models;
+  lastBundles = bundles;
+  lastPipelines = pipelines;
+  lastDatasetStats = Object.fromEntries(datasets.models.map((m) => [m.name, m]));
+  renderModelsList();
+  renderBundlesList();
+  renderPipelinesList();
 }
 hooks.loadModelling = loadModelling;
 
+const matchesQuery = (q, ...fields) => !q || fields.some((f) => f && f.toLowerCase().includes(q));
+
 // ── datasets: bucket objects, grouped into pickable datasets (same grouping
 // the model-authoring source picker uses — a delta table or glob prefix
-// stays one node), laid out as a collapsible folder tree keyed by path ──
+// stays one node), laid out as a collapsible folder tree keyed by path —
+// collapsed by default (US: information overload), with type-to-filter
+// pruning the tree down to matching branches and force-opening what's left ──
+
+let dsFilter = "";
+let lastDatasets = [];
+
+export function setDatasetFilter(text) {
+  dsFilter = text.trim().toLowerCase();
+  renderDatasetTree(lastDatasets);
+}
+
+const dsMatches = (ds, q) => ds.path.toLowerCase().includes(q) || (ds.key || "").toLowerCase().includes(q);
+
+// filtered copy of a tree node keeping only branches with a matching
+// dataset somewhere inside; null when nothing in this branch matches
+function pruneTree(node, q) {
+  const dataset = node.dataset && dsMatches(node.dataset, q) ? node.dataset : null;
+  const children = new Map();
+  for (const [key, child] of node.children) {
+    const kept = pruneTree(child, q);
+    if (kept) children.set(key, kept);
+  }
+  if (!dataset && children.size === 0) return null;
+  return { name: node.name, dataset, children };
+}
 
 function datasetTree(datasets) {
   const root = { name: "", children: new Map(), dataset: null };
@@ -82,14 +114,17 @@ function datasetLeafExpand(ds, label) {
 
 const renderDatasetLeaf = (ds, label) => (ds.objects.length > 1 ? datasetLeafExpand : datasetLeaf)(ds, label);
 
-function datasetFolder(node, depth) {
+// forceOpen is set only while a filter is active, so the pruned matches are
+// immediately visible instead of hidden behind their (default-collapsed)
+// ancestor folders
+function datasetFolder(node, forceOpen) {
   const children = el("div", { class: "tree-children" });
   if (node.dataset) children.append(renderDatasetLeaf(node.dataset, "(this level)"));
   for (const child of sortedChildren(node)) {
-    children.append(child.children.size > 0 ? datasetFolder(child, depth + 1) : renderDatasetLeaf(child.dataset, child.name));
+    children.append(child.children.size > 0 ? datasetFolder(child, forceOpen) : renderDatasetLeaf(child.dataset, child.name));
   }
   const attrs = { class: "tree-folder" };
-  if (depth === 0) attrs.open = "";   // top-level folders start open; deeper nesting stays tucked away
+  if (forceOpen) attrs.open = "";
   return el("details", attrs,
     el("summary", {},
       el("span", { class: "tree-caret" }, "▸"),
@@ -99,16 +134,19 @@ function datasetFolder(node, depth) {
 }
 
 function renderDatasetTree(datasets) {
+  lastDatasets = datasets;
   const box = $("#modelling-datasets");
-  box.append(el("div", { class: "sec-title" }, "Datasets"));
+  box.innerHTML = "";
   if (!datasets.length) {
     box.append(el("div", { class: "empty-note" }, "bucket is empty"));
     return;
   }
   const root = datasetTree(datasets);
-  if (root.dataset) box.append(renderDatasetLeaf(root.dataset, "(bucket root)"));
-  for (const child of sortedChildren(root)) {
-    box.append(child.children.size > 0 ? datasetFolder(child, 0) : renderDatasetLeaf(child.dataset, child.name));
+  const tree = dsFilter ? pruneTree(root, dsFilter) : root;
+  if (!tree) { box.append(el("div", { class: "empty-note" }, "no matches")); return; }
+  if (tree.dataset) box.append(renderDatasetLeaf(tree.dataset, "(bucket root)"));
+  for (const child of sortedChildren(tree)) {
+    box.append(child.children.size > 0 ? datasetFolder(child, !!dsFilter) : renderDatasetLeaf(child.dataset, child.name));
   }
 }
 
@@ -117,68 +155,73 @@ const RUN_STATUS_LABEL = {
   timed_out: "⏱ timed out", interrupted: "⚠ interrupted",
 };
 
-// a collapsible <details> section for the center column: caret + label +
-// count in a .sec-title summary, a card grid body, tucked-in create button
-function mkSection(label, count, cards, emptyNote, newBtn) {
-  const body = el("div", { class: "mk-section-body" });
-  if (cards.length) body.append(el("div", { class: "mf-ds-grid" }, ...cards));
-  else if (emptyNote) body.append(el("div", { class: "empty-note" }, emptyNote));
-  body.append(newBtn);
-  return el("details", { class: "mk-section", open: "" },
-    el("summary", { class: "sec-title" },
-      el("span", { class: "tree-caret" }, "▸"),
-      el("span", {}, label),
-      el("span", { class: "tree-count" }, String(count))),
-    body);
+// ── center column: models / common models / pipelines, each a collapsed-
+// by-default section (see index.html) whose body is a plain filterable list
+// row per entity — full detail (path, target, dataset breakdown) moves to
+// the row's hover title instead of sitting on the page permanently ──
+
+let modelsFilter = "", bundlesFilter = "", pipelinesFilter = "";
+export function setModelsFilter(text) { modelsFilter = text.trim().toLowerCase(); renderModelsList(); }
+export function setBundlesFilter(text) { bundlesFilter = text.trim().toLowerCase(); renderBundlesList(); }
+export function setPipelinesFilter(text) { pipelinesFilter = text.trim().toLowerCase(); renderPipelinesList(); }
+
+function renderModelsList() {
+  $("#mk-models-count").textContent = String(lastModels.length);
+  const box = $("#mk-models-list");
+  box.innerHTML = "";
+  if (!lastModels.length) { box.append(el("div", { class: "empty-note" }, "none yet")); return; }
+  const models = lastModels.filter((m) => matchesQuery(modelsFilter, m.label, m.name));
+  if (!models.length) { box.append(el("div", { class: "empty-note" }, "no matches")); return; }
+  for (const m of models) {
+    const st = lastDatasetStats[m.name] || { files: 0, bytes: 0 };
+    const row = el("div", {
+      class: "mk-row clickable",
+      title: `${m.path}\n${st.files} file${st.files === 1 ? "" : "s"} · ${fmtBytes(st.bytes)}`,
+    },
+      el("span", { class: "nm" }, m.label),
+      el("span", { class: "mk-meta" }, `${m.dimensions.length} dims · ${m.measures.length} measures`));
+    row.addEventListener("click", () => navigate(paths.modellingModel(m.name)));
+    box.append(row);
+  }
 }
 
-function renderPipelines(pipelines) {
-  const cards = pipelines.map((p) => {
+function renderBundlesList() {
+  $("#mk-bundles-count").textContent = String(lastBundles.length);
+  const box = $("#mk-bundles-list");
+  box.innerHTML = "";
+  if (!lastBundles.length) { box.append(el("div", { class: "empty-note" }, "none yet — shared dimensions across models")); return; }
+  const bundles = lastBundles.filter((b) => matchesQuery(bundlesFilter, b.label, b.name));
+  if (!bundles.length) { box.append(el("div", { class: "empty-note" }, "no matches")); return; }
+  for (const b of bundles) {
+    const row = el("div", { class: "mk-row clickable", title: b.datasets.map((d) => d.name).join(", ") || "—" },
+      el("span", { class: "nm" }, b.label),
+      el("span", { class: "mk-meta" }, `${b.datasets.length} set${b.datasets.length === 1 ? "" : "s"}`));
+    row.addEventListener("click", () => navigate(paths.modellingBundle(b.name)));
+    box.append(row);
+  }
+}
+
+function renderPipelinesList() {
+  $("#mk-pipelines-count").textContent = String(lastPipelines.length);
+  const box = $("#mk-pipelines-list");
+  box.innerHTML = "";
+  if (!lastPipelines.length) { box.append(el("div", { class: "empty-note" }, "none yet — hosted polars transformation scripts")); return; }
+  const pipelines = lastPipelines.filter((p) => matchesQuery(pipelinesFilter, p.label, p.name));
+  if (!pipelines.length) { box.append(el("div", { class: "empty-note" }, "no matches")); return; }
+  for (const p of pipelines) {
     const latest = p.latest_run;
     const statusClass = latest?.status === "succeeded" ? "ok" : latest?.status === "failed" || latest?.status === "timed_out" ? "err" : "";
-    const layerBadge = p.target.layer ? el("span", { class: "model-chip", title: "target layer" }, p.target.layer) : null;
-    const top = [
+    const statusLabel = latest ? RUN_STATUS_LABEL[latest.status] || latest.status : "not run yet";
+    const row = el("div", {
+      class: "mk-row clickable",
+      title: `${p.target.path} (${p.materialization.mode}${p.materialization.mode === "upsert" ? `/${p.materialization.on_delete}` : ""})`
+        + (p.target.layer ? ` · layer: ${p.target.layer}` : ""),
+    },
       el("span", { class: "nm" }, p.label),
-      el("span", { class: `fmt ${statusClass}` }, latest ? RUN_STATUS_LABEL[latest.status] || latest.status : "not run yet"),
-    ];
-    if (layerBadge) top.push(layerBadge);
-    const card = el("div", { class: "mk-card clickable" },
-      el("div", { class: "mk-top" }, ...top),
-      el("div", { class: "path" }, `${p.target.path} (${p.materialization.mode}${p.materialization.mode === "upsert" ? `/${p.materialization.on_delete}` : ""})`));
-    card.addEventListener("click", () => navigate(paths.modellingPipelineYaml(p.name)));
-    return card;
-  });
-  const newBtn = el("button", { class: "ghost mk-new", onclick: () => navigate(paths.modellingNewPipelineYaml()) }, "+ new pipeline");
-  $("#modelling-main").append(mkSection("Pipelines", pipelines.length, cards, "none yet — hosted polars transformation scripts", newBtn));
-}
-
-function renderSide(models, bundles, data) {
-  const box = $("#modelling-main");
-  const stats = Object.fromEntries(data.models.map((m) => [m.name, m]));
-
-  const modelCards = models.map((m) => {
-    const st = stats[m.name] || { files: 0, bytes: 0 };
-    const card = el("div", { class: "mk-card clickable" },
-      el("div", { class: "nm" }, m.label),
-      el("div", { class: "path" }, m.path),
-      el("div", { class: "mk-sub" }, `${st.files} file${st.files === 1 ? "" : "s"} · ${fmtBytes(st.bytes)} · ${m.dimensions.length} dims · ${m.measures.length} measures`));
-    card.addEventListener("click", () => navigate(paths.modellingModel(m.name)));
-    return card;
-  });
-  const newModelBtn = el("button", { class: "ghost mk-new", onclick: () => openCreateChooser(bundles) }, "+ new fact model");
-  box.append(mkSection("Models", models.length, modelCards, "", newModelBtn));
-
-  const bundleCards = bundles.map((b) => {
-    const card = el("div", { class: "mk-card clickable" },
-      el("div", { class: "mk-top" },
-        el("span", { class: "nm" }, b.label),
-        el("span", { class: "fmt" }, `${b.datasets.length} set${b.datasets.length === 1 ? "" : "s"}`)),
-      el("div", { class: "path" }, b.datasets.map((d) => d.name).join(", ") || "—"));
-    card.addEventListener("click", () => navigate(paths.modellingBundle(b.name)));
-    return card;
-  });
-  const newBundleBtn = el("button", { class: "ghost mk-new", onclick: () => navigate(paths.modellingNewBundle()) }, "+ new common model");
-  box.append(mkSection("Common Models", bundles.length, bundleCards, "none yet — shared dimensions across models", newBundleBtn));
+      el("span", { class: `mk-meta ${statusClass}` }, statusLabel));
+    row.addEventListener("click", () => navigate(paths.modellingPipelineYaml(p.name)));
+    box.append(row);
+  }
 }
 
 // ── create chooser: fact model (blank / seeded) vs common dimension model ──

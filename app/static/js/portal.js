@@ -1,5 +1,9 @@
 /* Portal: the consumption surface — a nested folder tree of published
-   dashboards, opened read-only via dashboard.js. */
+   dashboards, opened read-only via dashboard.js. Only the current folder's
+   direct children (subfolders + dashboards) are shown, split into two
+   collapsed-by-default sections; drilling into a subfolder still navigates
+   via breadcrumbs rather than expanding in place (spec 004: breadcrumb-only
+   navigation). */
 "use strict";
 
 import { $, el } from "./lib.js";
@@ -11,18 +15,27 @@ export async function loadPortal() {
   renderPortal();
 }
 
+let folderFilter = "", dashFilter = "";
+export function setPortalFolderFilter(text) { folderFilter = text.trim().toLowerCase(); renderPortal(); }
+export function setPortalDashFilter(text) { dashFilter = text.trim().toLowerCase(); renderPortal(); }
+
+function resetPortalFilters() {
+  folderFilter = ""; dashFilter = "";
+  if ($("#portal-folders-filter")) $("#portal-folders-filter").value = "";
+  if ($("#portal-dashboards-filter")) $("#portal-dashboards-filter").value = "";
+}
+
 // router entry point for /portal and /portal/folder/*path — see router.js
 export async function openPortalFolder(path) {
   state.portalFolder = path;
+  resetPortalFilters();
   showView("portal");
   await loadPortal();
 }
 hooks.openPortalFolder = openPortalFolder;
 
 export function renderPortal() {
-  const grid = $("#portal-grid");
   const crumbs = $("#portal-crumbs");
-  grid.innerHTML = "";
   crumbs.innerHTML = "";
   const cur = state.portalFolder;
 
@@ -46,25 +59,44 @@ export function renderPortal() {
       subs.add(p.folder.slice(prefix.length).split("/")[0]);
     }
   }
-  for (const name of [...subs].sort()) {
-    const inside = state.publications.filter((p) => p.folder === (prefix + name) || p.folder.startsWith(prefix + name + "/")).length;
-    const card = el("div", { class: "p-card folder" },
-      el("div", { class: "ic" }, "◫"),
-      el("div", { class: "nm" }, name),
-      el("div", { class: "sub" }, `${inside} dashboard${inside === 1 ? "" : "s"}`));
-    card.addEventListener("click", () => navigate(paths.portalFolder(prefix + name)));
-    grid.append(card);
+  const folderNames = [...subs].sort();
+  const dashes = state.publications.filter((p) => p.folder === cur);
+
+  $("#portal-folders-count").textContent = String(folderNames.length);
+  $("#portal-dashboards-count").textContent = String(dashes.length);
+
+  const folderBox = $("#portal-folders-list");
+  folderBox.innerHTML = "";
+  if (!folderNames.length) {
+    folderBox.append(el("div", { class: "empty-note" }, "no subfolders here"));
+  } else {
+    const shown = folderNames.filter((name) => !folderFilter || name.toLowerCase().includes(folderFilter));
+    if (!shown.length) folderBox.append(el("div", { class: "empty-note" }, "no matches"));
+    for (const name of shown) {
+      const inside = state.publications.filter((p) => p.folder === (prefix + name) || p.folder.startsWith(prefix + name + "/")).length;
+      const row = el("div", { class: "mk-row clickable" },
+        el("span", { class: "ic" }, "◫"),
+        el("span", { class: "nm" }, name),
+        el("span", { class: "mk-meta" }, `${inside} dashboard${inside === 1 ? "" : "s"}`));
+      row.addEventListener("click", () => navigate(paths.portalFolder(prefix + name)));
+      folderBox.append(row);
+    }
   }
-  for (const p of state.publications.filter((x) => x.folder === cur)) {
-    const card = el("div", { class: "p-card dash" },
-      el("div", { class: "ic" }, "▦"),
-      el("div", { class: "nm" }, p.name),
-      el("div", { class: "sub" }, `${p.tiles} tiles · published ${p.published_at.slice(0, 10)}`));
-    card.addEventListener("click", () => navigate(paths.portalDashboard(p.dashboard_id)));
-    grid.append(card);
-  }
-  if (!grid.children.length) {
-    grid.append(el("div", { class: "msg", style: "grid-column: 1 / -1" },
-      "nothing published here yet — publish a dashboard from the studio"));
+
+  const dashBox = $("#portal-dashboards-list");
+  dashBox.innerHTML = "";
+  if (!dashes.length) {
+    dashBox.append(el("div", { class: "empty-note" }, "nothing published here yet — publish a dashboard from the studio"));
+  } else {
+    const shown = dashes.filter((p) => !dashFilter || p.name.toLowerCase().includes(dashFilter));
+    if (!shown.length) dashBox.append(el("div", { class: "empty-note" }, "no matches"));
+    for (const p of shown) {
+      const row = el("div", { class: "mk-row clickable" },
+        el("span", { class: "ic dash" }, "▦"),
+        el("span", { class: "nm" }, p.name),
+        el("span", { class: "mk-meta" }, `${p.tiles} tiles · published ${p.published_at.slice(0, 10)}`));
+      row.addEventListener("click", () => navigate(paths.portalDashboard(p.dashboard_id)));
+      dashBox.append(row);
+    }
   }
 }

@@ -873,21 +873,6 @@ body[data-mode="home"] .layout > aside, body[data-mode="modelling"] .layout > as
 .crumbs { flex: 1; color: var(--ink-2); font-size: 12px; letter-spacing: 1px; }
 .crumbs a { color: var(--neon); cursor: pointer; text-decoration: none; }
 .crumbs a:hover { text-shadow: 0 0 6px var(--neon-dim); }
-#portal-grid {
-  flex: 1; min-height: 0; overflow-y: auto; padding: 18px;
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
-  gap: 14px; align-content: start;
-}
-.p-card {
-  border: 1px solid var(--line); border-radius: 4px; background: var(--panel);
-  padding: 14px; cursor: pointer; transition: border-color 0.12s;
-}
-.p-card:hover { border-color: var(--neon); box-shadow: 0 0 14px color-mix(in srgb, var(--neon) 12%, transparent); }
-.p-card.folder:hover { border-color: var(--pink); box-shadow: 0 0 14px color-mix(in srgb, var(--pink) 12%, transparent); }
-.p-card .ic { font-size: 20px; margin-bottom: 8px; color: var(--pink); }
-.p-card.dash .ic { color: var(--neon); }
-.p-card .nm { color: var(--ink); letter-spacing: 1px; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.p-card .sub { color: var(--ink-3); font-size: 10px; letter-spacing: 0.5px; }
 .pub-status { color: var(--ink-3); font-size: 10px; letter-spacing: 1px; white-space: nowrap; }
 .pub-status b { color: var(--ok); }
 
@@ -954,8 +939,12 @@ body.portal-dash #dash-name { pointer-events: none; }
 .tree-object { display: flex; justify-content: space-between; gap: 8px; font-size: 9.5px; color: var(--ink-3); }
 .tree-object .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 
-/* center: models / common models / pipelines as collapsible sections */
-.modelling-main { flex: 1; min-width: 0; overflow-y: auto; padding: 14px 20px; }
+/* center: models / common models / pipelines (modelling) and folders /
+   dashboards (portal, reusing this same class) as collapsible sections,
+   collapsed by default — min-height:0 lets the panel scroll internally
+   whether its flex parent lays out as a row (modelling, beside the dataset
+   tree) or a column (portal, directly under the chart-head) */
+.modelling-main { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; padding: 14px 20px; }
 .mk-section { margin-bottom: 14px; }
 .mk-section > summary.sec-title { cursor: pointer; list-style: none; user-select: none; }
 .mk-section > summary.sec-title::-webkit-details-marker { display: none; }
@@ -965,6 +954,24 @@ body.portal-dash #dash-name { pointer-events: none; }
 .mk-section > summary.sec-title .tree-caret { color: inherit; }
 .mk-section[open] > summary.sec-title .tree-caret { transform: rotate(90deg); }
 .mk-section-body { padding-top: 2px; }
+
+/* compact list rows — the expanded body of an .mk-section above: a single
+   name+meta line with no card border, so a long list reads as a scannable
+   menu instead of a wall of tiles */
+.mk-list { display: flex; flex-direction: column; }
+.mk-row { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 3px; color: var(--ink-2); }
+.mk-row.clickable { cursor: pointer; }
+.mk-row.clickable:hover { background: color-mix(in srgb, var(--neon) 4%, transparent); color: var(--ink); }
+.mk-row .ic { flex: none; width: 12px; text-align: center; font-size: 10px; color: var(--pink); }
+.mk-row .ic.dash { color: var(--neon); }
+.mk-row .nm { flex: 1; min-width: 0; color: var(--ink); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mk-row .mk-meta { flex: none; max-width: 50%; color: var(--ink-3); font-size: 9.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mk-row .mk-meta.ok { color: var(--ok); }
+.mk-row .mk-meta.err { color: var(--bad); }
+
+/* card-grid variant kept for the other .mf-ds-grid consumers (home's
+   notebook list, the guided model/bundle form's dataset picker) — not used
+   by the modelling/portal sections above anymore */
 .mk-card {
   border: 1px solid var(--line); border-radius: 4px; padding: 9px 11px;
   background: var(--panel); margin-bottom: 8px;

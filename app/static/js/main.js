@@ -28,12 +28,14 @@ import { $, api } from "./lib.js";
 import "./notebook.js";
 import { initMeasureLab } from "./measurelab.js";
 import { attachModelForm } from "./modelform.js";
-import { loadModelling, openCreateChooser, openLayersModal } from "./modelling.js";
+import {
+  loadModelling, openCreateChooser, openLayersModal,
+  setBundlesFilter, setDatasetFilter, setModelsFilter, setPipelinesFilter,
+} from "./modelling.js";
 import { attachPanelChat } from "./panelchat.js";
-// side-effect only: nothing here calls into the portal module directly
-// anymore (the router dispatches to it via hooks.openPortalFolder), but the
-// module still has to be imported somewhere for that registration to run
-import "./portal.js";
+// the router dispatches into the portal module via hooks.openPortalFolder;
+// the filter setters are the only exports called directly from here
+import { setPortalDashFilter, setPortalFolderFilter } from "./portal.js";
 import { initRouter, navigate, pathForMode, paths } from "./router.js";
 import { refreshPubs, state } from "./state.js";
 import { initTheme } from "./theme.js";
@@ -104,6 +106,12 @@ async function init() {
     $("#mk-lineage-graph").addEventListener("click", () => navigate(paths.modellingLineage()));
     $("#mk-layers").addEventListener("click", () => openLayersModal());
     $("#lineage-back").addEventListener("click", () => navigate(paths.modelling()));
+    $("#modelling-ds-filter").addEventListener("input", (e) => setDatasetFilter(e.target.value));
+    $("#mk-models-filter").addEventListener("input", (e) => setModelsFilter(e.target.value));
+    $("#mk-bundles-filter").addEventListener("input", (e) => setBundlesFilter(e.target.value));
+    $("#mk-pipelines-filter").addEventListener("input", (e) => setPipelinesFilter(e.target.value));
+    $("#portal-folders-filter").addEventListener("input", (e) => setPortalFolderFilter(e.target.value));
+    $("#portal-dashboards-filter").addEventListener("input", (e) => setPortalDashFilter(e.target.value));
     $("#editor-save").addEventListener("click", saveEditor);
     $("#editor-delete").addEventListener("click", deleteEditorItem);
     $("#editor-back").addEventListener("click", () => { stopRunPolling(); navigate(paths.modelling()); });
