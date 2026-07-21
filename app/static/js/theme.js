@@ -13,8 +13,9 @@ import { api } from "./lib.js";
 // Each theme's chartPalette + chartOtherColor is validated (FR-008) via
 // app/static/validate_palette.js against that theme's own --bg (style.css).
 // Every theme carries its own palette, tuned to its surface and its chrome:
-// Ledger's print-ink hues sit on cream paper, Canopy's are warm-shifted for
-// the forest surfaces, Phosphor's run brighter chroma against true black.
+// Paddock Light's print-ink hues sit on cream paper, Canopy's are warm-shifted
+// for the forest surfaces, Paddock's run brighter chroma against near-black
+// gunmetal.
 // The theme ids (daylight/slate/contrast) predate the current designs and
 // are frozen: they live in localStorage payloads, account rows
 // (authstore.VALID_THEMES), and index.html's boot script — the label is the
@@ -31,12 +32,12 @@ export const THEMES = {
   },
   daylight: {
     id: "daylight",
-    label: "Ledger",
+    label: "Paddock Light",
     mode: "light",
-    decorativeEffects: true,
-    // validated: node validate_palette.js "..." --mode light --surface "#f6f1e5"
-    chartPalette: ["#00789e", "#9a7200", "#a33d8e", "#c05a2e", "#3b62c4", "#2e8540", "#7455d4", "#bb4a63"],
-    chartOtherColor: "#6e6657",
+    decorativeEffects: false,
+    // validated: node validate_palette.js "#1E5FA8,#B0501A,#6A3FB5,#1E7A45,#8A6410,#B33A6E,#0082A9,#B23327" --mode light --surface "#f2e9d8"
+    chartPalette: ["#1E5FA8", "#B0501A", "#6A3FB5", "#1E7A45", "#8A6410", "#B33A6E", "#0082A9", "#B23327"],
+    chartOtherColor: "#8c7c5e",
   },
   slate: {
     id: "slate",
@@ -45,19 +46,19 @@ export const THEMES = {
     decorativeEffects: true,
     // validated: node validate_palette.js "..." --mode dark --surface "#101711"
     // (slot 1 is orange so a single-series chart reads copper-warm here,
-    // teal under Cyberpunk, green under Phosphor — the three dark themes
+    // teal under Cyberpunk, blue under Paddock — the three dark themes
     // stay tellable-apart even on a one-series line chart)
     chartPalette: ["#e07038", "#5b87d8", "#3fa354", "#9576e8", "#d4607a", "#1ba3a0", "#a68a1f", "#c75da8"],
     chartOtherColor: "#6d7a70",
   },
   contrast: {
     id: "contrast",
-    label: "Phosphor",
+    label: "Paddock",
     mode: "dark",
-    decorativeEffects: false,
-    // validated: node validate_palette.js "..." --mode dark --surface "#000000"
-    chartPalette: ["#22a854", "#9b74ff", "#e04e73", "#00a3b5", "#a38f19", "#d945ae", "#df5f28", "#4f8ef2"],
-    chartOtherColor: "#8fa08f",
+    decorativeEffects: true,
+    // validated: node validate_palette.js "#4C8FE0,#CC661C,#9B6BEA,#279153,#BF8A1A,#E0568C,#0A9DA6,#E0483F" --mode dark --surface "#0d0c0b"
+    chartPalette: ["#4C8FE0", "#CC661C", "#9B6BEA", "#279153", "#BF8A1A", "#E0568C", "#0A9DA6", "#E0483F"],
+    chartOtherColor: "#726a5c",
   },
 };
 

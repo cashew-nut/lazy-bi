@@ -32,28 +32,27 @@
    and source order lets these later blocks win per-property. Each theme's
    chart categorical palette lives in theme.js, not here — see research.md
    §1/§7 and data-model.md's Theme entity for the full split. */
-/* LEDGER (id "daylight" — the light slot). An accountant's paper ledger:
-   warm cream stock, warm near-black ink, banker's-lamp green as the primary
-   accent and oxblood "red ink" as the secondary. Glow text-shadows are
-   killed wholesale below — they read as smudge on paper. */
+/* PADDOCK LIGHT (id "daylight" — replaces Ledger). Same heritage-motorsport
+   pairing read on paper: deep papaya + racing-green ink on aged cream
+   cardstock, like a scrutineering card. */
 [data-theme="daylight"] {
-  --bg: #f6f1e5;
-  --panel: #fbf8f0;
-  --panel-2: #eee7d6;
-  --line: #d8cfb9;
-  --neon: #1d6b4f;
-  --neon-dim: #1d6b4f66;
-  --pink: #8f3b2e;
-  --ink: #29241a;
-  --ink-2: #5b5342;
-  --ink-3: #7d7460;
-  --bad: #b3261e;
-  --ok: #1e7a3c;
-  --warn: #7a5d00;
-  --card-top: #faf6eb;
-  --popover: #fdfaf2;
-  --scrim: rgba(41, 36, 26, 0.55);
-  --geo-land: #e6ddc6;
+  --bg: #f2e9d8;
+  --panel: #f8f1e2;
+  --panel-2: #e8dcc0;
+  --line: #d4c19a;
+  --neon: #b6501c;
+  --neon-dim: #b6501c66;
+  --pink: #1f5e3d;
+  --ink: #2a2015;
+  --ink-2: #6d5d42;
+  --ink-3: #8f8064;
+  --bad: #a5321f;
+  --ok: #2c7a4b;
+  --warn: #8a6410;
+  --card-top: #f8f2e2;
+  --popover: #faf4e8;
+  --scrim: rgba(42, 32, 21, 0.45);
+  --geo-land: #e2d4ac;
 }
 /* CANOPY (id "slate" — the muted-professional-dark slot). Forest floor in
    autumn: green-black surfaces, copper primary accent, moss secondary —
@@ -77,27 +76,27 @@
   --popover: #182419;
   --geo-land: #1e2c20;
 }
-/* PHOSPHOR (id "contrast" — the high-contrast slot). A green-phosphor CRT
-   on true black: near-white ink at ~20:1, phosphor-green primary, amber
-   secondary. No decorative overlays — this slot's job is legibility, so the
-   personality lives entirely in the (already high-contrast) accents. */
+/* PADDOCK (id "contrast" — replaces Phosphor). Heritage motorsport: enamel
+   papaya against oiled gunmetal, a deep racing-green second accent, warm
+   ivory gauge-face ink. Papaya predates any one team's livery — it was
+   New Zealand's national racing colour first. */
 [data-theme="contrast"] {
-  --bg: #000000;
-  --panel: #060a06;
-  --panel-2: #0e150e;
-  --line: #3e5a42;
-  --neon: #3dff7e;
-  --neon-dim: #3dff7e66;
-  --pink: #ffb000;
-  --ink: #f0fff0;
-  --ink-2: #cddccd;
-  --ink-3: #9fb49f;
-  --bad: #ff5f56;
-  --ok: #2be07c;
-  --warn: #f2e14e;
-  --card-top: #040704;
-  --popover: #0a110a;
-  --geo-land: #152015;
+  --bg: #0d0c0b;
+  --panel: #16130f;
+  --panel-2: #1d1912;
+  --line: #332c22;
+  --neon: #f0691c;
+  --neon-dim: #f0691c66;
+  --pink: #2f8f5c;
+  --ink: #efe7d8;
+  --ink-2: #a89e8d;
+  --ink-3: #6f6656;
+  --bad: #d6453b;
+  --ok: #3fae6e;
+  --warn: #d9a83e;
+  --card-top: #120f0b;
+  --popover: #1a1611;
+  --geo-land: #211c15;
 }
 
 * { box-sizing: border-box; }
@@ -125,15 +124,6 @@ html:not([data-theme]) body::after, html[data-theme="cyberpunk"] body::after {
     radial-gradient(1200px 500px at 70% -10%, color-mix(in srgb, var(--neon) 5%, transparent), transparent 60%),
     radial-gradient(900px 500px at 0% 110%, color-mix(in srgb, var(--pink) 4.5%, transparent), transparent 60%);
 }
-/* Ledger: a faint aged-paper wash — green off the top corner, oxblood off
-   the bottom — instead of scanlines. Same decorative-effects contract as
-   cyberpunk's block above (theme.js decorativeEffects: true). */
-html[data-theme="daylight"] body::after {
-  content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
-  background:
-    radial-gradient(1100px 520px at 78% -12%, color-mix(in srgb, var(--neon) 5%, transparent), transparent 62%),
-    radial-gradient(900px 480px at -8% 108%, color-mix(in srgb, var(--pink) 5%, transparent), transparent 60%);
-}
 /* Ledger runs on paper, not glass: neon glow text-shadows (designed for the
    dark themes) read as ink smudge on a cream surface, so they're cut
    theme-wide rather than unpicked selector by selector. */
@@ -151,6 +141,14 @@ html[data-theme="slate"] body::after {
   background:
     radial-gradient(1000px 480px at 75% -10%, color-mix(in srgb, var(--neon) 6%, transparent), transparent 60%),
     radial-gradient(800px 460px at 5% 112%, color-mix(in srgb, var(--pink) 5%, transparent), transparent 60%);
+}
+/* Paddock (contrast slot): restrained corner wash — papaya top-right,
+   racing green low-left, both faint. */
+html[data-theme="contrast"] body::after {
+  content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  background:
+    radial-gradient(1100px 480px at 78% -10%, color-mix(in srgb, var(--neon) 5%, transparent), transparent 60%),
+    radial-gradient(900px 460px at -6% 108%, color-mix(in srgb, var(--pink) 4.5%, transparent), transparent 60%);
 }
 
 #app { position: relative; z-index: 1; display: flex; flex-direction: column; height: 100vh; }
