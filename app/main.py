@@ -91,6 +91,8 @@ async def lifespan(app: FastAPI):
         print(f"[cash-intel] embedded S3 emulator on {config.S3_ENDPOINT}")
     if seed.seed_bucket():
         print(f"[cash-intel] seeded demo data into s3://{config.BUCKET}")
+    if seed.seed_raw_data_bucket():
+        print(f"[cash-intel] seeded raw data into s3://{config.RAW_BUCKET}")
     registry.init()
     print(f"[cash-intel] loaded models: {', '.join(registry.models) or '(none)'}")
     seed.seed_bootstrap_admin()

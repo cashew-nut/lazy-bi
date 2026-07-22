@@ -1,0 +1,401 @@
+site_id,study_id,site_name,country,principal_investigator,planned_activation_date,actual_activation_date,target_enrollment,actual_enrollment,site_status
+SITE-00001,CT-2023-0001,North Judithbury Medical Center,South Korea,Dr. Walker,2025-12-21,2026-01-25,14,11,Enrolling
+SITE-00002,CT-2023-0001,Lake Joyside Specialty Clinic,Czech Republic,Dr. Miller,2025-10-18,2025-11-02,9,9,Enrollment Complete
+SITE-00003,CT-2023-0001,Johnsonland University Medical Faculty,South Korea,Dr. Robinson,2025-10-22,2025-10-28,14,14,Enrollment Complete
+SITE-00004,CT-2023-0001,New Jamesside Medical Center,South Korea,Dr. Barnes,2025-11-07,2025-11-26,8,7,Enrolling
+SITE-00005,CT-2023-0001,Lawrencetown Specialty Clinic,South Korea,Dr. Blake,2026-01-14,2026-01-14,9,4,Enrolling
+SITE-00006,CT-2023-0001,Lake Roberto Specialty Clinic,France,Dr. Ramirez,2026-01-03,2026-01-07,5,4,Enrolling
+SITE-00007,CT-2023-0001,Port Matthew Specialty Clinic,South Korea,Dr. Davis,2026-01-10,2026-03-04,10,7,Enrolling
+SITE-00008,CT-2023-0001,West Melanieview Memorial Hospital,France,Dr. Roman,2025-11-21,2025-12-21,11,4,Enrolling
+SITE-00009,CT-2023-0001,Herrerafurt University Hospital,France,Dr. Miller,2025-12-31,2025-12-24,6,1,Enrolling
+SITE-00010,CT-2023-0001,Mariastad Regional Clinical Institute,Czech Republic,Dr. Ray,2025-11-22,2025-12-18,9,6,Enrolling
+SITE-00011,CT-2023-0002,North Donnaport University Medical Faculty,South Korea,Dr. Galloway,2025-06-13,2025-07-23,5,4,Enrolling
+SITE-00012,CT-2023-0002,Port Craig Clinical Research Center,South Korea,Dr. Ramirez,2025-06-01,2025-06-01,6,6,Enrollment Complete
+SITE-00013,CT-2023-0002,Franciscostad University Hospital,Netherlands,Dr. Clark,2025-05-25,2025-06-17,10,8,Enrolling
+SITE-00014,CT-2023-0002,Jacquelineland Specialty Clinic,Netherlands,Dr. Lynch,2025-05-30,2025-06-29,11,11,Enrollment Complete
+SITE-00015,CT-2023-0002,New Jessica University Medical Faculty,South Korea,Dr. Martin,2025-07-03,2025-07-12,9,9,Enrollment Complete
+SITE-00016,CT-2023-0002,Nelsonside Health Network,South Korea,Dr. Robinson,2025-07-16,2025-07-07,12,12,Enrollment Complete
+SITE-00017,CT-2023-0002,Meganton Clinical Research Center,Italy,Dr. Perez,2025-05-26,2025-07-08,11,11,Enrollment Complete
+SITE-00018,CT-2023-0002,Port Leslieview Medical Center,France,Dr. Jones,2025-08-07,2025-07-25,12,6,Enrolling
+SITE-00019,CT-2023-0002,Jasonfort General Hospital,South Korea,Dr. Foster,2025-06-05,2025-06-23,5,2,Enrolling
+SITE-00020,CT-2023-0002,Thomasberg Medical Center,Netherlands,Dr. Wright,2025-07-13,2025-07-15,16,16,Enrollment Complete
+SITE-00021,CT-2023-0002,Juliechester Medical Center,Italy,Dr. Hurst,2025-07-12,2025-08-27,10,10,Enrollment Complete
+SITE-00022,CT-2023-0002,Coxberg Memorial Hospital,Germany,Dr. Hicks,2025-07-10,2025-07-01,16,16,Enrollment Complete
+SITE-00023,CT-2023-0002,Port Brandonville Clinical Research Center,Netherlands,Dr. Hernandez,2025-06-25,2025-07-15,6,5,Enrolling
+SITE-00024,CT-2023-0002,Port Erin Clinical Research Center,South Korea,Dr. Carlson,2025-06-19,2025-06-21,14,9,Enrolling
+SITE-00025,CT-2023-0002,Jamesmouth Health Network,Germany,Dr. Rice,2025-05-24,2025-05-27,6,6,Enrollment Complete
+SITE-00026,CT-2023-0002,Lake Jenniferside Medical Center,Netherlands,Dr. Potter,2025-07-23,2025-08-23,12,6,Enrolling
+SITE-00027,CT-2023-0002,Danielchester Regional Clinical Institute,Netherlands,Dr. Moore,2025-08-08,2025-09-08,8,6,Enrolling
+SITE-00028,CT-2023-0003,Lake Nancyview University Hospital,South Africa,Dr. Stanton,2024-10-28,2024-11-19,13,11,Enrolling
+SITE-00029,CT-2023-0003,New Rita University Medical Faculty,Italy,Dr. Harrell,2024-10-10,2024-10-13,17,17,Enrollment Complete
+SITE-00030,CT-2023-0003,Meaganhaven General Hospital,South Africa,Dr. Lynch,2024-12-10,2025-01-21,22,22,Enrollment Complete
+SITE-00031,CT-2023-0003,West Kathryn Clinical Research Center,United States,Dr. Ryan,2024-11-27,2024-10-19,16,13,Enrolling
+SITE-00032,CT-2023-0003,New Mariotown Memorial Hospital,South Africa,Dr. Rodriguez,2024-11-19,2024-12-24,20,19,Enrolling
+SITE-00033,CT-2023-0003,Natashaport Memorial Hospital,Spain,Dr. Allen,2024-11-08,2024-11-21,17,17,Enrollment Complete
+SITE-00034,CT-2023-0003,New Stacey Regional Clinical Institute,Germany,Dr. Miller,2024-11-20,2024-12-08,22,22,Enrollment Complete
+SITE-00035,CT-2023-0003,Cabreraside Specialty Clinic,South Africa,Dr. Cannon,2024-12-05,2025-01-16,19,19,Enrollment Complete
+SITE-00036,CT-2023-0003,Lake Thomas University Medical Faculty,Canada,Dr. Pierce,2024-11-07,2024-11-17,18,17,Enrolling
+SITE-00037,CT-2023-0003,Allisonchester University Medical Faculty,Netherlands,Dr. Brandt,2024-12-28,2025-01-31,9,9,Enrollment Complete
+SITE-00038,CT-2023-0003,Lake Larry Regional Clinical Institute,Poland,Dr. Carney,2024-10-16,2024-11-12,10,8,Enrolling
+SITE-00039,CT-2023-0003,Samuelhaven Medical Center,Canada,Dr. Hayes,2024-09-30,2024-10-11,10,10,Enrollment Complete
+SITE-00040,CT-2023-0003,East Caleb Medical Center,Italy,Dr. Smith,2024-10-07,2024-10-21,21,21,Enrollment Complete
+SITE-00041,CT-2023-0003,New Jeffrey Regional Clinical Institute,Germany,Dr. Jones,2024-10-24,2024-10-27,17,17,Enrollment Complete
+SITE-00042,CT-2023-0003,East Carloston University Medical Faculty,Italy,Dr. Heath,2024-10-08,2024-10-28,24,24,Enrollment Complete
+SITE-00043,CT-2023-0003,New Johnfort University Medical Faculty,South Korea,Dr. Lewis,2024-09-30,2024-09-04,18,17,Enrolling
+SITE-00044,CT-2023-0003,Lake Selena Memorial Hospital,Spain,Dr. Duncan,2024-10-26,2024-11-19,21,21,Enrollment Complete
+SITE-00045,CT-2023-0003,Sanchezfort Specialty Clinic,Canada,Dr. Aguirre,2024-10-24,2024-11-22,27,27,Enrollment Complete
+SITE-00046,CT-2023-0003,North Collin University Hospital,Netherlands,Dr. Jordan,2024-10-04,2024-10-14,12,9,Enrolling
+SITE-00047,CT-2023-0003,Jenkinston Medical Center,France,Dr. Nunez,2024-12-25,2024-12-23,25,25,Enrollment Complete
+SITE-00048,CT-2023-0003,North Richardmouth Specialty Clinic,France,Dr. Mcbride,2024-10-23,2024-11-12,27,27,Enrollment Complete
+SITE-00049,CT-2023-0003,East Jamesside Clinical Research Center,Italy,Dr. West,2024-11-23,2024-12-09,27,27,Enrollment Complete
+SITE-00050,CT-2023-0003,Whitemouth University Medical Faculty,Germany,Dr. Wright,2024-12-28,2025-01-10,17,12,Enrolling
+SITE-00051,CT-2023-0003,South Lindseyside University Hospital,Germany,Dr. Garcia,2024-12-14,2024-12-30,14,14,Enrollment Complete
+SITE-00052,CT-2023-0003,North Sarabury Health Network,United States,Dr. Martin,2024-12-13,2024-12-19,28,21,Enrolling
+SITE-00053,CT-2023-0003,Olsonfurt Regional Clinical Institute,United States,Dr. Barrera,2024-12-13,2024-12-25,25,23,Enrolling
+SITE-00054,CT-2023-0003,South Aaron Medical Center,Canada,Dr. Myers,2024-11-25,2024-12-11,21,21,Enrollment Complete
+SITE-00055,CT-2023-0003,Mitchellside Health Network,Netherlands,Dr. Stanley,2024-11-16,2024-11-02,14,14,Enrollment Complete
+SITE-00056,CT-2023-0003,Mooreport Specialty Clinic,Netherlands,Dr. Robinson,2024-11-15,2024-12-03,27,27,Enrollment Complete
+SITE-00057,CT-2023-0003,New Jillton Regional Clinical Institute,South Korea,Dr. Adkins,2024-11-10,2024-11-24,21,21,Enrollment Complete
+SITE-00058,CT-2023-0003,North Breannahaven Regional Clinical Institute,Spain,Dr. Calhoun,2024-12-06,2024-12-18,17,17,Enrollment Complete
+SITE-00059,CT-2023-0003,North Susan Specialty Clinic,Canada,Dr. Miller,2024-10-24,2024-11-30,19,19,Enrollment Complete
+SITE-00060,CT-2023-0003,North Brooke Clinical Research Center,United States,Dr. Leonard,2024-10-03,2024-10-28,24,24,Enrollment Complete
+SITE-00061,CT-2023-0003,South David Medical Center,Canada,Dr. Zamora,2024-10-25,2024-11-04,14,14,Enrollment Complete
+SITE-00062,CT-2023-0003,New Brooke Health Network,United States,Dr. Harvey,2024-09-30,2024-10-10,20,20,Enrollment Complete
+SITE-00063,CT-2023-0003,Sandovalshire General Hospital,South Africa,Dr. Mills,2024-12-25,2025-01-11,11,11,Enrollment Complete
+SITE-00064,CT-2023-0003,Jamesmouth Medical Center,Netherlands,Dr. Allen,2024-12-19,2025-01-03,27,27,Enrollment Complete
+SITE-00065,CT-2023-0003,Andersonport Memorial Hospital,Japan,Dr. Bryant,2024-11-20,2024-12-25,22,22,Enrollment Complete
+SITE-00066,CT-2023-0003,North Stephenshire Specialty Clinic,Italy,Dr. Ferrell,2024-11-17,2024-12-10,19,19,Enrollment Complete
+SITE-00067,CT-2023-0003,New Jasonview Regional Clinical Institute,Italy,Dr. Anderson,2024-12-17,2025-01-13,14,11,Enrolling
+SITE-00068,CT-2023-0004,Nicolebury General Hospital,France,Dr. Wood,2024-06-08,2024-06-15,15,15,Enrollment Complete
+SITE-00069,CT-2023-0004,South Martha University Medical Faculty,Poland,Dr. Warner,2024-07-05,2024-08-26,8,8,Enrollment Complete
+SITE-00070,CT-2023-0004,Lake Lisaport Clinical Research Center,France,Dr. Huynh,2024-05-28,2024-07-04,16,16,Enrollment Complete
+SITE-00071,CT-2023-0004,East Josephville Specialty Clinic,South Korea,Dr. Newton,2024-05-10,2024-05-12,9,9,Enrollment Complete
+SITE-00072,CT-2023-0004,West Juan General Hospital,South Korea,Dr. Clark,2024-05-05,2024-04-30,12,12,Enrollment Complete
+SITE-00073,CT-2023-0004,Jamesview Clinical Research Center,Spain,Dr. Wagner,2024-07-06,2024-06-24,7,4,Enrollment Closed
+SITE-00074,CT-2023-0004,Rebeccaton Specialty Clinic,Italy,Dr. Davis,2024-06-17,2024-07-02,11,11,Enrollment Complete
+SITE-00075,CT-2023-0004,Calderonton General Hospital,Spain,Dr. Smith,2024-06-28,2024-08-04,10,10,Enrollment Complete
+SITE-00076,CT-2023-0004,Lake Tina University Hospital,Italy,Dr. Martin,2024-06-17,2024-07-13,10,9,Enrollment Closed
+SITE-00077,CT-2023-0004,Arnoldchester University Hospital,Spain,Dr. Hoffman,2024-07-09,2024-06-26,10,10,Enrollment Complete
+SITE-00078,CT-2023-0004,North Sierraberg Medical Center,France,Dr. Gardner,2024-05-03,2024-06-09,16,16,Enrollment Complete
+SITE-00079,CT-2023-0004,Brandiberg Health Network,Australia,Dr. Jordan,2024-05-05,2024-04-20,15,15,Enrollment Complete
+SITE-00080,CT-2023-0004,West Michaelton General Hospital,Poland,Dr. Nolan,2024-06-28,2024-07-25,17,17,Enrollment Complete
+SITE-00081,CT-2023-0004,Lake John Memorial Hospital,Australia,Dr. Garcia,2024-06-23,2024-06-20,12,12,Enrollment Complete
+SITE-00082,CT-2023-0004,Dicksonberg Memorial Hospital,Spain,Dr. Frost,2024-04-18,2024-05-31,10,7,Enrollment Closed
+SITE-00083,CT-2023-0004,Port Francisco General Hospital,Poland,Dr. Marsh,2024-04-19,2024-04-27,14,14,Enrollment Complete
+SITE-00084,CT-2023-0004,South Angel University Medical Faculty,Italy,Dr. Doyle,2024-04-19,2024-05-13,15,15,Enrollment Complete
+SITE-00085,CT-2023-0004,Kimberlychester University Medical Faculty,South Korea,Dr. Pham,2024-05-15,2024-06-12,20,20,Enrollment Complete
+SITE-00086,CT-2023-0004,West Erik University Hospital,South Korea,Dr. Haynes,2024-06-29,2024-07-08,18,18,Enrollment Complete
+SITE-00087,CT-2023-0004,Brennanfort Medical Center,Poland,Dr. Walker,2024-05-08,2024-05-08,7,7,Enrollment Complete
+SITE-00088,CT-2023-0005,Baileybury General Hospital,Netherlands,Dr. Walker,2023-07-12,2023-05-30,5,3,Enrollment Closed
+SITE-00089,CT-2023-0005,South Mark Specialty Clinic,Canada,Dr. Lin,2023-08-21,2023-10-16,4,4,Enrollment Complete
+SITE-00090,CT-2023-0005,Michaelhaven University Medical Faculty,Canada,Dr. Ross,2023-07-22,2023-09-08,8,8,Enrollment Complete
+SITE-00091,CT-2023-0005,Sheilaville Memorial Hospital,Canada,Dr. Wiley,2023-07-27,2023-09-17,9,9,Enrollment Complete
+SITE-00092,CT-2023-0006,Gregoryview Specialty Clinic,Netherlands,Dr. Johnson,2025-01-22,2025-01-29,16,16,Enrollment Complete
+SITE-00093,CT-2023-0006,Reedmouth Specialty Clinic,Czech Republic,Dr. Graham,2025-02-14,2025-02-26,13,13,Enrollment Complete
+SITE-00094,CT-2023-0006,South Rachelborough Medical Center,Netherlands,Dr. Scott,2025-01-21,2025-02-24,14,14,Enrollment Complete
+SITE-00095,CT-2023-0006,Smithside General Hospital,Netherlands,Dr. Mcdaniel,2025-02-14,2025-03-13,6,6,Enrollment Complete
+SITE-00096,CT-2023-0006,West Ryan Memorial Hospital,Czech Republic,Dr. Rush,2024-12-13,2024-12-20,17,15,Enrollment Closed
+SITE-00097,CT-2023-0007,Cindyville Health Network,Belgium,Dr. Cortez,2024-11-17,2024-11-11,22,22,Enrollment Complete
+SITE-00098,CT-2023-0007,Williamchester Memorial Hospital,Belgium,Dr. Nguyen,2024-10-24,2024-11-06,33,33,Enrollment Complete
+SITE-00099,CT-2023-0007,Angelaborough Specialty Clinic,Czech Republic,Dr. Fisher,2024-11-04,2024-10-25,25,25,Enrollment Complete
+SITE-00100,CT-2023-0007,Byrdburgh Memorial Hospital,Germany,Dr. Gilbert,2024-12-05,2024-12-13,36,36,Enrollment Complete
+SITE-00101,CT-2023-0007,Richardtown Health Network,Netherlands,Dr. Torres,2024-12-07,2024-12-17,13,13,Enrollment Complete
+SITE-00102,CT-2023-0007,South Kristi University Hospital,Czech Republic,Dr. Lawson,2025-01-03,2025-01-19,26,26,Enrollment Complete
+SITE-00103,CT-2023-0007,Stevenmouth Specialty Clinic,Germany,Dr. Lowe,2025-01-10,2025-01-29,39,39,Enrollment Complete
+SITE-00104,CT-2023-0007,Leonburgh Clinical Research Center,Netherlands,Dr. Hopkins,2024-12-29,2025-02-24,32,32,Enrollment Complete
+SITE-00105,CT-2023-0007,Zacharymouth Memorial Hospital,Netherlands,Dr. Davis,2024-11-09,2024-10-30,25,20,Enrollment Closed
+SITE-00106,CT-2023-0007,Lake Lance Specialty Clinic,Germany,Dr. Drake,2025-01-05,2024-12-31,31,31,Enrollment Complete
+SITE-00107,CT-2023-0007,North Brandon Specialty Clinic,Netherlands,Dr. Riggs,2024-11-02,2024-12-22,24,24,Enrollment Complete
+SITE-00108,CT-2023-0007,South Robertshire Regional Clinical Institute,Netherlands,Dr. Lee,2025-01-02,2025-01-04,39,39,Enrollment Complete
+SITE-00109,CT-2023-0007,Snyderbury Medical Center,Netherlands,Dr. Hernandez,2024-11-10,2024-11-13,20,20,Enrollment Complete
+SITE-00110,CT-2023-0007,Port Michelleville General Hospital,Poland,Dr. Osborne,2025-01-18,2025-02-20,36,18,Enrollment Closed
+SITE-00111,CT-2023-0007,East Linda General Hospital,United States,Dr. Dominguez,2024-11-02,2024-12-08,32,32,Enrollment Complete
+SITE-00112,CT-2023-0007,Williamsbury University Hospital,Germany,Dr. Lowery,2024-12-07,2024-12-22,30,30,Enrollment Complete
+SITE-00113,CT-2023-0007,South Dennismouth University Medical Faculty,Germany,Dr. Contreras,2024-12-04,2025-01-13,26,26,Enrollment Complete
+SITE-00114,CT-2023-0007,Stephaniemouth Specialty Clinic,Germany,Dr. Salazar,2024-12-31,2025-02-12,25,25,Enrollment Complete
+SITE-00115,CT-2023-0007,Rivasside Health Network,Czech Republic,Dr. Griffin,2024-12-09,2025-01-20,33,33,Enrollment Complete
+SITE-00116,CT-2023-0007,Lake Michelle Clinical Research Center,Czech Republic,Dr. Cole,2025-01-05,2025-01-29,35,35,Enrollment Complete
+SITE-00117,CT-2023-0008,Port Dana Medical Center,Spain,Dr. Cannon,2025-11-25,2025-11-26,6,4,Enrolling
+SITE-00118,CT-2023-0008,Simsview General Hospital,Netherlands,Dr. Gonzales,2025-09-27,2025-10-31,12,8,Enrolling
+SITE-00119,CT-2023-0008,Jimmymouth Regional Clinical Institute,Spain,Dr. Flores,2025-11-10,2025-11-08,7,7,Enrollment Complete
+SITE-00120,CT-2023-0008,East Edwardfurt Medical Center,United States,Dr. Benson,2025-11-28,2025-12-22,7,3,Enrolling
+SITE-00121,CT-2023-0008,North Robert Clinical Research Center,United Kingdom,Dr. Rivera,2025-09-20,2025-09-20,15,15,Enrollment Complete
+SITE-00122,CT-2023-0008,Perryborough Memorial Hospital,Canada,Dr. Wall,2025-11-11,2025-12-28,6,5,Enrolling
+SITE-00123,CT-2023-0008,Steinshire Health Network,United Kingdom,Dr. Shah,2025-12-08,2025-12-07,9,5,Enrolling
+SITE-00124,CT-2023-0008,Port Nicoleshire Specialty Clinic,Japan,Dr. James,2025-09-18,2025-09-09,10,6,Enrolling
+SITE-00125,CT-2023-0008,West Kennethfurt Specialty Clinic,Netherlands,Dr. Castaneda,2025-09-25,2025-09-07,13,11,Enrolling
+SITE-00126,CT-2023-0008,Medinaside Medical Center,Canada,Dr. Marsh,2025-11-25,2025-11-18,6,3,Enrolling
+SITE-00127,CT-2023-0008,South Jeffrey Regional Clinical Institute,United States,Dr. Graham,2025-10-16,2025-10-11,13,11,Enrolling
+SITE-00128,CT-2023-0008,South Matthewfurt Medical Center,Canada,Dr. Ramsey,2025-11-16,2025-11-23,7,2,Enrolling
+SITE-00129,CT-2023-0008,Calhounside Regional Clinical Institute,Italy,Dr. Johnson,2025-10-17,2025-11-06,6,5,Enrolling
+SITE-00130,CT-2023-0008,Vargastown General Hospital,Canada,Dr. Miller,2025-12-11,2025-12-10,13,4,Enrolling
+SITE-00131,CT-2023-0008,Taylormouth General Hospital,Italy,Dr. White,2025-10-19,2025-11-19,11,7,Enrolling
+SITE-00132,CT-2023-0008,Nicholasborough Health Network,Italy,Dr. Gibson,2025-09-29,2025-10-17,9,9,Enrollment Complete
+SITE-00133,CT-2023-0008,Kathleenfurt Health Network,Spain,Dr. Ramirez,2025-11-28,2026-01-09,14,1,Enrolling
+SITE-00134,CT-2023-0008,Kingland University Hospital,United States,Dr. Ruiz,2025-12-03,2026-01-12,15,2,Enrolling
+SITE-00135,CT-2023-0008,West Jeffreyland University Medical Faculty,Netherlands,Dr. Harrington,2025-09-22,2025-11-09,13,6,Enrolling
+SITE-00136,CT-2023-0008,Port Anthonybury University Hospital,United Kingdom,Dr. Gonzalez,2025-11-07,2025-11-28,7,0,Activated
+SITE-00137,CT-2023-0008,New Elijahberg Regional Clinical Institute,Netherlands,Dr. Wells,2025-11-24,2025-11-30,10,10,Enrollment Complete
+SITE-00138,CT-2023-0008,New Staciemouth Health Network,Japan,Dr. Lyons,2025-09-29,2025-10-18,8,6,Enrolling
+SITE-00139,CT-2023-0008,Garyville Memorial Hospital,Germany,Dr. Strickland,2025-09-15,2025-10-21,11,11,Enrollment Complete
+SITE-00140,CT-2023-0008,West Daniel University Medical Faculty,Spain,Dr. Johnson,2025-11-12,2025-10-15,14,14,Enrollment Complete
+SITE-00141,CT-2023-0008,Barbarafurt Medical Center,Japan,Dr. Sanders,2025-10-03,2025-10-18,15,12,Enrolling
+SITE-00142,CT-2023-0008,North Brittany Regional Clinical Institute,Netherlands,Dr. Rivas,2025-09-22,2025-10-31,8,8,Enrollment Complete
+SITE-00143,CT-2023-0008,North Heidi Clinical Research Center,Spain,Dr. Turner,2025-11-10,2025-12-06,6,6,Enrollment Complete
+SITE-00144,CT-2023-0008,Port Tonyaton Regional Clinical Institute,Japan,Dr. Reed,2025-11-02,2025-11-12,11,3,Enrolling
+SITE-00145,CT-2023-0008,Stanleyland University Hospital,Belgium,Dr. Hunter,2025-11-11,2025-11-11,14,8,Enrolling
+SITE-00146,CT-2023-0008,Alexanderchester University Hospital,Canada,Dr. Short,2025-10-01,2025-09-20,14,9,Enrolling
+SITE-00147,CT-2023-0008,South Susanmouth General Hospital,United States,Dr. Zimmerman,2025-11-03,2025-12-03,7,0,Activated
+SITE-00148,CT-2023-0008,Thompsonhaven Medical Center,Italy,Dr. Sheppard,2025-11-04,2025-12-08,14,9,Enrolling
+SITE-00149,CT-2023-0008,Christinaside Specialty Clinic,Belgium,Dr. Hampton,2025-10-22,2025-11-04,6,4,Enrolling
+SITE-00150,CT-2024-0009,Grahamshire University Hospital,Netherlands,Dr. Adams,2024-08-09,2024-08-07,11,11,Enrollment Complete
+SITE-00151,CT-2024-0009,Port Sarah Clinical Research Center,Spain,Dr. Ramirez,2024-10-23,2024-11-17,11,11,Enrollment Complete
+SITE-00152,CT-2024-0009,Sanchezmouth University Medical Faculty,Germany,Dr. Hudson,2024-07-30,2024-09-15,12,12,Enrollment Complete
+SITE-00153,CT-2024-0009,Rogersfort General Hospital,Netherlands,Dr. Rosales,2024-08-02,2024-09-02,9,9,Enrollment Complete
+SITE-00154,CT-2024-0009,South Jason Medical Center,Czech Republic,Dr. Salinas,2024-09-14,2024-09-18,8,8,Enrollment Complete
+SITE-00155,CT-2024-0009,Joshuaview University Hospital,Czech Republic,Dr. Peters,2024-10-10,2024-10-07,13,13,Enrollment Complete
+SITE-00156,CT-2024-0009,North John General Hospital,Netherlands,Dr. Russell,2024-09-22,2024-09-08,13,13,Enrollment Complete
+SITE-00157,CT-2024-0009,Lake Thomas Memorial Hospital,Spain,Dr. Joseph,2024-10-24,2024-10-26,13,13,Enrollment Complete
+SITE-00158,CT-2024-0009,Mcguireland General Hospital,Czech Republic,Dr. Phillips,2024-10-06,2024-11-09,8,8,Enrollment Complete
+SITE-00159,CT-2024-0009,Holtport General Hospital,Czech Republic,Dr. Beck,2024-08-26,2024-08-30,11,11,Enrollment Complete
+SITE-00160,CT-2024-0009,Thomashaven Health Network,Czech Republic,Dr. Cooper,2024-08-04,2024-08-17,8,6,Enrollment Closed
+SITE-00161,CT-2024-0009,Michaelmouth Health Network,Netherlands,Dr. Nelson,2024-10-16,2024-10-18,5,5,Enrollment Complete
+SITE-00162,CT-2024-0009,Jerryborough Specialty Clinic,Czech Republic,Dr. Stewart,2024-08-08,2024-08-27,8,8,Enrollment Complete
+SITE-00163,CT-2024-0009,East Javier Specialty Clinic,Czech Republic,Dr. Washington,2024-10-04,2024-10-07,13,13,Enrollment Complete
+SITE-00164,CT-2024-0009,Tinaborough University Hospital,Czech Republic,Dr. Phillips,2024-09-25,2024-10-11,12,12,Enrollment Complete
+SITE-00165,CT-2024-0009,Harrytown Health Network,Spain,Dr. Erickson,2024-10-13,2024-11-17,13,12,Enrollment Closed
+SITE-00166,CT-2024-0009,West Brandon Health Network,Spain,Dr. Brown,2024-10-21,2024-09-27,13,13,Enrollment Complete
+SITE-00167,CT-2024-0009,Heidiberg University Medical Faculty,Spain,Dr. Little,2024-09-15,2024-10-13,5,5,Enrollment Complete
+SITE-00168,CT-2024-0009,Garciatown Clinical Research Center,Czech Republic,Dr. Andrews,2024-09-23,2024-10-25,10,10,Enrollment Complete
+SITE-00169,CT-2024-0010,Mendozamouth University Hospital,France,Dr. Lopez,2024-09-13,2024-09-17,45,45,Enrollment Complete
+SITE-00170,CT-2024-0010,West Shelleyfort University Hospital,Australia,Dr. Wilson,2024-08-10,2024-08-22,23,23,Enrollment Complete
+SITE-00171,CT-2024-0010,South Travisshire Specialty Clinic,Poland,Dr. Soto,2024-07-31,2024-08-31,34,34,Enrollment Complete
+SITE-00172,CT-2024-0010,East Edwardshire General Hospital,Australia,Dr. Avery,2024-07-14,2024-08-13,51,51,Enrollment Complete
+SITE-00173,CT-2024-0010,East Davidchester Medical Center,Poland,Dr. Obrien,2024-08-15,2024-07-30,42,42,Enrollment Complete
+SITE-00174,CT-2024-0010,Port Alexandra Clinical Research Center,Australia,Dr. Hayes,2024-07-08,2024-07-09,22,22,Enrollment Complete
+SITE-00175,CT-2024-0010,Evansshire Medical Center,Poland,Dr. Branch,2024-08-03,2024-09-04,20,15,Enrollment Closed
+SITE-00176,CT-2024-0010,Ashleyton Health Network,Australia,Dr. Lynch,2024-08-14,2024-08-01,26,26,Enrollment Complete
+SITE-00177,CT-2024-0011,Port Jaredborough Health Network,Belgium,Dr. Baker,2025-03-19,2025-03-20,9,9,Enrollment Complete
+SITE-00178,CT-2024-0011,East Johnside General Hospital,Belgium,Dr. Jones,2025-03-19,2025-03-10,11,11,Enrollment Complete
+SITE-00179,CT-2024-0012,South Shannonfort Clinical Research Center,Belgium,Dr. Carter,2023-09-21,2023-09-27,13,13,Enrollment Complete
+SITE-00180,CT-2024-0012,West Jasmine Memorial Hospital,Belgium,Dr. Warner,2023-12-07,2024-02-28,20,20,Enrollment Complete
+SITE-00181,CT-2024-0012,Jonesbury Specialty Clinic,United States,Dr. Bradshaw,2023-12-14,2024-02-03,12,12,Enrollment Complete
+SITE-00182,CT-2024-0012,South Danny Regional Clinical Institute,Belgium,Dr. Walker,2023-10-26,2023-10-14,15,15,Enrollment Complete
+SITE-00183,CT-2024-0012,West Margaret Health Network,Poland,Dr. Jones,2023-11-30,2023-12-26,26,26,Enrollment Complete
+SITE-00184,CT-2024-0012,Port Kyle Clinical Research Center,Spain,Dr. Curry,2023-11-29,2023-12-24,15,15,Enrollment Complete
+SITE-00185,CT-2024-0012,Scottmouth General Hospital,Canada,Dr. Barker,2023-10-26,2023-11-30,26,26,Enrollment Complete
+SITE-00186,CT-2024-0012,Benderhaven General Hospital,United States,Dr. Fernandez,2023-10-06,2023-11-18,12,12,Enrollment Complete
+SITE-00187,CT-2024-0012,Millerton Regional Clinical Institute,South Africa,Dr. Preston,2023-12-07,2023-11-29,28,28,Enrollment Complete
+SITE-00188,CT-2024-0012,Cassandratown General Hospital,Netherlands,Dr. Davis,2023-12-07,2023-12-26,14,14,Enrollment Complete
+SITE-00189,CT-2024-0012,Port Emilyview Medical Center,United Kingdom,Dr. Johnston,2023-11-28,2023-12-14,18,18,Enrollment Complete
+SITE-00190,CT-2024-0012,South April General Hospital,Belgium,Dr. Ramos,2023-09-16,2023-10-17,11,11,Enrollment Complete
+SITE-00191,CT-2024-0012,Howardshire University Medical Faculty,United States,Dr. Graham,2023-10-24,2023-10-15,19,19,Enrollment Complete
+SITE-00192,CT-2024-0012,Costafort General Hospital,Belgium,Dr. Bailey,2023-10-01,2023-10-08,29,29,Enrollment Complete
+SITE-00193,CT-2024-0012,Manuelville University Hospital,Canada,Dr. Hodge,2023-10-12,2023-10-28,11,11,Enrollment Complete
+SITE-00194,CT-2024-0012,Robertfort Medical Center,South Korea,Dr. Roberts,2023-12-09,2024-02-12,22,22,Enrollment Complete
+SITE-00195,CT-2024-0012,Cervantesside General Hospital,South Africa,Dr. Johnson,2023-10-15,2023-10-20,11,11,Enrollment Complete
+SITE-00196,CT-2024-0012,West Johnnyville Specialty Clinic,Brazil,Dr. Cordova,2023-10-18,2023-10-14,22,22,Enrollment Complete
+SITE-00197,CT-2024-0012,Hancocktown Specialty Clinic,Belgium,Dr. Sandoval,2023-12-03,2023-12-04,13,13,Enrollment Complete
+SITE-00198,CT-2024-0012,Gutierrezborough Medical Center,Brazil,Dr. Stone,2023-10-24,2023-11-14,14,14,Enrollment Complete
+SITE-00199,CT-2024-0012,Garrettton Memorial Hospital,Belgium,Dr. Harris,2023-09-18,2023-09-28,32,32,Enrollment Complete
+SITE-00200,CT-2024-0012,West Samuel Specialty Clinic,United States,Dr. Wolfe,2023-11-09,2023-11-28,26,26,Enrollment Complete
+SITE-00201,CT-2024-0012,North Teresabury Memorial Hospital,Poland,Dr. Mckinney,2023-09-25,2023-10-12,25,24,Enrolling
+SITE-00202,CT-2024-0012,Andreaside Specialty Clinic,Poland,Dr. Russell,2023-10-31,2023-11-17,26,26,Enrollment Complete
+SITE-00203,CT-2024-0012,Port Robin Specialty Clinic,Belgium,Dr. Murray,2023-09-16,2023-10-23,18,18,Enrollment Complete
+SITE-00204,CT-2024-0012,Lake Marilynfort Regional Clinical Institute,Belgium,Dr. Cantu,2023-09-25,2023-10-15,19,19,Enrollment Complete
+SITE-00205,CT-2024-0012,Williamview Memorial Hospital,United States,Dr. Perry,2023-11-20,2023-12-01,13,13,Enrollment Complete
+SITE-00206,CT-2024-0012,Bairdbury General Hospital,Belgium,Dr. Bryant,2023-11-26,2023-12-06,11,11,Enrollment Complete
+SITE-00207,CT-2024-0012,South James Health Network,South Korea,Dr. Greene,2023-11-16,2023-12-27,31,31,Enrollment Complete
+SITE-00208,CT-2024-0012,Port Chad Specialty Clinic,South Africa,Dr. Barton,2023-09-26,2023-09-27,17,17,Enrollment Complete
+SITE-00209,CT-2024-0012,Morganhaven General Hospital,Belgium,Dr. Adams,2023-11-27,2023-11-25,28,28,Enrollment Complete
+SITE-00210,CT-2024-0012,West Jessicashire Medical Center,Germany,Dr. Carpenter,2023-12-13,2023-12-13,22,18,Enrolling
+SITE-00211,CT-2024-0012,Grimesmouth General Hospital,United States,Dr. Ryan,2023-10-11,2023-10-03,27,27,Enrollment Complete
+SITE-00212,CT-2024-0012,Martinside Clinical Research Center,Germany,Dr. Bennett,2023-11-24,2023-12-01,29,29,Enrollment Complete
+SITE-00213,CT-2024-0012,Mollybury Medical Center,South Korea,Dr. Armstrong,2023-09-18,2023-09-05,18,18,Enrollment Complete
+SITE-00214,CT-2024-0012,Port Kimberly General Hospital,Canada,Dr. Williams,2023-11-25,2023-12-16,14,14,Enrollment Complete
+SITE-00215,CT-2024-0012,Thorntonfurt Regional Clinical Institute,Australia,Dr. Hughes,2023-11-12,2023-12-04,27,27,Enrollment Complete
+SITE-00216,CT-2024-0012,South Tammie Medical Center,United States,Dr. Martinez,2023-11-27,2023-12-14,22,20,Enrolling
+SITE-00217,CT-2024-0012,Mollymouth Clinical Research Center,Australia,Dr. Garcia,2023-10-02,2023-11-15,25,16,Enrolling
+SITE-00218,CT-2024-0012,Smithberg University Medical Faculty,Spain,Dr. Ortiz,2023-11-09,2023-10-12,19,19,Enrollment Complete
+SITE-00219,CT-2024-0012,North Terrance University Medical Faculty,Netherlands,Dr. Costa,2023-10-09,2023-11-03,24,24,Enrollment Complete
+SITE-00220,CT-2024-0012,Cindyfurt University Hospital,Australia,Dr. Santos,2023-11-16,2023-11-14,18,18,Enrollment Complete
+SITE-00221,CT-2024-0012,Melissaside University Medical Faculty,South Korea,Dr. James,2023-10-09,2023-11-08,20,20,Enrollment Complete
+SITE-00222,CT-2024-0012,Courtneyfort Clinical Research Center,Belgium,Dr. Brennan,2023-11-10,2023-12-09,18,18,Enrollment Complete
+SITE-00223,CT-2024-0013,New Caseyport General Hospital,Brazil,Dr. Bright,2023-12-11,2023-11-30,20,20,Enrollment Complete
+SITE-00224,CT-2024-0013,South Tiffanyville Health Network,South Korea,Dr. Wallace,2024-03-04,2024-04-23,19,19,Enrollment Complete
+SITE-00225,CT-2024-0013,Rebeccaton University Hospital,South Korea,Dr. Nguyen,2024-01-29,2024-02-01,35,35,Enrollment Complete
+SITE-00226,CT-2024-0013,West Michaelchester University Medical Faculty,South Korea,Dr. Thomas,2024-01-03,2024-01-25,25,25,Enrollment Complete
+SITE-00227,CT-2024-0013,Knightburgh Memorial Hospital,Brazil,Dr. Jackson,2024-01-25,2024-03-03,30,30,Enrollment Complete
+SITE-00228,CT-2024-0013,New Monicabury Specialty Clinic,Brazil,Dr. Jimenez,2023-12-20,2023-12-02,25,25,Enrollment Complete
+SITE-00229,CT-2024-0013,East Steven University Medical Faculty,Belgium,Dr. King,2024-02-12,2024-02-06,28,28,Enrollment Complete
+SITE-00230,CT-2024-0013,Elizabethmouth University Hospital,South Korea,Dr. Santana,2024-02-28,2024-02-29,37,37,Enrollment Complete
+SITE-00231,CT-2024-0013,North Scott University Medical Faculty,Belgium,Dr. Reed,2024-01-24,2024-01-06,30,30,Enrollment Complete
+SITE-00232,CT-2024-0013,Daniellechester Memorial Hospital,Belgium,Dr. Vaughn,2023-12-10,2023-11-25,43,42,Enrollment Closed
+SITE-00233,CT-2024-0014,Bruceborough Medical Center,Italy,Dr. Kidd,2024-01-19,2024-01-20,4,4,Enrollment Complete
+SITE-00234,CT-2024-0014,Rodriguezfurt Specialty Clinic,Belgium,Dr. Armstrong,2023-12-12,2023-11-13,8,4,Enrolling
+SITE-00235,CT-2024-0014,Victoriaport Clinical Research Center,South Korea,Dr. Johnson,2024-01-27,2024-01-30,6,6,Enrollment Complete
+SITE-00236,CT-2024-0014,Hillshire Medical Center,Italy,Dr. Grimes,2023-12-29,2024-01-16,10,10,Enrollment Complete
+SITE-00237,CT-2024-0014,New Julieport University Hospital,Spain,Dr. Parsons,2024-01-04,2024-01-29,11,11,Enrollment Complete
+SITE-00238,CT-2024-0014,New Laurie General Hospital,Spain,Dr. Robinson,2023-12-13,2023-12-10,10,10,Enrollment Complete
+SITE-00239,CT-2024-0014,New John University Hospital,Italy,Dr. Campos,2023-11-25,2023-12-08,11,11,Enrollment Complete
+SITE-00240,CT-2024-0014,Lake Colton General Hospital,Canada,Dr. Burton,2024-01-31,2024-02-18,11,11,Enrollment Complete
+SITE-00241,CT-2024-0014,West Kristinaton Medical Center,Poland,Dr. Riley,2023-11-13,2023-11-12,4,1,Enrolling
+SITE-00242,CT-2024-0014,North Renee General Hospital,Canada,Dr. Murphy,2023-11-11,2023-12-02,12,12,Enrollment Complete
+SITE-00243,CT-2024-0014,Thompsonberg Health Network,Belgium,Dr. Buchanan,2024-01-27,2024-02-16,12,12,Enrollment Complete
+SITE-00244,CT-2024-0014,Alyssaview Regional Clinical Institute,Spain,Dr. Rivas,2023-12-21,2023-12-06,7,7,Enrollment Complete
+SITE-00245,CT-2024-0014,Robinfort Medical Center,Canada,Dr. Coffey,2023-12-20,2024-01-01,11,11,Enrollment Complete
+SITE-00246,CT-2024-0014,Juliemouth Regional Clinical Institute,Spain,Dr. Brock,2023-12-15,2024-01-28,6,6,Enrollment Complete
+SITE-00247,CT-2024-0014,Mccartyberg Medical Center,Netherlands,Dr. Webster,2023-12-06,2023-12-20,5,5,Enrollment Complete
+SITE-00248,CT-2024-0014,Port Erica Health Network,Canada,Dr. Craig,2024-01-19,2024-01-18,8,7,Enrolling
+SITE-00249,CT-2024-0014,Coffeyside University Medical Faculty,Canada,Dr. Diaz,2024-01-14,2024-01-30,5,5,Enrollment Complete
+SITE-00250,CT-2024-0014,Smithside General Hospital,Japan,Dr. Martinez,2024-01-30,2024-02-25,11,11,Enrollment Complete
+SITE-00251,CT-2024-0014,Emilyview General Hospital,South Korea,Dr. Richards,2024-01-23,2024-02-26,4,4,Enrollment Complete
+SITE-00252,CT-2024-0014,Danielbury Health Network,Poland,Dr. Ruiz,2024-01-13,2024-02-26,5,3,Enrolling
+SITE-00253,CT-2024-0014,Rosebury Medical Center,South Africa,Dr. Holland,2023-11-30,2023-11-07,4,4,Enrollment Complete
+SITE-00254,CT-2024-0014,Blankenshipport University Hospital,Spain,Dr. Banks,2024-01-20,2024-03-15,12,12,Enrollment Complete
+SITE-00255,CT-2024-0014,East Brandonton University Medical Faculty,France,Dr. Torres,2024-01-07,2024-02-02,5,5,Enrollment Complete
+SITE-00256,CT-2024-0014,Wilsonbury Medical Center,Czech Republic,Dr. Clay,2024-01-12,2024-01-27,5,5,Enrollment Complete
+SITE-00257,CT-2024-0014,South Shawn Clinical Research Center,Belgium,Dr. Santiago,2023-12-11,2024-01-26,4,4,Enrollment Complete
+SITE-00258,CT-2024-0014,Matthewsberg University Medical Faculty,South Korea,Dr. Mcclure,2023-11-30,2023-12-26,9,9,Enrollment Complete
+SITE-00259,CT-2024-0014,Port Tracychester Medical Center,South Africa,Dr. Crosby,2023-12-24,2023-12-11,9,9,Enrollment Complete
+SITE-00260,CT-2024-0014,Antoniostad Clinical Research Center,Japan,Dr. Robinson,2023-11-24,2023-12-28,6,6,Enrollment Complete
+SITE-00261,CT-2024-0014,Sampsonstad Memorial Hospital,Canada,Dr. Garcia,2023-12-28,2023-12-28,5,5,Enrollment Complete
+SITE-00262,CT-2024-0014,Amystad University Medical Faculty,Czech Republic,Dr. Brown,2023-12-27,2024-01-18,6,6,Enrollment Complete
+SITE-00263,CT-2024-0014,Jamesville Specialty Clinic,Poland,Dr. Rush,2023-12-12,2023-12-03,4,4,Enrollment Complete
+SITE-00264,CT-2024-0014,Davisborough Health Network,Netherlands,Dr. May,2024-01-22,2024-01-29,10,10,Enrollment Complete
+SITE-00265,CT-2024-0014,North Kristinbury Specialty Clinic,Canada,Dr. Zhang,2024-01-08,2024-02-28,12,12,Enrollment Complete
+SITE-00266,CT-2024-0014,North Maria Memorial Hospital,Spain,Dr. Spencer,2024-01-05,2024-01-28,6,5,Enrolling
+SITE-00267,CT-2024-0014,Port Molly Health Network,Japan,Dr. Murphy,2023-12-28,2024-02-18,8,8,Enrollment Complete
+SITE-00268,CT-2024-0014,Port Rachel General Hospital,France,Dr. Smith,2024-01-23,2023-12-31,10,7,Enrolling
+SITE-00269,CT-2024-0014,East Amber Medical Center,South Africa,Dr. Lindsey,2023-11-23,2023-12-05,4,4,Enrollment Complete
+SITE-00270,CT-2024-0014,Lake Michelleberg Memorial Hospital,France,Dr. Smith,2023-12-05,2023-12-06,7,7,Enrollment Complete
+SITE-00271,CT-2024-0014,New Mario Memorial Hospital,Italy,Dr. Thompson,2023-12-10,2023-12-12,8,8,Enrollment Complete
+SITE-00272,CT-2024-0014,East Judyhaven University Medical Faculty,Canada,Dr. Wilson,2023-11-20,2023-11-27,9,9,Enrollment Complete
+SITE-00273,CT-2024-0015,South Shanestad Clinical Research Center,Belgium,Dr. Palmer,2026-12-29,,46,0,Identified
+SITE-00274,CT-2024-0015,South Williamton Clinical Research Center,Germany,Dr. Acosta,2027-01-07,,29,0,Identified
+SITE-00275,CT-2024-0015,Stephentown Health Network,Belgium,Dr. Brown,2026-11-09,,36,0,Identified
+SITE-00276,CT-2024-0015,Boonechester Specialty Clinic,Italy,Dr. Parks,2027-01-12,,52,0,Identified
+SITE-00277,CT-2024-0015,Josephmouth Medical Center,Germany,Dr. Jones,2027-01-10,,76,0,Identified
+SITE-00278,CT-2024-0015,West Charleneland University Medical Faculty,South Africa,Dr. Martinez,2026-12-28,,58,0,Identified
+SITE-00279,CT-2024-0015,Oscarhaven General Hospital,Belgium,Dr. Phillips,2026-11-22,,38,0,Identified
+SITE-00280,CT-2024-0015,Garciaville Memorial Hospital,Italy,Dr. Farrell,2026-12-12,,75,0,Identified
+SITE-00281,CT-2024-0015,South Shannon University Hospital,Belgium,Dr. Perez,2027-01-13,,64,0,Identified
+SITE-00282,CT-2024-0015,Mariafurt General Hospital,South Africa,Dr. Perry,2026-12-07,,64,0,Identified
+SITE-00283,CT-2024-0015,West Ronaldview General Hospital,Belgium,Dr. Brooks,2027-01-10,,65,0,Identified
+SITE-00284,CT-2024-0015,Lake Sandra Clinical Research Center,Belgium,Dr. Jones,2026-11-08,,24,0,Identified
+SITE-00285,CT-2024-0016,North Ryanstad Specialty Clinic,Poland,Dr. Cain,2023-03-26,2023-04-06,22,20,Enrollment Closed
+SITE-00286,CT-2024-0016,New Sueside Memorial Hospital,Brazil,Dr. Rivera,2023-04-08,2023-04-21,16,16,Enrollment Complete
+SITE-00287,CT-2024-0016,South Michaelchester Health Network,Brazil,Dr. Parrish,2023-06-09,2023-05-20,23,23,Enrollment Complete
+SITE-00288,CT-2024-0016,West Carolinestad General Hospital,Brazil,Dr. Garcia,2023-04-07,2023-04-22,11,11,Enrollment Complete
+SITE-00289,CT-2024-0016,East Diane Specialty Clinic,Brazil,Dr. Walker,2023-03-21,2023-04-07,25,25,Enrollment Complete
+SITE-00290,CT-2024-0016,West Meganstad Regional Clinical Institute,Poland,Dr. Wilson,2023-04-19,2023-05-08,12,12,Enrollment Complete
+SITE-00291,CT-2024-0016,Audreychester Memorial Hospital,Brazil,Dr. Bruce,2023-05-10,2023-06-05,19,19,Enrollment Complete
+SITE-00292,CT-2025-0017,New Sarahview University Hospital,United Kingdom,Dr. Johnson,2023-06-02,2023-05-31,23,23,Enrollment Complete
+SITE-00293,CT-2025-0017,Jacquelineport Specialty Clinic,Japan,Dr. Dorsey,2023-06-13,2023-06-29,7,7,Enrollment Complete
+SITE-00294,CT-2025-0017,Adamberg Regional Clinical Institute,France,Dr. Knight,2023-06-10,2023-06-20,18,15,Enrollment Closed
+SITE-00295,CT-2025-0017,Jonestown Memorial Hospital,Germany,Dr. Davis,2023-05-03,2023-05-30,17,17,Enrollment Complete
+SITE-00296,CT-2025-0017,South Robert University Hospital,United Kingdom,Dr. Peterson,2023-04-24,2023-04-24,9,9,Enrollment Complete
+SITE-00297,CT-2025-0017,Larrymouth Memorial Hospital,Italy,Dr. Frank,2023-06-07,2023-05-18,13,13,Enrollment Complete
+SITE-00298,CT-2025-0017,North Ericton Clinical Research Center,Netherlands,Dr. Craig,2023-04-30,2023-05-14,16,10,Enrollment Closed
+SITE-00299,CT-2025-0017,Scottchester University Hospital,Belgium,Dr. Tucker,2023-06-19,2023-07-23,21,21,Enrollment Complete
+SITE-00300,CT-2025-0017,Perryborough Memorial Hospital,France,Dr. Fischer,2023-04-09,2023-05-03,13,13,Enrollment Complete
+SITE-00301,CT-2025-0017,West Russellport Medical Center,United Kingdom,Dr. Gregory,2023-04-27,2023-05-11,10,10,Enrollment Complete
+SITE-00302,CT-2025-0017,Roseport Medical Center,Spain,Dr. Williams,2023-04-04,2023-05-06,22,21,Enrollment Closed
+SITE-00303,CT-2025-0017,Joyceton University Hospital,Italy,Dr. Smith,2023-06-02,2023-07-02,11,11,Enrollment Complete
+SITE-00304,CT-2025-0017,Sierraberg Health Network,United Kingdom,Dr. Duran,2023-03-28,2023-04-24,16,16,Enrollment Complete
+SITE-00305,CT-2025-0017,Marktown General Hospital,United Kingdom,Dr. Jimenez,2023-04-13,2023-04-22,21,21,Enrollment Complete
+SITE-00306,CT-2025-0017,Thompsonfurt University Medical Faculty,United Kingdom,Dr. Patel,2023-06-22,2023-07-17,21,21,Enrollment Complete
+SITE-00307,CT-2025-0017,New Angelica General Hospital,Germany,Dr. Barnett,2023-06-20,2023-05-19,11,9,Enrollment Closed
+SITE-00308,CT-2025-0017,Charleston University Medical Faculty,United States,Dr. Graham,2023-04-13,2023-04-30,7,7,Enrollment Complete
+SITE-00309,CT-2025-0017,Morsemouth Memorial Hospital,Netherlands,Dr. Johnston,2023-05-01,2023-04-30,8,8,Enrollment Complete
+SITE-00310,CT-2025-0017,Mckinneychester University Medical Faculty,France,Dr. Roberts,2023-04-30,2023-05-02,21,21,Enrollment Complete
+SITE-00311,CT-2025-0017,Smithmouth University Hospital,France,Dr. Jackson,2023-05-31,2023-05-25,11,11,Enrollment Complete
+SITE-00312,CT-2025-0017,Collierstad Medical Center,Germany,Dr. Davis,2023-03-31,2023-03-31,19,19,Enrollment Complete
+SITE-00313,CT-2025-0017,East Ryanfurt General Hospital,Japan,Dr. Warren,2023-05-04,2023-06-18,13,13,Enrollment Complete
+SITE-00314,CT-2025-0017,Harrellmouth Health Network,Germany,Dr. Walker,2023-05-04,2023-05-27,8,6,Enrollment Closed
+SITE-00315,CT-2025-0017,North William Regional Clinical Institute,Germany,Dr. Wilson,2023-05-11,2023-05-30,8,8,Enrollment Complete
+SITE-00316,CT-2025-0017,Port Michael Specialty Clinic,Belgium,Dr. Luna,2023-05-06,2023-05-14,22,19,Enrollment Closed
+SITE-00317,CT-2025-0017,East Curtis University Hospital,Australia,Dr. Scott,2023-05-20,2023-06-20,22,22,Enrollment Complete
+SITE-00318,CT-2025-0017,New Eric Memorial Hospital,Spain,Dr. Malone,2023-06-01,2023-06-11,13,8,Enrollment Closed
+SITE-00319,CT-2025-0017,East Stephaniefort General Hospital,France,Dr. Marshall,2023-04-09,2023-04-17,15,15,Enrollment Complete
+SITE-00320,CT-2025-0017,Maldonadoshire Health Network,France,Dr. Day,2023-05-06,2023-05-19,19,19,Enrollment Complete
+SITE-00321,CT-2025-0017,Michellemouth Memorial Hospital,Brazil,Dr. Hernandez,2023-06-17,2023-07-13,21,21,Enrollment Complete
+SITE-00322,CT-2025-0017,South Scottport General Hospital,Australia,Dr. Hogan,2023-04-12,2023-03-15,13,13,Enrollment Complete
+SITE-00323,CT-2025-0017,West Williamport General Hospital,Japan,Dr. Murray,2023-04-26,2023-05-09,20,20,Enrollment Complete
+SITE-00324,CT-2025-0017,North Miguelport Specialty Clinic,Netherlands,Dr. Jones,2023-05-04,2023-05-26,8,8,Enrollment Complete
+SITE-00325,CT-2025-0017,New Brookefurt Regional Clinical Institute,Belgium,Dr. Ford,2023-05-07,2023-05-22,19,19,Enrollment Complete
+SITE-00326,CT-2025-0017,South Reginashire Regional Clinical Institute,South Africa,Dr. Pearson,2023-04-07,2023-03-26,21,21,Enrollment Complete
+SITE-00327,CT-2025-0017,Cassidyhaven Regional Clinical Institute,Australia,Dr. Hernandez,2023-04-23,2023-05-19,12,12,Enrollment Complete
+SITE-00328,CT-2025-0017,South Dalemouth Health Network,United States,Dr. Haas,2023-05-17,2023-05-20,14,14,Enrollment Complete
+SITE-00329,CT-2025-0017,New Debbieton Memorial Hospital,Netherlands,Dr. Wright,2023-04-25,2023-04-23,15,15,Enrollment Complete
+SITE-00330,CT-2025-0017,Ritterhaven University Medical Faculty,Brazil,Dr. Mills,2023-05-17,2023-07-09,12,9,Enrollment Closed
+SITE-00331,CT-2025-0017,West Nathan Specialty Clinic,Japan,Dr. Campbell,2023-04-05,2023-05-06,19,15,Enrollment Closed
+SITE-00332,CT-2025-0017,Schroederton Memorial Hospital,Italy,Dr. Mccormick,2023-06-09,2023-06-12,15,15,Enrollment Complete
+SITE-00333,CT-2025-0017,Cameronville University Hospital,Australia,Dr. Grant,2023-05-11,2023-04-26,17,17,Enrollment Complete
+SITE-00334,CT-2025-0017,Mitchellberg Clinical Research Center,South Africa,Dr. Cook,2023-03-28,2023-04-07,14,14,Enrollment Complete
+SITE-00335,CT-2025-0017,West Kyle University Hospital,Germany,Dr. Douglas,2023-06-07,2023-06-24,14,14,Enrollment Complete
+SITE-00336,CT-2025-0017,Andersonland University Hospital,United Kingdom,Dr. Collins,2023-04-07,2023-04-12,10,10,Enrollment Complete
+SITE-00337,CT-2025-0018,Schneidermouth Specialty Clinic,United Kingdom,Dr. Li,2023-08-24,2023-09-02,16,16,Enrollment Complete
+SITE-00338,CT-2025-0018,Lake Ellenhaven Health Network,Netherlands,Dr. Cox,2023-10-22,2023-11-15,16,16,Enrollment Complete
+SITE-00339,CT-2025-0018,Kyleborough University Medical Faculty,United Kingdom,Dr. Peterson,2023-09-02,2023-09-01,8,7,Enrollment Closed
+SITE-00340,CT-2025-0018,Leeberg Memorial Hospital,Netherlands,Dr. Moore,2023-09-10,2023-09-28,14,14,Enrollment Complete
+SITE-00341,CT-2025-0018,Meganville Memorial Hospital,Czech Republic,Dr. Romero,2023-08-16,2023-08-16,15,15,Enrollment Complete
+SITE-00342,CT-2025-0018,Lake Matthewberg Clinical Research Center,Netherlands,Dr. Harper,2023-08-26,2023-09-05,16,14,Enrollment Closed
+SITE-00343,CT-2025-0018,East Henry Medical Center,United Kingdom,Dr. Schwartz,2023-09-30,2023-10-13,11,10,Enrollment Closed
+SITE-00344,CT-2025-0018,Lake Samuel Clinical Research Center,Czech Republic,Dr. Jenkins,2023-10-15,2023-11-02,15,14,Enrollment Closed
+SITE-00345,CT-2025-0018,South Cheryl Memorial Hospital,Netherlands,Dr. Goodwin,2023-09-20,2023-09-16,7,7,Enrollment Complete
+SITE-00346,CT-2025-0019,Youngbury Health Network,Netherlands,Dr. Collins,2024-08-20,2024-09-07,18,18,Enrollment Complete
+SITE-00347,CT-2025-0019,Mckeeborough University Medical Faculty,Belgium,Dr. Richardson,2024-10-16,2024-11-19,21,21,Enrollment Complete
+SITE-00348,CT-2025-0019,Murrayport University Hospital,Japan,Dr. Strickland,2024-09-22,2024-09-28,17,17,Enrollment Complete
+SITE-00349,CT-2025-0019,Burchborough Specialty Clinic,South Korea,Dr. Solis,2024-08-04,2024-09-19,9,9,Enrollment Complete
+SITE-00350,CT-2025-0019,Port John University Hospital,South Africa,Dr. Davidson,2024-10-12,2024-11-08,18,16,Enrolling
+SITE-00351,CT-2025-0019,Angelaville Clinical Research Center,Belgium,Dr. Dawson,2024-10-07,2024-09-20,16,16,Enrollment Complete
+SITE-00352,CT-2025-0019,West Christopherburgh Memorial Hospital,South Korea,Dr. Nelson,2024-09-13,2024-09-27,18,18,Enrollment Complete
+SITE-00353,CT-2025-0019,Port Samuel University Hospital,South Korea,Dr. Potts,2024-10-18,2024-12-07,14,14,Enrollment Complete
+SITE-00354,CT-2025-0019,Port Shannon Specialty Clinic,Belgium,Dr. Bailey,2024-09-02,2024-09-17,21,21,Enrollment Complete
+SITE-00355,CT-2025-0019,South Brianhaven Health Network,Netherlands,Dr. Brooks,2024-09-17,2024-09-22,12,12,Enrollment Complete
+SITE-00356,CT-2025-0019,Vangstad Memorial Hospital,South Africa,Dr. Walker,2024-10-08,2024-11-10,18,18,Enrollment Complete
+SITE-00357,CT-2025-0019,Sarahmouth General Hospital,Netherlands,Dr. Moody,2024-08-14,2024-08-11,23,23,Enrollment Complete
+SITE-00358,CT-2025-0019,North Justin Health Network,United States,Dr. Gallegos,2024-08-17,2024-08-16,8,8,Enrollment Complete
+SITE-00359,CT-2025-0019,Port Janice Specialty Clinic,South Korea,Dr. West,2024-10-03,2024-10-05,19,19,Enrollment Complete
+SITE-00360,CT-2025-0019,North Andrewborough General Hospital,South Africa,Dr. Conley,2024-10-09,2024-10-16,19,19,Enrollment Complete
+SITE-00361,CT-2025-0019,Rodriguezport Medical Center,Japan,Dr. Young,2024-09-07,2024-08-21,19,19,Enrollment Complete
+SITE-00362,CT-2025-0019,North Johnmouth Medical Center,South Africa,Dr. Brown,2024-09-25,2024-10-15,20,15,Enrolling
+SITE-00363,CT-2025-0019,Carlsontown Regional Clinical Institute,South Korea,Dr. Chen,2024-09-27,2024-10-04,10,10,Enrollment Complete
+SITE-00364,CT-2025-0019,Lake Douglas Health Network,South Africa,Dr. Patterson,2024-08-23,2024-08-08,11,11,Enrollment Complete
+SITE-00365,CT-2025-0019,Johnchester Health Network,South Korea,Dr. Lopez,2024-10-10,2024-10-10,18,18,Enrollment Complete
+SITE-00366,CT-2025-0019,New Theresaland Memorial Hospital,South Africa,Dr. Ashley,2024-09-18,2024-10-03,11,11,Enrollment Complete
+SITE-00367,CT-2025-0019,South Morganton General Hospital,Japan,Dr. Reid,2024-10-09,2024-10-23,24,24,Enrollment Complete
+SITE-00368,CT-2025-0019,Jontown Regional Clinical Institute,South Africa,Dr. Kelly,2024-10-03,2024-10-05,13,13,Enrollment Complete
+SITE-00369,CT-2025-0020,West Johnville Health Network,United Kingdom,Dr. Ingram,2023-06-16,2023-08-22,12,12,Enrollment Complete
+SITE-00370,CT-2025-0020,Dennisstad Memorial Hospital,Netherlands,Dr. Payne,2023-07-25,2023-08-10,12,11,Enrollment Closed
+SITE-00371,CT-2025-0020,Port Kimberly Memorial Hospital,Netherlands,Dr. Marshall,2023-08-06,2023-09-09,6,5,Enrollment Closed
+SITE-00372,CT-2025-0020,Welchberg Clinical Research Center,Poland,Dr. Brown,2023-07-04,2023-06-22,8,8,Enrollment Complete
+SITE-00373,CT-2025-0020,Johnsonborough Specialty Clinic,United Kingdom,Dr. Williams,2023-06-25,2023-06-29,10,10,Enrollment Complete
+SITE-00374,CT-2025-0020,North Leslie Clinical Research Center,South Africa,Dr. Collins,2023-08-19,2023-08-30,8,8,Enrollment Complete
+SITE-00375,CT-2025-0020,Haysside General Hospital,Netherlands,Dr. Kennedy,2023-07-27,2023-07-04,6,6,Enrollment Complete
+SITE-00376,CT-2025-0020,Port Deborahport General Hospital,Italy,Dr. Kelly,2023-06-10,2023-07-05,14,14,Enrollment Complete
+SITE-00377,CT-2025-0020,Port Dianaview University Medical Faculty,Netherlands,Dr. Martinez,2023-06-16,2023-06-22,12,12,Enrollment Complete
+SITE-00378,CT-2025-0020,Samuelfurt Memorial Hospital,Spain,Dr. Paul,2023-07-24,2023-07-22,9,9,Enrollment Complete
+SITE-00379,CT-2025-0020,Morganburgh University Medical Faculty,South Korea,Dr. Crawford,2023-07-05,2023-07-15,10,10,Enrollment Complete
+SITE-00380,CT-2025-0020,Richardsonhaven Regional Clinical Institute,South Africa,Dr. Adams,2023-07-13,2023-07-27,12,12,Enrollment Complete
+SITE-00381,CT-2025-0020,Lake Rogerchester University Hospital,Poland,Dr. Morrison,2023-07-28,2023-07-19,8,8,Enrollment Complete
+SITE-00382,CT-2025-0020,New Kelly Clinical Research Center,Belgium,Dr. Garcia,2023-07-02,2023-08-04,13,12,Enrollment Closed
+SITE-00383,CT-2025-0020,Donnaport Memorial Hospital,Netherlands,Dr. Griffin,2023-05-30,2023-06-15,9,9,Enrollment Complete
+SITE-00384,CT-2025-0020,Jacksonmouth Memorial Hospital,Spain,Dr. Bell,2023-07-23,2023-08-19,6,6,Enrollment Complete
+SITE-00385,CT-2025-0020,Lake Mollystad Regional Clinical Institute,Spain,Dr. Mendez,2023-07-04,2023-06-25,15,15,Enrollment Complete
+SITE-00386,CT-2025-0020,Hillton Regional Clinical Institute,South Africa,Dr. Jones,2023-08-01,2023-08-14,7,7,Enrollment Complete
+SITE-00387,CT-2025-0020,Coxburgh Health Network,Spain,Dr. Cisneros,2023-06-23,2023-06-25,9,9,Enrollment Complete
+SITE-00388,CT-2025-0020,Port Cathy University Medical Faculty,South Africa,Dr. Harrington,2023-06-18,2023-05-27,14,14,Enrollment Complete
+SITE-00389,CT-2025-0020,East Carlosstad Clinical Research Center,Italy,Dr. Cox,2023-07-28,2023-09-23,11,6,Enrollment Closed
+SITE-00390,CT-2025-0020,New Ericmouth Specialty Clinic,Netherlands,Dr. Rush,2023-05-24,2023-06-12,6,6,Enrollment Complete
+SITE-00391,CT-2025-0020,Scottland Clinical Research Center,South Africa,Dr. Berry,2023-06-25,2023-07-16,5,5,Enrollment Complete
+SITE-00392,CT-2025-0020,Raymondview Memorial Hospital,Italy,Dr. Wright,2023-06-24,2023-07-12,8,7,Enrollment Closed
+SITE-00393,CT-2025-0020,North Jillfort University Hospital,Netherlands,Dr. Holmes,2023-08-03,2023-08-09,13,13,Enrollment Complete
+SITE-00394,CT-2025-0020,West Kimberlymouth General Hospital,Italy,Dr. Lewis,2023-07-26,2023-08-19,7,7,Enrollment Complete
+SITE-00395,CT-2025-0020,Heatherfort Health Network,Italy,Dr. Gonzalez,2023-06-30,2023-07-09,10,10,Enrollment Complete
+SITE-00396,CT-2025-0020,Port Charles Medical Center,United States,Dr. Thompson,2023-06-04,2023-06-20,11,11,Enrollment Complete
+SITE-00397,CT-2025-0020,Osbornmouth Medical Center,South Africa,Dr. Contreras,2023-08-05,2023-08-09,5,3,Enrollment Closed
+SITE-00398,CT-2025-0020,New Amberport Medical Center,South Korea,Dr. York,2023-07-15,2023-07-30,9,6,Enrollment Closed
+SITE-00399,CT-2025-0020,Port Michael Health Network,South Africa,Dr. Walker,2023-07-12,2023-08-05,15,15,Enrollment Complete
+SITE-00400,CT-2025-0020,Port Dominic University Hospital,United States,Dr. Tyler,2023-08-10,2023-08-13,9,9,Enrollment Complete

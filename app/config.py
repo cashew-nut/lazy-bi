@@ -14,6 +14,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 S3_ENDPOINT = os.environ.get("CI_S3_ENDPOINT", "http://127.0.0.1:9600")
 EMBEDDED_EMULATOR = "CI_S3_ENDPOINT" not in os.environ
 BUCKET = os.environ.get("CI_BUCKET", "cash-intel")
+# A second, separate bucket for user-supplied raw data (see app/seed.py's
+# seed_raw_data_bucket) — kept apart from BUCKET's generated demo datasets so
+# it reads as "your own data" in the source picker, not more demo clutter.
+RAW_BUCKET = os.environ.get("CI_RAW_BUCKET", "raw-data")
 AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID", "testing")
 AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY", "testing")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")

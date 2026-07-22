@@ -459,6 +459,42 @@ def _upload_local_cache(client) -> None:
         client.upload_file(str(path), config.BUCKET, key)
 
 
+# raw_data/ holds user-supplied source files, committed as-is (unlike
+# data_cache/, which is gitignored) — bundled datasets small enough to check
+# into the repo, uploaded unmodeled into their own bucket (config.RAW_BUCKET)
+# so a user can browse and build models on them without wading through the
+# generated demo data above.
+RAW_DATA_DIR = config.PROJECT_ROOT / "raw_data"
+
+
+def seed_raw_data_bucket() -> bool:
+    """Create config.RAW_BUCKET (if needed) and upload every file under
+    raw_data/<dataset>/ to <dataset>/<filename> in it. Returns True if
+    anything was uploaded, False if the bucket already had data or there is
+    no raw_data/ directory."""
+    if not RAW_DATA_DIR.is_dir():
+        return False
+    client = s3.client()
+    try:
+        client.create_bucket(Bucket=config.RAW_BUCKET)
+    except client.exceptions.BucketAlreadyOwnedByYou:
+        pass
+    existing = client.list_objects_v2(Bucket=config.RAW_BUCKET, MaxKeys=1)
+    if existing.get("KeyCount", 0) > 0:
+        return False
+
+    uploaded = False
+    for dataset_dir in sorted(RAW_DATA_DIR.iterdir()):
+        if not dataset_dir.is_dir():
+            continue
+        for path in sorted(dataset_dir.iterdir()):
+            if path.suffix not in (".csv", ".parquet"):
+                continue
+            client.upload_file(str(path), config.RAW_BUCKET, f"{dataset_dir.name}/{path.name}")
+            uploaded = True
+    return uploaded
+
+
 def seed_bootstrap_admin() -> bool:
     """First-run only: when zero accounts exist, create the bootstrap admin
     with a random password and announce it loudly — the demo stays

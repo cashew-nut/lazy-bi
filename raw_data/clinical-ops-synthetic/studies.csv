@@ -1,0 +1,21 @@
+study_id,study_title,sponsor,indication,phase,status,planned_start_date,actual_start_date,planned_primary_completion_date,actual_primary_completion_date,planned_study_completion_date,actual_study_completion_date,target_enrollment,actual_enrollment,num_sites,num_countries
+CT-2023-0001,A Phase 2 Study of an Investigational Agent in Cardiovascular,Helix Therapeutics,Cardiovascular,Phase 2,Recruiting,2025-10-22,2025-10-18,2027-10-22,,2028-09-22,,92,67,10,3
+CT-2023-0002,A Phase 2 Study of an Investigational Agent in Infectious Disease,Solace Pharmaceuticals,Infectious Disease,Phase 2,Recruiting,2025-05-22,2025-05-22,2027-05-22,,2028-03-22,,172,143,17,5
+CT-2023-0003,A Phase 3 Study of an Investigational Agent in Dermatology,Aurelia Life Sciences,Dermatology,Phase 3,Recruiting,2024-09-22,2024-09-30,2027-02-22,,2028-02-22,,725,736,40,11
+CT-2023-0004,A Phase 2 Study of an Investigational Agent in Rare Disease,Vantage Therapeutics,Rare Disease,Phase 2,"Active, not recruiting",2024-04-22,2024-04-16,2026-01-22,2026-03-15,2026-11-22,,246,245,20,6
+CT-2023-0005,A Phase 1 Study of an Investigational Agent in Oncology,NorthStar Biosciences,Oncology,Phase 1,Completed,2023-05-22,2023-06-07,2024-03-22,2024-03-29,2024-07-22,2024-08-01,23,24,4,2
+CT-2023-0006,A Phase 1 Study of an Investigational Agent in Neurology,Helix Therapeutics,Neurology,Phase 1,Completed,2024-11-22,2024-11-23,2025-07-22,2025-07-20,2025-10-22,2026-01-03,58,64,5,2
+CT-2023-0007,A Phase 3 Study of an Investigational Agent in Rare Disease,Meridian Biopharma,Rare Disease,Phase 3,Terminated,2024-10-22,2024-10-23,2028-02-22,,2029-07-22,2028-08-25,501,559,20,6
+CT-2023-0008,A Phase 3 Study of an Investigational Agent in Neurology,Solace Pharmaceuticals,Neurology,Phase 3,Recruiting,2025-09-22,2025-09-14,2028-03-22,,2029-04-22,,319,214,33,9
+CT-2024-0009,A Phase 2 Study of an Investigational Agent in Infectious Disease,Vantage Therapeutics,Infectious Disease,Phase 2,Completed,2024-07-22,2024-07-28,2025-09-22,2025-10-13,2026-03-22,2026-03-30,160,193,19,5
+CT-2024-0010,A Phase 2 Study of an Investigational Agent in Infectious Disease,Vantage Therapeutics,Infectious Disease,Phase 2,"Active, not recruiting",2024-05-22,2024-06-17,2026-05-22,2026-05-29,2027-03-22,,259,258,8,3
+CT-2024-0011,A Phase 1 Study of an Investigational Agent in Dermatology,Solace Pharmaceuticals,Dermatology,Phase 1,Completed,2025-03-22,2025-03-10,2026-02-22,2026-01-26,2026-06-22,2026-07-22,28,20,2,1
+CT-2024-0012,A Phase 3 Study of an Investigational Agent in Infectious Disease,Aurelia Life Sciences,Infectious Disease,Phase 3,Recruiting,2023-09-22,2023-09-16,2026-12-22,,2028-05-22,,887,864,44,12
+CT-2024-0013,A Phase 2 Study of an Investigational Agent in Respiratory,NorthStar Biosciences,Respiratory,Phase 2,Completed,2023-11-22,2023-12-06,2025-05-22,2025-06-22,2026-01-22,2026-03-20,268,291,10,3
+CT-2024-0014,A Phase 3 Study of an Investigational Agent in Immunology & Inflammation,Helix Therapeutics,Immunology & Inflammation,Phase 3,Recruiting,2023-10-22,2023-11-07,2027-02-22,,2028-07-22,,315,290,40,11
+CT-2024-0015,A Phase 3 Study of an Investigational Agent in Endocrinology & Metabolic,Helix Therapeutics,Endocrinology & Metabolic,Phase 3,Not yet recruiting,2026-10-22,,2029-06-22,,2030-07-22,,573,0,12,4
+CT-2024-0016,A Phase 2 Study of an Investigational Agent in Rare Disease,Vantage Therapeutics,Rare Disease,Phase 2,Completed,2023-02-22,2023-03-20,2024-05-22,2024-06-15,2024-11-22,2024-11-26,138,126,7,2
+CT-2025-0017,A Phase 3 Study of an Investigational Agent in Respiratory,Aurelia Life Sciences,Respiratory,Phase 3,"Active, not recruiting",2023-03-22,2023-03-25,2026-01-22,2026-02-09,2027-04-22,,642,650,45,12
+CT-2025-0018,A Phase 2 Study of an Investigational Agent in Respiratory,Vantage Therapeutics,Respiratory,Phase 2,Completed,2023-07-22,2023-08-14,2025-02-22,2025-03-14,2025-11-22,2025-11-16,97,113,9,3
+CT-2025-0019,A Phase 2/3 Study of an Investigational Agent in Respiratory,Aurelia Life Sciences,Respiratory,Phase 2/3,Recruiting,2024-07-22,2024-07-30,2026-07-22,,2027-05-22,,352,370,23,6
+CT-2025-0020,A Phase 3 Study of an Investigational Agent in Infectious Disease,Meridian Biopharma,Infectious Disease,Phase 3,"Active, not recruiting",2023-04-22,2023-05-22,2026-01-22,2026-01-21,2027-04-22,,327,295,32,9

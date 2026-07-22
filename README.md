@@ -69,6 +69,15 @@ To point at a real bucket or an external emulator (MinIO, LocalStack), set
 `CI_S3_ENDPOINT` (this also disables the embedded moto server) plus the usual
 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, and `CI_BUCKET`.
 
+**Your own raw data**: drop a folder of `.csv`/`.parquet` files under
+`raw_data/<dataset-name>/` (committed to the repo, unlike the gitignored
+`data_cache/`) and it's uploaded unmodeled on startup into its own bucket —
+`raw-data` by default (`CI_RAW_BUCKET` to override) — under
+`<dataset-name>/<filename>`, kept separate from `cash-intel`'s demo data so
+it's easy to find and build a model on from scratch. `raw_data/clinical-ops-synthetic/`
+ships as an example (20 studies / 400 sites / 200 milestones / ~3.3k monthly
+recruitment rows — see its own `README.md` for the schema).
+
 **Signing in**: everything requires an account (there is no anonymous mode —
 the demo exercises the same auth path as a real deployment). On first start
 with no accounts, a bootstrap `admin` is created and its **random password is
