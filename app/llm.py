@@ -490,6 +490,29 @@ def _thinking_kwargs(model: str) -> dict:
     return {}
 
 
+def _anthropic_client(api_key: str | None):
+    """The one place both AnthropicTranslator and AnthropicComposer
+    (app/composer.py) build their client, so a corporate TLS-inspecting
+    proxy (e.g. Zscaler) only has to be configured once. Plain
+    `anthropic.Anthropic(api_key=...)` when neither config.LLM_PROXY nor
+    config.LLM_CA_BUNDLE is set — identical to before this existed, and
+    already enough for a plain (non-inspecting) proxy since the SDK's
+    default http client honors HTTP_PROXY/HTTPS_PROXY on its own. The two
+    settings only matter for a proxy that re-signs HTTPS with its own CA:
+    LLM_PROXY scopes the proxy to just this client instead of the whole
+    process, and LLM_CA_BUNDLE trusts that CA for the TLS handshake."""
+    import anthropic
+
+    if not config.LLM_PROXY and not config.LLM_CA_BUNDLE:
+        return anthropic.Anthropic(api_key=api_key)
+
+    import ssl
+
+    verify = ssl.create_default_context(cafile=config.LLM_CA_BUNDLE) if config.LLM_CA_BUNDLE else True
+    http_client = anthropic.DefaultHttpxClient(proxy=config.LLM_PROXY, verify=verify)
+    return anthropic.Anthropic(api_key=api_key, http_client=http_client)
+
+
 def _log_and_wrap(exc: Exception) -> TranslatorError:
     """Shared failure path for both translate() and translate_streaming():
     the user only ever sees a generic "temporarily unavailable" message
@@ -536,7 +559,7 @@ class AnthropicTranslator:
     ) -> RawToolCall:
         import anthropic
 
-        client = anthropic.Anthropic(api_key=self.api_key)
+        client = _anthropic_client(self.api_key)
         try:
             response = client.messages.create(**self._request_kwargs(question, catalog, prior_context))
         except anthropic.APIError as exc:
@@ -565,7 +588,7 @@ class AnthropicTranslator:
         unchanged."""
         import anthropic
 
-        client = anthropic.Anthropic(api_key=self.api_key)
+        client = _anthropic_client(self.api_key)
         try:
             with client.messages.stream(
                 **self._request_kwargs(question, catalog, prior_context),

@@ -46,6 +46,15 @@ COOKIE_SECURE = os.environ.get("CI_COOKIE_SECURE", "0") == "1"
 LLM_API_KEY = os.environ.get("CI_LLM_API_KEY", "")
 LLM_MODEL = os.environ.get("CI_LLM_MODEL", "claude-sonnet-5")
 LLM_ENABLED = bool(LLM_API_KEY)
+# Optional: route Anthropic API calls through a corporate forward proxy that
+# TLS-inspects HTTPS (e.g. Zscaler) — scoped to just these LLM calls (app/
+# llm.py, app/composer.py), not the whole process, so a corporate proxy that
+# can't reach the embedded S3 emulator doesn't get applied there too.
+# CI_LLM_CA_BUNDLE is the proxy's own CA certificate (PEM), needed because a
+# TLS-inspecting proxy re-signs the connection with a certificate the
+# default trust store doesn't know, so verification fails without it.
+LLM_PROXY = os.environ.get("CI_LLM_PROXY") or None
+LLM_CA_BUNDLE = os.environ.get("CI_LLM_CA_BUNDLE") or None
 # User-selectable per conversation (app/api/chat.py); CI_LLM_MODEL above is
 # just the default a new conversation starts with. Keep in sync with the
 # id's actually valid for the configured provider.

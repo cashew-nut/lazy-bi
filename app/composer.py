@@ -529,9 +529,9 @@ class AnthropicComposer:
     def compose_streaming(self, request: ComposeRequest) -> Iterator[ComposeStreamEvent]:
         import anthropic
 
-        from .llm import _thinking_kwargs  # shared adaptive-thinking gate
+        from .llm import _anthropic_client, _thinking_kwargs  # shared client/adaptive-thinking gate
 
-        client = anthropic.Anthropic(api_key=self.api_key)
+        client = _anthropic_client(self.api_key)
         try:
             with client.messages.stream(
                 **self._request_kwargs(request),

@@ -9,7 +9,10 @@
 # Conversational analytics (specs/012-conversational-analytics/) is off
 # unless CI_LLM_API_KEY is set — pass it (and optionally CI_LLM_MODEL) via
 # `environment:` to enable it. See the README's "Conversational analytics"
-# section for exactly what that sends to the configured LLM provider.
+# section for exactly what that sends to the configured LLM provider, and
+# for CI_LLM_PROXY / CI_LLM_CA_BUNDLE if that provider is only reachable
+# through a corporate TLS-inspecting proxy (e.g. Zscaler) — a CA bundle path
+# needs its own volume mount here to be reachable inside the container.
 services:
   app:
     build: .

@@ -888,6 +888,24 @@ trade-off between answer quality and cost/latency. The picker is populated
 from `GET /api/health`, so it always reflects what the server actually
 allows — never hardcoded per deployment.
 
+**Behind a corporate proxy (e.g. Zscaler).** The Anthropic client already
+honors plain `HTTP_PROXY`/`HTTPS_PROXY` environment variables on its own —
+no config needed for a normal forward proxy. A proxy that TLS-inspects
+HTTPS (re-signing the connection with its own CA, as Zscaler does) needs one
+more step, since the default trust store doesn't know that CA:
+
+```bash
+export CI_LLM_PROXY=http://proxy.mycorp.com:8080   # scoped to only the Anthropic calls
+export CI_LLM_CA_BUNDLE=/path/to/zscaler-root.pem  # the proxy's own CA cert, to trust it
+```
+
+Both are optional and independent — set `CI_LLM_CA_BUNDLE` alone if
+`HTTPS_PROXY` is already exported and only certificate trust is the problem.
+`CI_LLM_PROXY` is scoped to just these LLM calls (`app/llm.py`,
+`app/composer.py`) rather than the whole process, so it doesn't also get
+applied to the embedded S3 emulator's traffic, which a corporate proxy
+can't reach anyway.
+
 **What leaves the deployment, and to whom, when enabled:** every question
 sends the question text and a catalog of the declared model/dimension/
 measure names and descriptions to the Anthropic Messages API over HTTPS, so

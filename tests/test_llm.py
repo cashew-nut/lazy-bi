@@ -227,6 +227,60 @@ def test_adaptive_thinking_models_are_a_subset_of_llm_model_choices():
     assert llm._ADAPTIVE_THINKING_MODELS <= set(config.LLM_MODEL_CHOICES)
 
 
+# ── corporate proxy / TLS-inspecting proxy support (CI_LLM_PROXY /
+# CI_LLM_CA_BUNDLE) — a Zscaler-style proxy re-signs HTTPS with its own CA,
+# so the default client (which already honors HTTP_PROXY/HTTPS_PROXY on its
+# own) fails TLS verification without an explicit CA bundle to trust ──────
+
+def test_anthropic_client_is_plain_when_no_proxy_config_set(monkeypatch):
+    monkeypatch.setattr(config, "LLM_PROXY", None)
+    monkeypatch.setattr(config, "LLM_CA_BUNDLE", None)
+    client = llm._anthropic_client("x")
+    import anthropic
+    assert type(client._client) is anthropic._base_client.SyncHttpxClientWrapper
+
+
+def test_anthropic_client_uses_custom_http_client_when_proxy_set(monkeypatch):
+    monkeypatch.setattr(config, "LLM_PROXY", "http://proxy.corp:8080")
+    monkeypatch.setattr(config, "LLM_CA_BUNDLE", None)
+    client = llm._anthropic_client("x")
+    import anthropic
+    assert type(client._client) is anthropic.DefaultHttpxClient
+
+
+_DUMMY_CA_PEM = """\
+-----BEGIN CERTIFICATE-----
+MIIC/zCCAeegAwIBAgIUawi9/62MdUdVG0t7+GX+36u88+4wDQYJKoZIhvcNAQEL
+BQAwDzENMAsGA1UEAwwEdGVzdDAeFw0yNjA3MjMxMDA2MzlaFw0yNjA3MjQxMDA2
+MzlaMA8xDTALBgNVBAMMBHRlc3QwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEK
+AoIBAQDJ2Sxk2fs1aYN4Bvsz2t5MnUmCWRbV6tJhNHeEzbMQgcll5YbKamVNQGiP
+wQop4XYsAdO0UJLPsV1gYtv8616w8amqEKxzae9N1S+Q8G1AYYjShbICshBEJ4Ch
+3YGThpW2yf8relxmXYxxMHHAudx24XJgX2nDKH6nqdCSLtwN2bz8wKc+pHpjMVhW
+tldHvwHxyzef2iDBJUgaQIm6rbXtUjIDJMe+7Gn/czdOsna7dwCZqOjLWbM/3+2q
+Zzu3THopagEhR4yM98b4nOT3TWV7Ruk2F2qp+55R2mPM83zn5EHGRg+nXulmDW5v
+nLGLFfBG3julei5vxNdA4xwVAp+FAgMBAAGjUzBRMB0GA1UdDgQWBBQzMsYgKjwy
+r0TAjnB72bXOhnCPBzAfBgNVHSMEGDAWgBQzMsYgKjwyr0TAjnB72bXOhnCPBzAP
+BgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3DQEBCwUAA4IBAQAxTBbXpWgD27lAYIZ9
+uHKoZth1tF0g2HKXuyce974A0Y51L+cT9g7lqZSAXAWZ+AHzrpO6M0THl92qLC1M
+DJrI9FQr4efNczRdfKYJd9oyqCIAi2OmJX7PFCbCSITwo6651kzC2c99wtyqwi3v
+JXsLlBZtep5Fy5Krq6eFgvOAHbfrVL9+QWjRhaH+B4F9ErlqyhJUAApXanGDQ82L
+4V6PaPbcKwQczecD918seDvzjqFkcDD86viJ4NZf9D4GbutR90QuRGF1OAacButz
++kVD3PITDliq906O6MXqcC+BQvCGnjsCSljXXHfFsymhFee4I2OYdgCE9NwEp/SA
+15iN
+-----END CERTIFICATE-----
+"""
+
+
+def test_anthropic_client_uses_custom_http_client_when_ca_bundle_set(monkeypatch, tmp_path):
+    ca_bundle = tmp_path / "zscaler-root.pem"
+    ca_bundle.write_text(_DUMMY_CA_PEM)
+    monkeypatch.setattr(config, "LLM_PROXY", None)
+    monkeypatch.setattr(config, "LLM_CA_BUNDLE", str(ca_bundle))
+    client = llm._anthropic_client("x")
+    import anthropic
+    assert type(client._client) is anthropic.DefaultHttpxClient
+
+
 def test_translate_streaming_wires_thinking_and_model_enum_into_the_real_call(monkeypatch):
     """Integration-level guard, not just the pure helpers in isolation: proves
     AnthropicTranslator.translate_streaming() actually passes _thinking_kwargs()
