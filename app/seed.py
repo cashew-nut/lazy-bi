@@ -445,6 +445,7 @@ def seed_bucket() -> bool:
     _upload(client, "recruitment/events.parquet", events)
 
     _upload_local_cache(client)
+    _upload_raw_data(client)
     return True
 
 
@@ -457,6 +458,24 @@ def _upload_local_cache(client) -> None:
     for path in sorted(cache.rglob("*.parquet")):
         key = str(path.relative_to(cache))
         client.upload_file(str(path), config.BUCKET, key)
+
+
+def _upload_raw_data(client) -> None:
+    """raw_data/<dataset>/ holds user-supplied source files, committed as-is
+    (unlike the gitignored data_cache/ above) — small enough to check into
+    the repo. Each dataset directory is uploaded flat to <dataset>/<filename>
+    in the same bucket as the generated demo data, unmodeled, ready to build
+    a model on top of from the Modelling workspace's source picker."""
+    root = config.PROJECT_ROOT / "raw_data"
+    if not root.is_dir():
+        return
+    for dataset_dir in sorted(root.iterdir()):
+        if not dataset_dir.is_dir():
+            continue
+        for path in sorted(dataset_dir.iterdir()):
+            if path.suffix not in (".csv", ".parquet"):
+                continue
+            client.upload_file(str(path), config.BUCKET, f"{dataset_dir.name}/{path.name}")
 
 
 def seed_bootstrap_admin() -> bool:
