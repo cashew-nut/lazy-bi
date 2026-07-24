@@ -93,6 +93,19 @@ regardless of credentials. Process isolation (each run in its own killable
 subprocess) is a crash-safety and timeout-enforcement measure, not the trust
 boundary — the admin gate is.
 
+**Note (sandbox notebooks feature)** — `app/sandbox.py`/`app/sandbox_runner.py`
+add ad hoc, multi-cell scratch scripts (README: "Sandbox notebooks") that
+run real, unsandboxed Python against the bucket. This is **not** a new
+eval-capable construct requiring a fresh amendment: it is the identical
+pipeline-`script:` carve-out above, reused for throwaway exploratory code
+instead of a saved, materializing pipeline — same application-code trust
+level, same admin gate on authoring *and* running, same subprocess isolation
+for crash/timeout containment only. The one behavioral difference is
+deliberate and non-trust-affecting: a sandbox run answers its HTTP request
+synchronously rather than going through the pipeline module's serialized FIFO
+worker, because a sandbox run is read-only (no materialization) — nothing
+about who may reach eval-capable code, or at what privilege, has changed.
+
 ### VII. Feature Branches, One Development Per Branch
 Every development effort — a feature, a refactor, a fix worth its own
 history — happens on its own `feature/*` branch and merges via PR. Work is

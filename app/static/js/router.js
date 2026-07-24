@@ -39,11 +39,13 @@ export const paths = {
   notebook: (id) => `/notebook/${id}`,
   composerNew: () => "/composer/new",
   composerEdit: (id) => `/composer/${id}`,
+  sandbox: () => "/sandbox",
+  sandboxNotebook: (id) => `/sandbox/${id}`,
 };
 
 const MODE_PATH = {
   home: paths.home, studio: paths.studio, modelling: paths.modelling, portal: paths.portal,
-  chat: paths.chat, account: paths.account,
+  chat: paths.chat, account: paths.account, sandbox: paths.sandbox,
 };
 export const pathForMode = (mode) => (MODE_PATH[mode] || paths.studio)();
 
@@ -54,6 +56,7 @@ function guardLeave() {
   if (hooks.confirmLeaveModelForm && !hooks.confirmLeaveModelForm()) return false;
   if (hooks.confirmLeaveBundleForm && !hooks.confirmLeaveBundleForm()) return false;
   if (hooks.confirmLeaveComposer && !hooks.confirmLeaveComposer()) return false;
+  if (state.view === "sandbox" && hooks.confirmLeaveSandbox && !hooks.confirmLeaveSandbox()) return false;
   return true;
 }
 
@@ -110,7 +113,10 @@ async function resolveChat(rest) {
   return hooks.openConversation && hooks.openConversation(+rest[0]);
 }
 
-const FALLBACK = { home: paths.home, studio: paths.studio, modelling: paths.modelling, portal: paths.portal, chat: paths.chat };
+const FALLBACK = {
+  home: paths.home, studio: paths.studio, modelling: paths.modelling, portal: paths.portal,
+  chat: paths.chat, sandbox: paths.sandbox,
+};
 
 async function resolveRoute(pathname) {
   const [mod, ...rest] = seg(pathname === "/" ? "/home" : pathname);
@@ -132,6 +138,8 @@ async function resolveRoute(pathname) {
       case "composer":
         if (!rest[0]) throw new Error("composer route needs an id or 'new'");
         return hooks.openComposer && hooks.openComposer(rest[0] === "new" ? null : +rest[0]);
+      case "sandbox":
+        return hooks.openSandbox && hooks.openSandbox(rest[0] ? +rest[0] : null);
       default: throw new Error(`unknown route: ${pathname}`);
     }
   } catch (err) {

@@ -49,6 +49,7 @@
       <button data-mode="studio">STUDIO</button>
       <button data-mode="modelling">MODELLING</button>
       <button data-mode="portal">PORTAL</button>
+      <button data-mode="sandbox">SANDBOX</button>
       <button data-mode="chat" id="chat-nav-btn" hidden>CHAT</button>
       <button data-mode="account">ACCOUNT</button>
     </nav>
@@ -432,6 +433,37 @@
         </div>
         <div class="editor-body">
           <div id="lineage-graph-box" class="lineage-graph-box editor-main"></div>
+        </div>
+      </div>
+
+      <div id="sandbox-view" class="chart-card" hidden>
+        <div class="chart-head">
+          <input id="sbx-name" placeholder="untitled_sandbox" spellcheck="false">
+          <span id="sbx-status"></span>
+          <button class="btn plain" id="sbx-run-all" data-role="admin">▶ RUN ALL</button>
+          <button class="btn plain" id="sbx-convert" data-role="admin">→ CONVERT TO PIPELINE</button>
+          <button class="btn plain" id="sbx-delete" data-role="admin" hidden>DELETE</button>
+          <button class="btn alt" id="sbx-save-as" data-role="admin">SAVE AS NEW</button>
+          <button class="btn" id="sbx-save" data-role="admin">SAVE</button>
+          <button class="btn" id="sbx-back">◄ HOME</button>
+        </div>
+        <div class="explorer-body">
+          <div class="modelling-tree sandbox-tree">
+            <div class="sec-title">Saved Notebooks</div>
+            <input type="text" id="sbx-list-filter" class="sb-filter" placeholder="type to filter…" spellcheck="false">
+            <div id="sbx-list" class="mk-list"></div>
+            <button class="ghost" id="sbx-new" data-role="admin" style="margin-top:8px">+ NEW NOTEBOOK</button>
+          </div>
+          <div class="sandbox-main">
+            <div id="sbx-cells" class="sbx-cells"></div>
+            <button class="ghost" id="sbx-add-cell" data-role="admin">+ CELL</button>
+          </div>
+          <div class="editor-side sandbox-side">
+            <div class="sec-title">Bucket Files</div>
+            <div class="empty-note">click a file to insert read("s3://…") at the cursor</div>
+            <input type="text" id="sbx-files-filter" class="sb-filter" placeholder="type to filter…" spellcheck="false">
+            <div id="sbx-files" class="editor-cols"></div>
+          </div>
         </div>
       </div>
 

@@ -55,6 +55,8 @@ MATRIX = {
     ("GET", "/api/lineage/layers"): "viewer",
     ("GET", "/api/pipelines/{name}/lineage/suggest"): "viewer",
     ("GET", "/api/lineage/graph"): "viewer",
+    ("GET", "/api/sandbox/notebooks"): "viewer",
+    ("GET", "/api/sandbox/notebooks/{nb_id}"): "viewer",
     ("GET", "/api/conversations"): "viewer",
     ("POST", "/api/conversations"): "viewer",
     ("GET", "/api/conversations/{conversation_id}"): "viewer",
@@ -104,6 +106,11 @@ MATRIX = {
     ("DELETE", "/api/pipelines/{name}"): "admin",
     ("POST", "/api/pipelines/{name}/run"): "admin",
     ("PUT", "/api/lineage/layers"): "admin",
+    ("POST", "/api/sandbox/notebooks"): "admin",
+    ("PUT", "/api/sandbox/notebooks/{nb_id}"): "admin",
+    ("DELETE", "/api/sandbox/notebooks/{nb_id}"): "admin",
+    ("POST", "/api/sandbox/run"): "admin",
+    ("POST", "/api/sandbox/convert"): "admin",
 }
 
 ROLE_ORDER = {"viewer": 0, "author": 1, "admin": 2}

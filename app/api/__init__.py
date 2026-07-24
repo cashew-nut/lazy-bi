@@ -3,7 +3,7 @@ from fastapi import APIRouter
 
 from . import (
     auth, chat, composer, dashboards, datasets, dimensions, explorer, memories,
-    models, notebooks, pipelines, query, users, visuals,
+    models, notebooks, pipelines, query, sandbox, users, visuals,
 )
 
 api_router = APIRouter()
@@ -13,6 +13,7 @@ api_router.include_router(models.router)
 api_router.include_router(memories.router)
 api_router.include_router(dimensions.router)
 api_router.include_router(pipelines.router)
+api_router.include_router(sandbox.router)
 api_router.include_router(query.router)
 api_router.include_router(visuals.router)
 api_router.include_router(dashboards.router)

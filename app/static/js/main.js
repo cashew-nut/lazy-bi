@@ -37,6 +37,7 @@ import { attachPanelChat } from "./panelchat.js";
 // the filter setters are the only exports called directly from here
 import { setPortalDashFilter, setPortalFolderFilter } from "./portal.js";
 import { initRouter, navigate, pathForMode, paths } from "./router.js";
+import { attachSandbox } from "./sandbox.js";
 import { refreshPubs, state } from "./state.js";
 import { initTheme } from "./theme.js";
 
@@ -100,6 +101,7 @@ async function init() {
     attachModelForm();
     attachPanelChat();  // ephemeral right-hand chat panel, scoped to the model being edited
     attachBundleForm();
+    attachSandbox();  // sandbox notebooks: cells, run, convert-to-pipeline, bucket file browser
     $("#mk-new-model").addEventListener("click", () => openCreateChooser());
     $("#mk-new-bundle").addEventListener("click", () => navigate(paths.modellingNewBundle()));
     $("#mk-new-pipeline").addEventListener("click", () => navigate(paths.modellingNewPipelineYaml()));
