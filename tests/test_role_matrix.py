@@ -111,6 +111,9 @@ MATRIX = {
     ("DELETE", "/api/sandbox/notebooks/{nb_id}"): "admin",
     ("POST", "/api/sandbox/run"): "admin",
     ("POST", "/api/sandbox/convert"): "admin",
+    # the coding agent writes code destined for an admin-trust notebook, and
+    # spends money doing it — same admin bar as running one
+    ("POST", "/api/sandbox/agent/stream"): "admin",
 }
 
 ROLE_ORDER = {"viewer": 0, "author": 1, "admin": 2}

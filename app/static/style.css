@@ -1553,3 +1553,42 @@ textarea.mm-expr { min-height: 76px; font-size: 13px; }
 .sbx-table-wrap th .dt { color: var(--ink-3); font-size: 9px; font-weight: 400; }
 
 .sandbox-side .col-chip { cursor: pointer; }
+.sbx-fix { margin-top: 2px; }
+
+/* ── sandbox coding agent panel (app/static/js/sandboxagent.js) ─────────
+   Right-most rail of the sandbox view, same shape and thread classes as the
+   modelling workspace's ephemeral chat panel (.mf-chat-panel above) — the
+   difference is what a reply carries: proposed cells you apply into the
+   notebook, not a query result. */
+.sbx-agent-panel {
+  width: 380px; flex: none; min-height: 0;
+  display: flex; flex-direction: column;
+  border-left: 1px solid var(--line); background: var(--panel);
+}
+.sbx-agent-panel .chat-thread { flex: 1; min-height: 0; overflow-y: auto; padding: 10px; }
+.sbx-agent-panel .chat-msg { max-width: 100%; }
+.sbx-agent-model { font-size: 10px; padding: 2px 4px; max-width: 130px; }
+.sbx-agent-form { padding: 10px; display: flex; gap: 8px; align-items: flex-end; }
+.sbx-agent-form textarea {
+  flex: 1; resize: vertical; font-family: var(--mono); font-size: 12px; line-height: 1.5;
+}
+.sbx-agent-notes { color: var(--ink-2); margin-bottom: 6px; }
+.sbx-agent-cell { border: 1px solid var(--line); border-radius: 3px; margin: 6px 0; overflow: hidden; }
+.sbx-agent-cell-head {
+  display: flex; align-items: center; gap: 6px; padding: 3px 6px;
+  border-bottom: 1px solid var(--line); background: var(--panel-2);
+}
+.sbx-agent-cell-head .field-label { flex: 1; }
+.sbx-agent-cell-head .btn { padding: 2px 6px; font-size: 9px; }
+/* the proposed-code block is read-only, so it drops the editor's absolute
+   textarea overlay and just flows at its natural height. `pre` (not
+   pre-wrap): in a 380px rail, wrapping breaks paths and expressions
+   mid-token — scrolling a long line sideways keeps the code readable, and
+   the applied cell in the notebook wraps properly anyway */
+.sbx-agent-code {
+  position: static; margin: 0; padding: 8px 10px; max-height: 340px; overflow: auto;
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.5; white-space: pre;
+  background: var(--bg);
+}
+.sbx-agent-warn { color: var(--warn); font-size: 11px; margin-top: 4px; }
+.sbx-agent-all { margin-top: 6px; }

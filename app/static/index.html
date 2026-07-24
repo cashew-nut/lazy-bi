@@ -441,7 +441,11 @@
           <input id="sbx-name" placeholder="untitled_sandbox" spellcheck="false">
           <span id="sbx-status"></span>
           <button class="btn plain" id="sbx-run-all" data-role="admin">▶ RUN ALL</button>
+          <!-- no data-role: these two are admin-only *and* LLM-gated, so sandbox.js/sandboxagent.js own their
+               visibility outright rather than letting auth.js's role sweep unhide them on an unconfigured server -->
+          <button class="btn plain" id="sbx-agent-toggle" title="ask the coding agent for polars — it sees this notebook" hidden>◈ AGENT</button>
           <button class="btn plain" id="sbx-convert" data-role="admin">→ CONVERT TO PIPELINE</button>
+          <button class="btn plain" id="sbx-convert-ai" title="convert, and have the agent fill in the pipeline's description + field lineage" hidden>→ CONVERT + LINEAGE</button>
           <button class="btn plain" id="sbx-delete" data-role="admin" hidden>DELETE</button>
           <button class="btn alt" id="sbx-save-as" data-role="admin">SAVE AS NEW</button>
           <button class="btn" id="sbx-save" data-role="admin">SAVE</button>
@@ -463,6 +467,20 @@
             <div class="empty-note">click a file to insert read("s3://…") at the cursor</div>
             <input type="text" id="sbx-files-filter" class="sb-filter" placeholder="type to filter…" spellcheck="false">
             <div id="sbx-files" class="editor-cols"></div>
+          </div>
+          <div id="sbx-agent-panel" class="sbx-agent-panel" hidden>
+            <div class="mf-chat-head">
+              <span class="field-label">AGENT</span>
+              <select id="sbx-agent-model" class="sbx-agent-model" title="model this request uses"></select>
+              <button class="btn plain" id="sbx-agent-clear" title="clear this thread">CLEAR</button>
+              <button class="btn plain" id="sbx-agent-close" title="close agent panel">✕</button>
+            </div>
+            <div id="sbx-agent-thread" class="chat-thread"></div>
+            <form id="sbx-agent-form" class="chat-input-row sbx-agent-form">
+              <textarea id="sbx-agent-input" rows="3" spellcheck="false"
+                        placeholder="e.g. join products onto sales and get revenue by tier — ⌘↵ to send"></textarea>
+              <button class="btn alt" type="submit">ASK</button>
+            </form>
           </div>
         </div>
       </div>

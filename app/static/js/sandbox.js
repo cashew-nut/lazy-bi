@@ -19,6 +19,11 @@ import { highlightPython } from "./pyhighlight.js";
 import { navigate, paths, setPath } from "./router.js";
 import { hooks, showView, state } from "./state.js";
 
+// The coding agent panel (sandboxagent.js) registers these; they're absent
+// until that module is imported, and no-ops for a deployment with no LLM
+// configured — the notebook works exactly the same either way.
+const agentAvailable = () => !!hooks.isAgentAvailable?.();
+
 export const sandbox = {
   id: null, name: "untitled_sandbox", cells: [], dirty: false,
   bucketFiles: [], listFilter: "", filesFilter: "",
@@ -192,13 +197,20 @@ function autoSize(ta, wrap) {
   wrap.style.height = Math.max(ta.scrollHeight, 44) + "px";
 }
 
-function renderCellOutput(box, output) {
+function renderCellOutput(box, output, cellId) {
   box.innerHTML = "";
   if (!output) return;
   if (output.ok === null) return;   // beyond run_upto — nothing to show
   if (output.stdout) box.append(el("pre", { class: "sbx-stdout" }, output.stdout));
   if (!output.ok) {
     box.append(el("pre", { class: "sbx-error" }, output.error));
+    // the agent's fastest loop: a failure is already in its context, so
+    // this just says "that one" instead of making you retype the error
+    if (agentAvailable()) {
+      const fixBtn = el("button", { class: "btn plain sbx-fix" }, "◈ FIX WITH AGENT");
+      fixBtn.addEventListener("click", () => hooks.askAboutError(cellId, output.error));
+      box.append(fixBtn);
+    }
     return;
   }
   const d = output.display;
@@ -247,7 +259,7 @@ function renderCellRow(cell, idx, total) {
   editorWrap.append(pre, ta, suggestBox);
 
   const outBox = el("div", { class: "sbx-cell-output" });
-  renderCellOutput(outBox, cell.output);
+  renderCellOutput(outBox, cell.output, cell.id);
 
   const row = el("div", { class: "sbx-cell" }, head, editorWrap, outBox);
 
@@ -316,7 +328,7 @@ function moveCell(idx, dir) {
 
 // ── running ───────────────────────────────────────────────────────────────
 
-async function runThrough(idx) {
+export async function runThrough(idx) {
   if (!isAdmin()) return;
   updateStatus("running…");
   try {
@@ -333,12 +345,69 @@ async function runThrough(idx) {
     for (const cell of sandbox.cells) {
       cell.output = byId.get(cell.id) || null;
       const ref = cellRefs.get(cell.id);
-      if (ref) renderCellOutput(ref.outBox, cell.output);
+      if (ref) renderCellOutput(ref.outBox, cell.output, cell.id);
     }
   } catch (err) {
     alert(`Run failed: ${err.message}`);
   }
   updateStatus();
+}
+
+// ── agent bridge (sandboxagent.js calls in through these) ────────────────
+
+export const cellIndexById = (id) => sandbox.cells.findIndex((c) => c.id === id);
+
+// A cell's run result, reshaped into what the agent is given: status, the
+// stdout/error text, and the displayed frame's *schema*. Result rows are
+// deliberately left behind — the agent needs to know a column is a Datetime,
+// not what any row of it says (app/sandbox_agent.py's egress note).
+function cellOutputContext(output) {
+  if (!output || output.ok === null) return null;
+  const table = output.display && output.display.kind === "table" ? output.display : null;
+  return {
+    status: output.ok ? "ok" : "error",
+    stdout: output.stdout || "",
+    error: output.error || "",
+    columns: table ? table.columns : [],
+    row_count: table ? table.row_count : null,
+    truncated: table ? !!table.truncated : false,
+  };
+}
+
+// The live notebook, unsaved edits included — the agent always works from
+// what's on screen, never from what was last persisted.
+export function notebookContext() {
+  return {
+    name: sandbox.name,
+    cells: sandbox.cells.map((c) => ({
+      id: c.id, source: c.source, output: cellOutputContext(c.output),
+    })),
+  };
+}
+
+// Applies one proposed cell and returns its index (for APPLY + RUN). A
+// replacement is written straight into the existing textarea rather than
+// re-rendering the list, so the notebook doesn't jump around under a click.
+export function applyAgentCell(proposed) {
+  const idx = proposed.target_id ? cellIndexById(proposed.target_id) : -1;
+  if (idx >= 0) {
+    const cell = sandbox.cells[idx];
+    cell.source = proposed.source;
+    const ref = cellRefs.get(cell.id);
+    if (ref) {
+      ref.ta.value = proposed.source;
+      ref.refreshHighlight();
+      ref.row.scrollIntoView({ block: "nearest" });
+    }
+    markDirty();
+    return idx;
+  }
+  sandbox.cells.push(newCell(proposed.source));
+  markDirty();
+  renderCells();
+  const added = cellRefs.get(sandbox.cells[sandbox.cells.length - 1].id);
+  if (added) added.row.scrollIntoView({ block: "nearest" });
+  return sandbox.cells.length - 1;
 }
 
 // ── save / delete ────────────────────────────────────────────────────────
@@ -395,20 +464,48 @@ async function deleteSandbox() {
 
 // ── convert to pipeline ──────────────────────────────────────────────────
 
-async function convertToPipeline() {
+// The schema of the last frame the notebook actually displayed — the best
+// available stand-in for the pipeline's `output` columns, and what lineage
+// field names get checked against server-side. Empty when nothing has been
+// run, which the server then says so about in a warning.
+function lastOutputColumns() {
+  for (let i = sandbox.cells.length - 1; i >= 0; i--) {
+    const d = sandbox.cells[i].output?.display;
+    if (d && d.kind === "table") return d.columns;
+  }
+  return [];
+}
+
+// `withLineage` is the opt-in agent call: conversion itself stays a free,
+// offline text transform, and the agent is only asked for the part that
+// transform can't derive — the pipeline's description and its field-level
+// lineage. A failed agent call degrades to a warning, never a lost
+// conversion (see app/api/sandbox.py's convert()).
+async function convertToPipeline(withLineage = false) {
   if (!sandbox.cells.some((c) => c.source.trim())) {
     alert("nothing to convert — write some code first");
     return;
   }
+  const btn = $(withLineage ? "#sbx-convert-ai" : "#sbx-convert");
+  const label = btn.textContent;
+  if (withLineage) { btn.disabled = true; btn.textContent = "GENERATING LINEAGE…"; }
   let data;
   try {
     data = await api("/api/sandbox/convert", {
       method: "POST",
-      body: { name: sandbox.name || "untitled_sandbox", cells: sandbox.cells.map((c) => ({ id: c.id, source: c.source })) },
+      body: {
+        name: sandbox.name || "untitled_sandbox",
+        cells: sandbox.cells.map((c) => ({ id: c.id, source: c.source })),
+        with_lineage: withLineage,
+        output_columns: withLineage ? lastOutputColumns() : [],
+      },
     });
   } catch (err) {
     alert(`Could not convert: ${err.message}`);
     return;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
   }
   if (data.warnings.length) alert(data.warnings.join("\n"));
   openEditor("pipeline", null, { text: data.yaml });
@@ -443,6 +540,10 @@ export async function openSandbox(id) {
   renderCells();
   loadBucketFiles();
   refreshList();
+  // a different notebook means a different conversation — the agent thread
+  // is only ever about the notebook it was asked against
+  hooks.resetAgentThread?.();
+  $("#sbx-convert-ai").hidden = !agentAvailable();
 }
 hooks.openSandbox = openSandbox;
 
@@ -462,7 +563,8 @@ export function attachSandbox() {
   $("#sbx-new").addEventListener("click", () => navigate(paths.sandbox()));
   $("#sbx-add-cell").addEventListener("click", () => addCellAt(sandbox.cells.length));
   $("#sbx-run-all").addEventListener("click", () => runThrough(sandbox.cells.length - 1));
-  $("#sbx-convert").addEventListener("click", convertToPipeline);
+  $("#sbx-convert").addEventListener("click", () => convertToPipeline(false));
+  $("#sbx-convert-ai").addEventListener("click", () => convertToPipeline(true));
   $("#sbx-back").addEventListener("click", () => navigate(paths.home()));
   $("#sbx-list-filter").addEventListener("input", (e) => setListFilter(e.target.value));
   $("#sbx-files-filter").addEventListener("input", (e) => setFilesFilter(e.target.value));
