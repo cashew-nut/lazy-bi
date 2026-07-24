@@ -112,6 +112,7 @@ app/
   materialize.py       replace/upsert writers: delta merge + delete policies, pre-write guards
   sandbox.py           sandbox notebooks: cell-combining, read()-call detection, convert-to-pipeline yaml
   sandbox_runner.py    subprocess entry point: execs a notebook's cells, reports per-cell output
+  sandbox_agent.py     the sandbox coding agent's LLM seam: notebook context, polars prompt, lineage tool
   sandboxstore.py      sqlite persistence: saved sandbox notebooks
   iceberg_util.py      catalog-free iceberg reads: resolve + scan a table's current snapshot
   emulator.py, s3.py, seed.py, load_taxi.py
@@ -121,7 +122,8 @@ app/
                        sandbox
   static/js/           ES modules: lib, state, auth, admin, filters, builder,
                        dashboard, portal, modelling, editor, completion,
-                       measurelab, lineagegraph, sandbox, pyhighlight, main
+                       measurelab, lineagegraph, sandbox, sandboxagent,
+                       pyhighlight, main
   static/js/charts/    one renderer per chart + shared frame/pivot/dispatch
 models/*.yaml          semantic models (the editable contract)
 dimensions/*.yaml      dimension bundles shared across models (see below)
@@ -613,7 +615,8 @@ route-by-route matrix lives in
 | `GET /api/sandbox/notebooks`, `GET /api/sandbox/notebooks/{id}` | list / fetch a saved sandbox notebook — reads any role |
 | `POST/PUT/DELETE /api/sandbox/notebooks[/{id}]` | create/update/delete a sandbox notebook (**admin**; see "Sandbox notebooks" below) |
 | `POST /api/sandbox/run` | execute cells 0..`run_upto` of a (saved or unsaved) notebook and return each cell's output (**admin**) |
-| `POST /api/sandbox/convert` | text-only transform: detect a notebook's `read(...)` bucket calls and render a starter pipeline yaml (**admin**; never executes anything) |
+| `POST /api/sandbox/convert` | text-only transform: detect a notebook's `read(...)` bucket calls and render a starter pipeline yaml (**admin**; never executes anything). `with_lineage: true` additionally asks the coding agent for the pipeline's description + field lineage |
+| `POST /api/sandbox/agent/stream` | the sandbox coding agent: proposes cells for the open notebook, streamed as SSE (**admin**; 503 unless `CI_LLM_API_KEY` is set — see "The coding agent" below) |
 
 Query shape:
 
@@ -855,6 +858,42 @@ bare name offers every variable assigned in any cell. Notebooks persist as
 saved, only the code); **+ CELL**, the per-cell ▶/↑/↓/+/✕ controls, and
 **SAVE**/**SAVE AS NEW**/**DELETE** round out authoring.
 
+### The coding agent
+
+**◈ AGENT** (admin-only, and only when `CI_LLM_API_KEY` is configured —
+the same key conversational analytics uses) opens a panel that writes polars
+*for the notebook that's open*. It sees the live, unsaved notebook: every
+cell's source, the last run's stdout/traceback tails, each result's **schema**
+(column names + dtypes — result rows are never sent), and the bucket's paths
+collapsed to things a `read(...)` call can name. A reply is a set of proposed
+cells you **APPLY** or **APPLY + RUN**, never something applied, run or saved
+on your own behalf — and a cell that failed gets a **◈ FIX WITH AGENT**
+button that hands the error straight back.
+
+It's tuned for a fast interactive loop rather than for autonomy, because a
+sandbox already has the fastest feedback channel there is — run the cell:
+
+- **one model call per request**, no tool-result loop and no self-critique pass;
+- **no tests, benchmarks, try/except scaffolding or logging** — a hard rule in
+  the system prompt, since that's where a coding agent's tokens and latency
+  usually go. A failing cell's error is simply context for the next request;
+- **no extended thinking**, a **cached system prompt** (the polars performance
+  doctrine is long, static and resent every turn), and a **bounded context**
+  (per-cell source, output tails and the file listing are all capped —
+  `app/config.py`'s `SANDBOX_AGENT_*`);
+- **model per request**: the panel's dropdown picks from the same
+  `LLM_MODEL_CHOICES` chat uses; `CI_SANDBOX_AGENT_MODEL` sets the default.
+
+The prompt is a polars performance brief, not a generic coding one: stay lazy
+end to end, filter/project on the scan so pushdown drops row groups before
+they leave the bucket, expressions never Python (`map_elements`, `iter_rows`
+and friends are out), batch expressions into one `with_columns`, semi/anti
+joins for filtering, `pl.len()`, streaming collect for larger-than-memory
+work. Whatever comes back is re-validated before you can apply it
+(`app/sandbox.py`): a target naming a cell that isn't in the notebook is
+downgraded to a new cell, duplicates are dropped, and a syntax error is
+*reported on the proposal* rather than silently discarded.
+
 **Convert to pipeline**: once a script is worth keeping, **→ CONVERT TO
 PIPELINE** combines the notebook's cells, detects every `read("path"[,
 format=...])` call as a would-be pipeline source (name derived from the
@@ -868,6 +907,23 @@ assignment (the pipeline contract) surfaces a warning rather than guessing
 one. `app/sandbox.py`'s detection ignores anything mentioned only in a
 comment, so an explanatory `# e.g. read("s3://...")` note is never mistaken
 for a real source.
+
+**→ CONVERT + LINEAGE** (shown only when the agent is configured) does the
+same conversion and additionally asks the agent for the one part a text
+transform can't derive: the pipeline's `description:` and its **field-level
+`lineage:`** — per output field, which declared source columns it came from
+and a one-line plain-English derivation. Conversion itself stays free and
+offline; this is the opt-in call. The generated section is re-validated
+before it's rendered (`sandbox.validate_lineage`): a field the last run's
+output schema doesn't contain is dropped, so is a `from:` ref naming
+anything that isn't a declared source (a pipeline citing an unknown source
+wouldn't load at all), and every drop comes back as a warning. Run the
+notebook first for the grounded version — without a run there are no output
+columns to check field names against, and the response says so. If the API
+call fails you still get the ordinary conversion plus a warning; a flaky
+model call never costs you the converted notebook. It runs on
+`CI_SANDBOX_LINEAGE_MODEL` (Haiku by default — mechanical summarization of a
+script the platform already parsed, so it doesn't need the coding model).
 
 **Trust model**: identical carve-out to a pipeline's `script:` (Principle
 VI) — real, unsandboxed Python at application-code trust, not a new
@@ -956,7 +1012,14 @@ is disabled (`GET/POST /api/conversations*` return 503) unless
 ```bash
 export CI_LLM_API_KEY=sk-ant-...
 export CI_LLM_MODEL=claude-sonnet-5   # optional: the default a new conversation starts with
+export CI_SANDBOX_AGENT_MODEL=claude-sonnet-5           # optional: sandbox coding agent (defaults to CI_LLM_MODEL)
+export CI_SANDBOX_LINEAGE_MODEL=claude-haiku-4-5-20251001  # optional: convert-to-pipeline lineage generation
 ```
+
+The same key switches on every LLM-backed surface: chat, the Composer, and
+the sandbox's [coding agent](#the-coding-agent). Each sends different things
+to the provider — the sandbox agent sends notebook *code*, schemas and bucket
+paths (never result rows); see that section and the egress note below.
 
 `CI_LLM_MODEL` only sets the *default* — each conversation can also pick its
 own model in the CHAT header (`claude-opus-4-8` / `claude-sonnet-5` /

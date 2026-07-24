@@ -59,6 +59,31 @@ LLM_ENABLED = bool(LLM_API_KEY)
 # id's actually valid for the configured provider.
 LLM_MODEL_CHOICES = ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001"]
 
+# Sandbox coding agent (app/sandbox_agent.py) — writes polars for the open
+# notebook, and fills in a converted pipeline's lineage. Shares CI_LLM_API_KEY
+# above, so it is off in exactly the deployments conversational analytics is
+# off in: an unconfigured deployment never sends notebook code to a third
+# party. Everything below is a cost/latency dial, and every default is set
+# for a fast interactive loop rather than maximum thoroughness — the notebook
+# itself is the feedback channel (run the cell, feed the error back), so the
+# agent makes exactly one model call per request and never runs or tests
+# anything itself.
+SANDBOX_AGENT_MODEL = os.environ.get("CI_SANDBOX_AGENT_MODEL", LLM_MODEL)
+# Lineage generation is mechanical summarization of a script the platform
+# already parsed, so it defaults to the cheapest/fastest choice rather than
+# to whatever the coding agent uses.
+SANDBOX_LINEAGE_MODEL = os.environ.get("CI_SANDBOX_LINEAGE_MODEL", "claude-haiku-4-5-20251001")
+SANDBOX_AGENT_MAX_TOKENS = 2048
+SANDBOX_LINEAGE_MAX_TOKENS = 1024
+# Context budget: how much of the live notebook is sent per request. Cell
+# sources are the signal; a run's stdout/traceback is trimmed to its tail
+# (where the error actually is) and result *rows* are never sent at all —
+# only column names and dtypes.
+SANDBOX_AGENT_CELL_CHARS = 4000
+SANDBOX_AGENT_OUTPUT_CHARS = 800
+SANDBOX_AGENT_FILES = 150
+SANDBOX_AGENT_HISTORY_TURNS = 6
+
 
 def storage_options() -> dict:
     """storage_options passed to polars scan_* for the S3 object store."""

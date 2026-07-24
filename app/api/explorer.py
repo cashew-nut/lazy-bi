@@ -50,4 +50,9 @@ def health():
         "llm_enabled": config.LLM_ENABLED,
         "llm_models": config.LLM_MODEL_CHOICES if config.LLM_ENABLED else [],
         "llm_default_model": config.LLM_MODEL,
+        # the sandbox coding agent shares the same key, so it is configured
+        # in exactly the deployments chat is — reported separately anyway so
+        # the sandbox UI never has to reason about the chat feature's flag
+        "sandbox_agent_enabled": config.LLM_ENABLED,
+        "sandbox_agent_model": config.SANDBOX_AGENT_MODEL if config.LLM_ENABLED else "",
     }

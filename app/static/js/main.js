@@ -38,6 +38,7 @@ import { attachPanelChat } from "./panelchat.js";
 import { setPortalDashFilter, setPortalFolderFilter } from "./portal.js";
 import { initRouter, navigate, pathForMode, paths } from "./router.js";
 import { attachSandbox } from "./sandbox.js";
+import { attachSandboxAgent, probeSandboxAgent } from "./sandboxagent.js";
 import { refreshPubs, state } from "./state.js";
 import { initTheme } from "./theme.js";
 
@@ -102,6 +103,8 @@ async function init() {
     attachPanelChat();  // ephemeral right-hand chat panel, scoped to the model being edited
     attachBundleForm();
     attachSandbox();  // sandbox notebooks: cells, run, convert-to-pipeline, bucket file browser
+    attachSandboxAgent();          // the notebook's coding agent panel
+    probeSandboxAgent(health);     // hides the agent entirely when the server has no LLM key
     $("#mk-new-model").addEventListener("click", () => openCreateChooser());
     $("#mk-new-bundle").addEventListener("click", () => navigate(paths.modellingNewBundle()));
     $("#mk-new-pipeline").addEventListener("click", () => navigate(paths.modellingNewPipelineYaml()));
