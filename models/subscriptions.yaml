@@ -1,16 +1,45 @@
-# Semantic model: subscriptions — demonstrates SPINE (point-in-time) measures.
+# Semantic model: subscriptions — demonstrates both ways to do point-in-time
+# ("active as of") reporting over rows that have a start and an end.
 #
-# `active_at` is not a real column: it is a generated timeline. Grouping by it
-# interval-joins each timeline bucket against [start_date, end_date], so a
-# subscription counts in every bucket it was active for ("active as of the
-# bucket start"; null end_date = still active). Filters on active_at (>=, <=, =)
-# bound the timeline window.
+# 1. SPINE — `active_at` is not a real column: it is a timeline the engine
+#    generates at the requested grain and interval-joins against
+#    [start_date, end_date], so a subscription counts in every bucket it was
+#    active for (null end_date = still active). Nothing to model or maintain,
+#    and the timeline is built to fit the query. Filters on active_at
+#    (>=, <=, =) bound it; it carries no attributes beyond the date itself.
+#
+# 2. INTERVAL IMPORT — the `calendar` bundle below is a real, standalone date
+#    table with no key relating it to this model. `how: between` joins it on
+#    the same interval, so every one of its columns (quarter, month-end flag,
+#    day of week...) becomes an ordinary dimension. Use this when the periods
+#    need attributes, when several models must share one definition of a
+#    period, or when the reporting window should be the calendar's rather than
+#    whatever range the data happens to cover.
+#
+# The calendar is a *daily* table, so it puts a subscription in the frame once
+# per day it was open. Group by calendar_date and that is exactly right. Group
+# by a coarser column (calendar_month_start, calendar_quarter) and a count of
+# distinct customers still reads correctly — "active at any point in the
+# period" — but an additive measure like mrr sums once per day and inflates.
+# Pin the calendar to one row per period first: filtering
+# calendar_is_month_start = true and grouping by calendar_month_start
+# reproduces `active_at` at grain 1mo measure for measure.
+#
+# The import is only applied to queries that actually use one of its
+# dimensions, so nothing here changes signups or any other by-cohort query.
 name: subscriptions
 label: Subscriptions
-description: Customer subscription intervals — point-in-time actives via a time spine.
+description: Customer subscription intervals — point-in-time actives via a generated spine or an interval-joined calendar.
 source:
   format: parquet
   path: s3://cash-intel/subscriptions/*.parquet
+
+dimension_imports:
+  - bundle: calendar
+    anchor_dataset: days
+    how: between
+    left_on: [start_date, end_date]
+    right_on: date
 
 dimensions:
   - name: active_at

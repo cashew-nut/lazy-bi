@@ -1,6 +1,7 @@
 """Query engine against the seeded emulator bucket: aggregation, filters,
-joins, time grains, spine semantics, delta sources."""
+joins, time grains, spine semantics, interval imports, delta sources."""
 import io
+import re
 from datetime import date, timedelta
 
 import polars as pl
@@ -134,6 +135,79 @@ def test_spine_window_bounds_timeline(models):
                      {"field": "active_at", "op": "lte", "value": "2026-03-01"}])
     assert all(row["active_at"].startswith("2026-0") for row in r["rows"])
     assert r["row_count"] == 3
+
+
+# --- Interval (`how: between`) imports: the `calendar` bundle -> subscriptions
+# The same point-in-time question the spine answers, asked through a real,
+# standalone date table that relates to the model by nothing but the interval.
+
+def test_interval_import_dimension_groups_point_in_time(models):
+    r = run(models, "subscriptions", dimensions=["calendar_date"], measures=["active_customers"],
+            filters=[{"field": "calendar_date", "op": "gte", "value": "2025-03-01"},
+                     {"field": "calendar_date", "op": "lte", "value": "2025-03-05"}])
+    assert r["row_count"] == 5
+    # a subscription is counted on every day it was open, not just its start day
+    assert all(row["active_customers"] > 100 for row in r["rows"])
+
+
+def test_interval_import_matches_the_generated_spine_day_for_day(models):
+    """The two mechanisms are answering the same question — they must agree."""
+    window = lambda field: [{"field": field, "op": "gte", "value": "2025-03-01"},
+                            {"field": field, "op": "lte", "value": "2025-03-05"}]
+    spine = run(models, "subscriptions", dimensions=[{"name": "active_at", "grain": "1d"}],
+                measures=["active_customers", "mrr"], filters=window("active_at"))
+    cal = run(models, "subscriptions", dimensions=["calendar_date"],
+              measures=["active_customers", "mrr"], filters=window("calendar_date"))
+    assert [(r["active_at"], r["active_customers"], r["mrr"]) for r in spine["rows"]] \
+        == [(r["calendar_date"], r["active_customers"], r["mrr"]) for r in cal["rows"]]
+
+
+def test_interval_import_pinned_to_one_row_per_period_matches_spine(models):
+    """A daily calendar grouped at month grain counts each row once per day; a
+    snapshot filter pins it to one row per month and reproduces the spine."""
+    spine = run(models, "subscriptions", dimensions=[{"name": "active_at", "grain": "1mo"}],
+                measures=["active_customers", "mrr"], limit=200)
+    snapshot = run(models, "subscriptions", dimensions=["calendar_month_start"],
+                   measures=["active_customers", "mrr"],
+                   filters=[{"field": "calendar_is_month_start", "op": "eq", "value": True}], limit=200)
+    by_month = {r["active_at"]: r for r in spine["rows"]}
+    assert snapshot["row_count"] > 12
+    for row in snapshot["rows"]:
+        spine_row = by_month[row["calendar_month_start"]]
+        assert spine_row["active_customers"] == row["active_customers"]
+        assert spine_row["mrr"] == pytest.approx(row["mrr"])
+
+
+def test_interval_import_carries_its_own_attributes(models):
+    r = run(models, "subscriptions", dimensions=["calendar_quarter"], measures=["active_customers"],
+            filters=[{"field": "calendar_is_month_end", "op": "eq", "value": True}], limit=50)
+    assert all(re.fullmatch(r"20\d\d-Q[1-4]", row["calendar_quarter"]) for row in r["rows"])
+
+
+def test_interval_import_skipped_when_no_calendar_dimension_used(models):
+    """The join multiplies rows by the periods each spans — a query that never
+    touches the calendar must not pay for it, or every measure would inflate."""
+    plain = run(models, "subscriptions", dimensions=["plan"], measures=["signups"])
+    assert sum(row["signups"] for row in plain["rows"]) == 9000  # one row per customer
+    subs = models["subscriptions"]
+    assert "quarter" not in engine.scan(subs, {"plan"}).collect_schema()
+    assert "quarter" in engine.scan(subs, {"calendar_quarter"}).collect_schema()
+    assert "quarter" in engine.scan(subs).collect_schema()  # None = introspection
+
+
+def test_interval_import_values_read_off_the_calendar_itself(models):
+    values = engine.dimension_values(models["subscriptions"], "calendar_quarter", limit=5)
+    assert values == sorted(values)
+    assert values[0] == "2024-Q1"
+
+
+def test_interval_import_open_ended_rows_stay_active(models):
+    """A null end date means still open — those rows must reach the last day of
+    the calendar, exactly as the spine treats them."""
+    last = run(models, "subscriptions", dimensions=["calendar_date"], measures=["active_customers"],
+               filters=[{"field": "calendar_date", "op": "gte", "value": "2026-06-29"}], limit=10)
+    assert last["row_count"] >= 1
+    assert all(row["active_customers"] > 1000 for row in last["rows"])
 
 
 def test_geo_dimension_carries_coordinates(models):

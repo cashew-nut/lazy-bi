@@ -20,6 +20,10 @@ from .semantic import ImportBinding, Model, ModelError, Source, TIME_GRAINS, com
 
 FILTER_OPS = {"eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in", "contains"}
 
+# stand-in for a null interval end ("still open"), shared by spine dimensions
+# and `how: between` dimension imports
+FAR_FUTURE = date(9999, 1, 1)
+
 _COMPARE_OPS = {
     "eq": lambda a, b: a == b, "ne": lambda a, b: a != b,
     "gt": lambda a, b: a > b, "gte": lambda a, b: a >= b,
@@ -164,10 +168,63 @@ def _scan_bundle(binding: ImportBinding) -> pl.LazyFrame:
     return lf
 
 
-def scan(model: Model) -> pl.LazyFrame:
+def _as_date(lf: pl.LazyFrame, column: str, schema: pl.Schema, what: str) -> pl.LazyFrame:
+    """Normalize one join key to pl.Date so interval comparisons line up
+    regardless of whether the source stored dates or timestamps."""
+    if column not in schema:
+        raise QueryError(f"{what} column '{column}' not found in source")
+    if isinstance(schema.get(column), pl.Datetime):
+        return lf.with_columns(pl.col(column).cast(pl.Date))
+    return lf
+
+
+def _join_interval(lf: pl.LazyFrame, binding: ImportBinding) -> pl.LazyFrame:
+    """Apply a `how: between` dimension import: an interval join that fans each
+    model row out across every row of the imported (calendar) side whose date
+    falls inside the model row's [start, end] window.
+
+    This is the "disconnected calendar table" shape — the imported dataset
+    declares no relation to the model's other data, and this join is the only
+    thing that connects them. Once joined, its columns are ordinary dimensions:
+    grouping by the calendar's date (or its year/quarter/month attributes)
+    yields point-in-time aggregation, because a model row is present in every
+    period it was active for rather than only the one it started in.
+
+    A null end column means "still open" (same convention as Dimension.spine),
+    and the join is inner: periods with nothing active drop out rather than
+    appearing as zero rows.
+    """
+    imp = binding.import_spec
+    start, end = imp.left_on
+    point = imp.right_on[0]
+
+    schema = lf.collect_schema()
+    lf = _as_date(lf, start, schema, "interval start")
+    lf = _as_date(lf, end, schema, "interval end")
+    lf = lf.with_columns(pl.col(end).fill_null(FAR_FUTURE))
+
+    right = _scan_bundle(binding)
+    right = _as_date(right, point, right.collect_schema(), f"'{imp.bundle}' date")
+    return lf.join_where(
+        right,
+        pl.col(point) >= pl.col(start),
+        pl.col(point) <= pl.col(end),
+    )
+
+
+def scan(model: Model, dimensions: Optional[set[str]] = None) -> pl.LazyFrame:
     """Base source plus any semantic-layer joins and imported dimension
     bundles, all lazy — polars pushes the needed columns down into each
-    side of every join."""
+    side of every join.
+
+    `dimensions` is the set of dimension names the caller is about to use. It
+    matters only for interval (`how: between`) imports, which are applied just
+    when one of their dimensions is in play: that join multiplies the model's
+    rows by the number of periods each is active for, so bringing it into a
+    query that never groups by the calendar would silently inflate every
+    measure. None means "unknown — apply everything", the right answer for
+    schema introspection.
+    """
     lf = _scan_source(model.source)
     for join in model.joins:
         lf = lf.join(
@@ -175,12 +232,25 @@ def scan(model: Model) -> pl.LazyFrame:
             left_on=join.left_on, right_on=join.right_on, how=join.how,
         )
     for binding in model.import_bindings:
+        if binding.import_spec.is_interval:
+            if dimensions is None or (dimensions & set(binding.dimension_owners)):
+                lf = _join_interval(lf, binding)
+            continue
         lf = lf.join(
             _scan_bundle(binding),
             left_on=binding.import_spec.left_on, right_on=binding.import_spec.right_on,
             how=binding.import_spec.how,
         )
     return lf
+
+
+def _interval_binding_for(model: Model, dimension: str) -> Optional[ImportBinding]:
+    """The interval import owning `dimension`, if any — lets callers that only
+    want the imported side's own values read it without the fan-out join."""
+    for binding in model.import_bindings:
+        if binding.import_spec.is_interval and dimension in binding.dimension_owners:
+            return binding
+    return None
 
 
 def _resolve_date_value(value: Any) -> date:
@@ -229,9 +299,6 @@ def _filter_expr(model: Model, spec: dict, schema: pl.Schema) -> pl.Expr:
     if op == "contains":
         return col.cast(pl.String).str.contains(f"(?i){str(spec.get('value', ''))}", literal=False)
     return _COMPARE_OPS[op](col, value)
-
-
-FAR_FUTURE = date(9999, 1, 1)
 
 
 def _spine_prepare(lf: pl.LazyFrame, dims: list, schema: pl.Schema) -> pl.LazyFrame:
@@ -325,6 +392,17 @@ def resolve_parameter_values(parameters: list, parameter_values: dict) -> dict:
     return resolved
 
 
+def _referenced_dimensions(query: dict) -> set[str]:
+    """Every dimension name a query touches — grouped or filtered. Drives which
+    interval imports scan() has to bring in (see its docstring)."""
+    names = {
+        (entry if isinstance(entry, str) else entry.get("name"))
+        for entry in query.get("dimensions", [])
+    }
+    names |= {spec.get("field") for spec in query.get("filters", [])}
+    return {n for n in names if n}
+
+
 def run_query(model: Model, query: dict) -> dict:
     """Execute a semantic query.
 
@@ -339,10 +417,12 @@ def run_query(model: Model, query: dict) -> dict:
     Spine dimensions (dimension.spine = {start, end}) group point-in-time:
     a generated timeline at the requested grain is interval-joined against the
     start/end columns, so each row counts in every bucket it was active for.
+    A `how: between` dimension import answers the same kind of question from a
+    real date table instead — see scan() and _join_interval.
     """
     started = time.perf_counter()
     resolved_params = resolve_parameter_values(query.get("parameters") or [], query.get("parameter_values") or {})
-    lf = scan(model)
+    lf = scan(model, _referenced_dimensions(query))
     schema = lf.collect_schema()
 
     # split filters into spine-dimension filters and plain column filters
@@ -660,8 +740,13 @@ def dimension_values(model: Model, dimension: str, limit: int = 100) -> list:
     dim = model.dimension(dimension)
     if dim.spine:
         raise QueryError(f"'{dimension}' is a generated timeline; filter it with date ranges instead")
+    # a dimension from an interval import has its own values independent of the
+    # model's rows — read them off the imported side; anything else needs no
+    # interval join at all, hence the empty dimension set
+    interval = _interval_binding_for(model, dimension)
+    base = _scan_bundle(interval) if interval else scan(model, set())
     df = (
-        scan(model)
+        base
         .select(pl.col(dim.column).alias(dim.name))
         .unique()
         .sort(dim.name)

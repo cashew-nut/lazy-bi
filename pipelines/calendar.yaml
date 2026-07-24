@@ -17,4 +17,18 @@ script: |
   start = today - datetime.timedelta(days=365*10)
   end = today + datetime.timedelta(days=365*10)
 
-  output = pl.date_range(start, end, interval="1d", eager=True).to_frame("date")
+  # one row per day plus the usual calendar attributes — models join this on an
+  # interval (`how: between`) and group by any of these columns, so the richer
+  # it is the more ways a point-in-time report can be sliced
+  days = pl.date_range(start, end, interval="1d", eager=True).alias("date")
+  output = pl.DataFrame(days).with_columns(
+      pl.col("date").dt.year().alias("year"),
+      pl.format("{}-Q{}", pl.col("date").dt.year(), pl.col("date").dt.quarter()).alias("quarter"),
+      pl.col("date").dt.truncate("1mo").alias("month_start"),
+      pl.col("date").dt.strftime("%Y-%m %b").alias("month"),
+      pl.col("date").dt.truncate("1w").alias("week_start"),
+      pl.col("date").dt.strftime("%A").alias("day_of_week"),
+      (pl.col("date").dt.day() == 1).alias("is_month_start"),
+      (pl.col("date").dt.month_end() == pl.col("date")).alias("is_month_end"),
+      (pl.col("date").dt.weekday() > 5).alias("is_weekend"),
+  )

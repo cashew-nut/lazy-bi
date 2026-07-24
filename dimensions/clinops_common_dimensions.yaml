@@ -63,6 +63,11 @@ datasets:
     label: Num Sites
   - name: num_countries
     label: Num Countries
+# Standalone date table: it declares no join to the datasets above on purpose.
+# A model reaches it with an interval import — `how: between`, left_on the
+# model's [start, end] columns, right_on `date` — which is what makes
+# point-in-time ("active as of") aggregation work. Materialized by the
+# `calendar` pipeline.
 - name: calendar
   source:
     format: parquet
@@ -71,3 +76,30 @@ datasets:
   - name: date
     label: Date
     type: time
+    synonyms:
+    - as of
+    - as at
+    - point in time
+  - name: calendar_month
+    column: month
+    label: Calendar Month
+  - name: calendar_month_start
+    column: month_start
+    label: Calendar Month Start
+    type: time
+  - name: calendar_quarter
+    column: quarter
+    label: Calendar Quarter
+  - name: calendar_year
+    column: year
+    label: Calendar Year
+    type: numeric
+  # filter either flag to true to pin the calendar to one row per month —
+  # required before grouping an additive measure by a month/quarter column,
+  # since this is a per-day join
+  - name: calendar_is_month_start
+    column: is_month_start
+    label: Is Month Start
+  - name: calendar_is_month_end
+    column: is_month_end
+    label: Is Month End

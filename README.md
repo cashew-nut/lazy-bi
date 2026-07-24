@@ -399,6 +399,59 @@ Buckets with zero active rows are omitted. One spine dimension per query.
 See `models/subscriptions.yaml` for a working example (active customers, MRR,
 ARPU over a 30-month timeline).
 
+The timeline is **generated**, not read from a table: `start`/`end` name the
+model's own interval columns, and there is nothing to create or maintain
+alongside them. That also bounds what a spine can do — it produces bare dates
+at the requested grain, so it carries no fiscal periods, holiday flags or
+week numbers, and each model declares its own. For any of those, join a real
+calendar table instead (next section).
+
+### Calendar tables (`how: between`)
+
+The other way to ask a point-in-time question is a **standalone date table**
+joined on the interval rather than on a key. Declare the calendar as a dataset
+in a dimension bundle — with **no join** to anything else, which is the whole
+idea — and import it with `how: between`:
+
+```yaml
+# models/subscriptions.yaml
+dimension_imports:
+  - bundle: calendar
+    anchor_dataset: days
+    how: between
+    left_on: [start_date, end_date]   # this model's interval; null end = still open
+    right_on: date                    # the calendar's day column
+```
+
+Each model row is then matched against every calendar day it was open for, and
+every column of the calendar (`calendar_quarter`, `calendar_month_start`,
+`calendar_is_month_end`, …) becomes an ordinary dimension — groupable,
+filterable and cross-filterable like any other. Reach for this over a spine
+when the periods need attributes, when several models must share one
+definition of a period, or when the reporting window should be the calendar's
+rather than whatever range the data happens to cover. See
+`dimensions/calendar.yaml` and `models/subscriptions.yaml`, which declares both
+mechanisms side by side.
+
+Two things to know:
+
+- **It is a per-day join.** Grouping by `calendar_date` is exact, and a
+  distinct count at a coarser grain reads correctly ("active at any point in
+  the quarter"). But an *additive* measure grouped by `calendar_quarter` sums
+  once per day and inflates. Pin the calendar to one row per period first —
+  `calendar_is_month_start` / `calendar_is_month_end` are there for exactly
+  this. Filtering `calendar_is_month_start` and grouping by
+  `calendar_month_start` reproduces the spine at grain `1mo` measure for
+  measure (`tests/test_engine.py` asserts it).
+- **The join is applied only to queries that use one of its dimensions.**
+  Otherwise every measure on the model would silently multiply by the number of
+  periods each row spans.
+
+A bundle may be imported more than once — once on a key for its reference data,
+once on a range for its calendar (`models/cycle_times.yaml` does both). Note
+that `between` is a `dimension_imports` mode only; plain `joins:` still take
+`left`/`inner`.
+
 ### Common dimensional models (shared dimensions)
 
 Some dimensions belong to more than one fact model — region, account,
@@ -443,7 +496,14 @@ dimension_imports:
 By default the *whole* bundle becomes available, including datasets only
 reachable through the bundle's own internal joins — importing `regions`
 above also pulls in `territory_name` from `territories`, with no separate
-declaration. Imported dimensions behave exactly like native ones everywhere
+declaration. Reachability cuts both ways, so "the whole bundle" never includes
+a dataset the bundle's joins don't connect to the anchor. Naming such a dataset
+explicitly under `datasets:` is a load-time error rather than a quiet omission
+— the failure mode otherwise being an import that reads correctly in the YAML
+while its dimensions never show up in the builder. Give it a join, or import it
+as its own entry: a disconnected calendar table anchors itself, see
+[`how: between`](#calendar-tables-how-between). Imported dimensions
+behave exactly like native ones everywhere
 (builder, filters, dashboards, cross-filtering by name); a same-named
 dimension declared natively on the fact model always wins over an imported
 one. See `dimensions/geography.yaml`, imported by both `models/sales.yaml`

@@ -190,7 +190,7 @@ const ENUMS = {
   model: {
     source: { format: ["parquet", "csv", "delta", "iceberg"] },
     joins: { how: ["left", "inner"] },
-    dimension_imports: { how: ["left", "inner"] },
+    dimension_imports: { how: ["left", "inner", "between"] },
     dimensions: { type: ["categorical", "time", "numeric"] },
     measures: { format: ["number", "currency", "percent"] },
   },

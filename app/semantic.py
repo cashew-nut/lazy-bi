@@ -35,6 +35,10 @@ _FRAME_BUILTINS = {
 TIME_GRAINS = {"1d": "Day", "1w": "Week", "1mo": "Month", "1q": "Quarter", "1y": "Year"}
 SOURCE_FORMATS = ("parquet", "csv", "delta", "iceberg")
 JOIN_KINDS = ("left", "inner")
+# dimension_imports additionally accept "between": an interval join, matching a
+# date column on the imported side against a [start, end] pair on the importing
+# model. See Import.is_interval and engine._join_interval.
+IMPORT_JOIN_KINDS = ("left", "inner", "between")
 
 
 class ModelError(Exception):
@@ -215,13 +219,24 @@ class DimensionBundle:
 class Import:
     """A Model's reference to a DimensionBundle: an anchor (how the model's
     own source connects to one dataset in the bundle) plus an optional
-    subset of the bundle's datasets to include (default: all of them)."""
+    subset of the bundle's datasets to include (default: all of them).
+
+    `how: between` makes it an *interval* import instead of an equality one:
+    left_on is a [start, end] column pair on the model and right_on a single
+    date column on the anchor dataset, and a model row matches every imported
+    row whose date falls inside its interval. That is how a disconnected
+    calendar table becomes point-in-time queryable — see engine._join_interval.
+    """
     bundle: str
     anchor_dataset: str
     left_on: list[str]
     right_on: list[str]
     how: str = "left"
     datasets: Optional[list[str]] = None  # None = whole bundle
+
+    @property
+    def is_interval(self) -> bool:
+        return self.how == "between"
 
 
 @dataclass
@@ -355,7 +370,9 @@ def _as_list(v) -> list[str]:
     return v if isinstance(v, list) else [v]
 
 
-def _parse_join_keys(j: dict, owner: str, join_desc: str) -> tuple[list[str], list[str], str]:
+def _parse_join_keys(
+    j: dict, owner: str, join_desc: str, kinds: tuple[str, ...] = JOIN_KINDS,
+) -> tuple[list[str], list[str], str]:
     """Shared on/left_on/right_on/how resolution for both Join (model -> raw
     source) and DatasetJoin (dataset -> sibling dataset in a bundle). YAML 1.1
     parses a bare `on:` key as boolean True — accept both."""
@@ -365,7 +382,7 @@ def _parse_join_keys(j: dict, owner: str, join_desc: str) -> tuple[list[str], li
     how = j.get("how", "left")
     if not left_on or left_on == [None]:
         raise ModelError(f"{owner}: {join_desc} needs 'on' or 'left_on'/'right_on'")
-    if how not in JOIN_KINDS:
+    if how not in kinds:
         raise ModelError(f"{owner}: {join_desc}: unsupported how '{how}'")
     return left_on, right_on, how
 
@@ -396,10 +413,22 @@ def _parse_import(raw: dict, owner: str) -> Import:
     anchor = raw.get("anchor_dataset")
     if not anchor:
         raise ModelError(f"{owner}: dimension_imports entry needs 'anchor_dataset'")
-    left_on, right_on, how = _parse_join_keys(raw, owner, f"import of '{raw.get('bundle')}'")
+    desc = f"import of '{raw.get('bundle')}'"
+    left_on, right_on, how = _parse_join_keys(raw, owner, desc, kinds=IMPORT_JOIN_KINDS)
+    if how == "between":
+        if len(left_on) != 2:
+            raise ModelError(
+                f"{owner}: {desc}: 'how: between' needs left_on: [start_column, end_column] — "
+                f"the interval on this model, got {left_on}"
+            )
+        if len(right_on) != 1:
+            raise ModelError(
+                f"{owner}: {desc}: 'how: between' needs a single right_on column — "
+                f"the date column on '{anchor}', got {right_on}"
+            )
     datasets = raw.get("datasets")
     if datasets is not None and not isinstance(datasets, list):
-        raise ModelError(f"{owner}: import of '{raw.get('bundle')}': 'datasets' must be a list")
+        raise ModelError(f"{owner}: {desc}: 'datasets' must be a list")
     return Import(
         bundle=raw["bundle"], anchor_dataset=anchor,
         left_on=left_on, right_on=right_on, how=how, datasets=datasets,
@@ -1139,6 +1168,20 @@ def resolve_imports(model: Model, bundles: dict[str, DimensionBundle]) -> Model:
 
         allowed = set(imp.datasets) if imp.datasets is not None else set(bundle.datasets)
         included = _bfs_reachable(bundle, imp.anchor_dataset, allowed)
+
+        # naming a dataset that no chain of joins connects to the anchor used to
+        # drop it silently: the import looked right in the yaml and in the form,
+        # but its dimensions never appeared in the builder. Say so instead.
+        if imp.datasets is not None:
+            stranded = [d for d in imp.datasets if d not in set(included)]
+            if stranded:
+                raise ModelError(
+                    f"model '{model.name}': import of '{imp.bundle}' names dataset(s) {stranded}, "
+                    f"which no chain of joins connects to anchor '{imp.anchor_dataset}' — their "
+                    f"dimensions would never load. Either declare a join to them in the bundle, or "
+                    f"import them as their own entry (a disconnected calendar/date table anchors "
+                    f"itself and joins with 'how: between')"
+                )
 
         dimension_owners: dict[str, str] = {}
         for ds_name in included:
