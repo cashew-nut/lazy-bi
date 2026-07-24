@@ -27,17 +27,21 @@ import traceback
 
 import polars as pl
 
+from . import iceberg_util
 from .materialize import MaterializeError, materialize
 from .pipelines import Materialization, Target
 
 
 def _scan_source(fmt: str, path: str, storage_options: dict) -> pl.LazyFrame:
     """Mirrors app/engine.py's _scan_source: lazy end to end, whatever the
-    source format."""
+    source format. Iceberg ignores `storage_options` (same global bucket
+    credentials as everything else) — see app/iceberg_util.py."""
     if fmt == "csv":
         return pl.scan_csv(path, storage_options=storage_options)
     if fmt == "delta":
         return pl.scan_delta(path, storage_options=storage_options)
+    if fmt == "iceberg":
+        return iceberg_util.scan(path)
     return pl.scan_parquet(path, storage_options=storage_options)
 
 

@@ -1,10 +1,11 @@
 """Generate demo datasets and upload them to the S3 bucket.
 
-Four datasets, one per supported source format:
+Five datasets, one per supported source format:
   sales/<year>.parquet        - order lines, ~60k rows over 30 months (parquet glob)
   marketing/spend.parquet     - monthly ad spend by channel/region
   ref/products.csv            - product lookup joined into the sales model (csv)
   logistics/shipments         - courier shipments (Delta Lake table)
+  support/tickets              - support tickets across the fixer network (Iceberg table)
 """
 from __future__ import annotations
 
@@ -191,6 +192,35 @@ def _shipments_frame(rng: random.Random) -> pl.DataFrame:
             "packages": packages,
             "delivery_hours": round(rng.gauss(speed, speed * 0.25) + 2, 1),
             "cost": round(packages * rng.uniform(8, 30) + speed * 1.5, 2),
+        })
+    return pl.DataFrame(rows)
+
+
+TICKET_CATEGORIES = [
+    "Cyberware Malfunction", "Netrunning Breach", "Billing Dispute",
+    "Delivery Issue", "Account Access",
+]
+TICKET_PRIORITIES = ["low", "medium", "high", "critical"]
+TICKET_CHANNELS = ["call", "chat", "holo-call", "in-person"]
+TICKET_SLA_HOURS = {"low": 72, "medium": 48, "high": 24, "critical": 8}
+
+
+def _support_frame(rng: random.Random) -> pl.DataFrame:
+    start = DEMO_START
+    days = (DEMO_END - start).days
+    rows = []
+    for _ in range(15_000):
+        priority = rng.choices(TICKET_PRIORITIES, weights=[4, 5, 3, 1])[0]
+        sla = TICKET_SLA_HOURS[priority]
+        resolution = max(0.5, round(rng.gauss(sla * 0.6, sla * 0.35), 1))
+        rows.append({
+            "ticket_date": start + timedelta(days=rng.randint(0, days)),
+            "region": rng.choices(REGIONS, weights=[5, 6, 4, 3, 2])[0],
+            "category": rng.choice(TICKET_CATEGORIES),
+            "priority": priority,
+            "channel": rng.choices(TICKET_CHANNELS, weights=[3, 5, 2, 1])[0],
+            "resolution_hours": resolution,
+            "sla_breached": resolution > sla,
         })
     return pl.DataFrame(rows)
 
@@ -412,6 +442,28 @@ def _upload_csv(client, key: str, df: pl.DataFrame) -> None:
     client.put_object(Bucket=config.BUCKET, Key=key, Body=df.write_csv().encode())
 
 
+def _write_iceberg(table_root: str, df: pl.DataFrame) -> None:
+    """Create a fresh Iceberg table at s3://<bucket>/<table_root> and write
+    `df` as its initial snapshot. Iceberg needs a catalog to allocate a
+    location/schema/snapshot atomically — an in-memory SqlCatalog does that
+    once, here, at seed time only; nothing at query time depends on it
+    afterwards (app/iceberg_util.py reads the table back by listing its
+    self-describing metadata/ directory directly, the same catalog-free
+    convention already used for Delta's _delta_log)."""
+    from pyiceberg.catalog.sql import SqlCatalog
+
+    catalog = SqlCatalog(
+        "seed", uri="sqlite:///:memory:", warehouse=f"s3://{config.BUCKET}",
+        **config.iceberg_storage_options(),
+    )
+    catalog.create_namespace("seed")
+    table = catalog.create_table(
+        "seed.table", schema=df.to_arrow().schema,
+        location=f"s3://{config.BUCKET}/{table_root}",
+    )
+    table.append(df.to_arrow())
+
+
 def seed_bucket() -> bool:
     """Create the bucket and upload demo parquet files. Returns True if seeded,
     False if the bucket already had data."""
@@ -435,6 +487,7 @@ def seed_bucket() -> bool:
     _upload_csv(client, "ref/territories.csv", _territories_frame())
     write_deltalake(f"s3://{config.BUCKET}/logistics/shipments", _shipments_frame(rng),
                     storage_options=config.delta_write_options())
+    _write_iceberg("support/tickets", _support_frame(rng))
     _upload(client, "subscriptions/subs.parquet", _subscriptions_frame(rng))
 
     countries, sites = _study_countries_and_sites(rng)

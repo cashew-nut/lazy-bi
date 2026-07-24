@@ -3,7 +3,7 @@
 Lightweight BI over data files in S3. Polars scans the files **lazily** — only
 the columns and row-groups a query needs leave the bucket — aggregates them, and
 returns results to a cyberpunk query-builder UI. A YAML **semantic layer**
-defines the sources (**parquet / csv / Delta Lake**), **joins**, dimensions and
+defines the sources (**parquet / csv / Delta Lake / Iceberg**), **joins**, dimensions and
 measures the builder works with; saved visuals and **dashboards** persist in
 SQLite. **Pipelines** (see [below](#pipelines)) host real polars scripts that
 materialize new sources into the bucket — replace or upsert, with delete
@@ -64,6 +64,7 @@ demo data — only if the bucket is empty. One dataset per source format:
 | `ref/products.csv` | csv | joined into `sales` (supplier, tier) |
 | `logistics/shipments` | Delta Lake | `logistics` (20k shipments) |
 | `marketing/spend.parquet` | parquet | `marketing` |
+| `support/tickets` | Iceberg | `support` (15k support tickets) |
 
 To point at a real bucket or an external emulator (MinIO, LocalStack), set
 `CI_S3_ENDPOINT` (this also disables the embedded moto server) plus the usual
@@ -112,6 +113,7 @@ app/
   sandbox.py           sandbox notebooks: cell-combining, read()-call detection, convert-to-pipeline yaml
   sandbox_runner.py    subprocess entry point: execs a notebook's cells, reports per-cell output
   sandboxstore.py      sqlite persistence: saved sandbox notebooks
+  iceberg_util.py      catalog-free iceberg reads: resolve + scan a table's current snapshot
   emulator.py, s3.py, seed.py, load_taxi.py
   api/                 one router per resource: auth, users (+tokens), models,
                        dimensions, datasets, query, visuals, dashboards
@@ -137,8 +139,8 @@ model declares — the UI never touches raw columns directly.
 name: sales
 label: Sales Orders
 source:
-  format: parquet                      # parquet | csv | delta
-  path: s3://cash-intel/sales/*.parquet  # any glob polars can scan (delta: table root)
+  format: parquet                      # parquet | csv | delta | iceberg
+  path: s3://cash-intel/sales/*.parquet  # any glob polars can scan (delta/iceberg: table root)
 
 joins:                    # lookup tables joined lazily into the base scan;
   - name: products        # joined columns are then usable in dimensions/measures
@@ -659,8 +661,8 @@ your role — viewers see no authoring controls at all):
   rail manages every fact model, common model, and pipeline — *edit yaml*,
   *build ►*, and *+ MODEL* / *+ COMMON MODEL* / *+ PIPELINE* — and the right
   pane is the data overview: every object in the bucket with size and modified
-  date, matched against each model's source and join globs (Delta table
-  internals map to their model too). Clicking a model chip jumps to it in the
+  date, matched against each model's source and join globs (Delta/Iceberg
+  table internals map to their model too). Clicking a model chip jumps to it in the
   builder; files no model reads are flagged as unmapped. This is where
   authoring — the dataset picker, guided common-model import, expression
   intellisense, and pipeline authoring described below — lives, along with
@@ -687,7 +689,7 @@ enforceable and a failed run non-corrupting.
 name: silver_orders
 sources:
   - name: sales
-    format: parquet
+    format: parquet                # parquet | csv | delta | iceberg
     path: s3://cash-intel/sales/*.parquet
     layer: bronze                  # optional — see Layers below
 target:
@@ -714,6 +716,17 @@ lineage:                           # optional — documents transformation logic
     from: [sales.unit_price, sales.unit_cost, sales.quantity]
     transform: "(unit_price - unit_cost) * quantity"
 ```
+
+Iceberg is a read-only source format for now (no `target: {format: iceberg}`)
+— writing a new Iceberg table needs a catalog to allocate its
+location/schema/snapshot atomically, which only the seeded demo data uses,
+once, at startup (a throwaway in-memory catalog — see app/iceberg_util.py);
+nothing at query time depends on a catalog existing. Reading one needs no
+catalog at all: like a Delta table, an Iceberg source's path is the
+table's root directory — the current snapshot is found by listing its
+`metadata/` folder for the highest-versioned `*.metadata.json` file, the
+same self-describing-directory convention Delta's `_delta_log` already
+gets.
 
 **Trust model**: a pipeline script is real, unsandboxed Python at
 application-code trust — the same posture as a model measure's `frame:`
@@ -822,8 +835,9 @@ The **SANDBOX** surface is a multi-cell polars/python scratch notebook over
 the same bucket pipelines read from — the place to explore a dataset or
 prototype a transformation *before* it's worth saving as a pipeline. Cells
 run top-to-bottom in one shared namespace (`pl`, `bucket`, and a `read(path[,
-format])` helper that infers parquet/csv/delta from the extension) — later
-cells see earlier cells' variables, and a cell's last bare expression
+format])` helper that infers parquet/csv/delta from the extension — iceberg
+needs an explicit `format="iceberg"`, since its table root looks the same as
+delta's on disk) — later cells see earlier cells' variables, and a cell's last bare expression
 auto-displays, Jupyter-style: a polars `DataFrame`/`LazyFrame` renders as a
 table (capped preview, lazily collected), anything else as its `repr()`.
 **RUN** on a cell replays every cell from the top through that one; there is

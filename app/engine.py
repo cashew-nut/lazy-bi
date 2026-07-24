@@ -15,7 +15,7 @@ from typing import Any, Optional
 
 import polars as pl
 
-from . import config, measure_dsl
+from . import config, iceberg_util, measure_dsl
 from .semantic import ImportBinding, Model, ModelError, Source, TIME_GRAINS, compile_frame
 
 FILTER_OPS = {"eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in", "contains"}
@@ -101,6 +101,8 @@ def _scan_source(source: Source) -> pl.LazyFrame:
         return pl.scan_csv(source.path, storage_options=opts)
     if source.format == "delta":
         return pl.scan_delta(source.path, storage_options=opts)
+    if source.format == "iceberg":
+        return iceberg_util.scan(source.path)
     return pl.scan_parquet(source.path, storage_options=opts)
 
 

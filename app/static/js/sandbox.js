@@ -30,8 +30,9 @@ const newCell = (source = "") => ({ id: newCellId(), source, output: null });
 
 const TEMPLATE_SOURCE =
   '# pick a file under "Bucket Files" (right) to insert a read("s3://…") call —\n'
-  + "# read() infers parquet/csv/delta from the path, and later cells can use\n"
-  + "# earlier cells' variables, like a real notebook\n"
+  + "# read() infers parquet/csv/delta from the path (iceberg needs an explicit\n"
+  + '# read("...", format="iceberg")), and later cells can use earlier cells\'\n'
+  + "# variables, like a real notebook\n"
   + 'df = read("s3://cash-intel/sales/*.parquet")\ndf';
 
 // { id -> { row, ta, pre, outBox } } — rebuilt every renderCells() call.
@@ -77,6 +78,7 @@ function inferFormat(key) {
   const lower = key.toLowerCase();
   if (lower.endsWith(".csv")) return "csv";
   if (lower.endsWith(".parquet")) return "parquet";
+  if (lower.endsWith(".metadata.json")) return "iceberg";
   return "delta";
 }
 
@@ -131,7 +133,8 @@ function insertReadAtActiveCell(f) {
 const PL_MEMBERS = [
   ["DataFrame(", "construct a DataFrame"], ["LazyFrame(", "construct a LazyFrame"],
   ["scan_parquet(", "lazily scan parquet"], ["scan_csv(", "lazily scan csv"],
-  ["scan_delta(", "lazily scan a Delta table"], ["read_parquet(", "eagerly read parquet"],
+  ["scan_delta(", "lazily scan a Delta table"], ["scan_iceberg(", "lazily scan an Iceberg table"],
+  ["read_parquet(", "eagerly read parquet"],
   ["col(", "reference a column"], ["when(", "conditional expression"],
   ["concat(", "concatenate frames"], ["lit(", "a literal value"],
   ["Config", "polars configuration"], ["Int64", "dtype"], ["Float64", "dtype"],
