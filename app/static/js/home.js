@@ -15,6 +15,7 @@ const MODES = [
   { mode: "modelling", icon: "◈", label: "MODELLING", desc: "Semantic layer: models, dimensions, measures", path: paths.modelling },
   { mode: "portal", icon: "▦", label: "PORTAL", desc: "Browse published dashboards, read-only", path: paths.portal },
   { mode: "chat", icon: "✦", label: "CHAT", desc: "Ask questions in plain language", path: paths.chat },
+  { mode: "sandbox", icon: "⚗", label: "SANDBOX", desc: "Scratch polars/python notebooks over the bucket", path: paths.sandbox },
 ];
 
 const idx = (n) => String(n).padStart(2, "0");

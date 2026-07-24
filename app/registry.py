@@ -11,6 +11,7 @@ from .authstore import AuthStore
 from .conversationstore import ConversationStore
 from .memorystore import MemoryStore
 from .pipelinestore import PipelineStore
+from .sandboxstore import SandboxStore
 from .store import VisualStore
 
 
@@ -25,6 +26,7 @@ class Registry:
         self.conversation_store: Optional[ConversationStore] = None
         self.memory_store: Optional[MemoryStore] = None
         self.pipeline_store: Optional[PipelineStore] = None
+        self.sandbox_store: Optional[SandboxStore] = None
 
     def init(self) -> None:
         self.reload_all()
@@ -37,6 +39,7 @@ class Registry:
         self.conversation_store = ConversationStore(config.DB_PATH)
         self.memory_store = MemoryStore(config.DB_PATH)
         self.pipeline_store = PipelineStore(config.DB_PATH)
+        self.sandbox_store = SandboxStore(config.DB_PATH)
 
     def reload_all(self) -> None:
         """Reload dimension bundles, then models, then resolve each model's

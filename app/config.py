@@ -30,6 +30,14 @@ PIPELINES_DIR = Path(os.environ.get("CI_PIPELINES_DIR", PROJECT_ROOT / "pipeline
 PIPELINE_TIMEOUT_DEFAULT = 600
 PIPELINE_TIMEOUT_MAX = 3600
 
+# Sandbox notebooks — ad hoc polars/python scratch scripts (app/sandbox.py).
+# A run answers its HTTP request directly (no queue: read-only previews, so
+# concurrent runs are safe) but still gets a hard, killable timeout like a
+# pipeline run, just a much shorter default given its interactive purpose.
+SANDBOX_TIMEOUT_DEFAULT = 30
+SANDBOX_TIMEOUT_MAX = 120
+SANDBOX_ROW_LIMIT = 200
+
 # Hard cap on rows returned to the browser
 MAX_ROWS = 10_000
 

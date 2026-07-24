@@ -109,13 +109,17 @@ app/
   pipeline_jobs.py     FIFO run worker (one subprocess at a time) + post-run lineage sync
   pipelinestore.py     sqlite persistence: pipeline_runs (append-only run history)
   materialize.py       replace/upsert writers: delta merge + delete policies, pre-write guards
+  sandbox.py           sandbox notebooks: cell-combining, read()-call detection, convert-to-pipeline yaml
+  sandbox_runner.py    subprocess entry point: execs a notebook's cells, reports per-cell output
+  sandboxstore.py      sqlite persistence: saved sandbox notebooks
   emulator.py, s3.py, seed.py, load_taxi.py
   api/                 one router per resource: auth, users (+tokens), models,
                        dimensions, datasets, query, visuals, dashboards
-                       (+publish/portal), explorer (+health), pipelines (+lineage/layers/graph)
+                       (+publish/portal), explorer (+health), pipelines (+lineage/layers/graph),
+                       sandbox
   static/js/           ES modules: lib, state, auth, admin, filters, builder,
                        dashboard, portal, modelling, editor, completion,
-                       measurelab, lineagegraph, main
+                       measurelab, lineagegraph, sandbox, pyhighlight, main
   static/js/charts/    one renderer per chart + shared frame/pivot/dispatch
 models/*.yaml          semantic models (the editable contract)
 dimensions/*.yaml      dimension bundles shared across models (see below)
@@ -604,6 +608,10 @@ route-by-route matrix lives in
 | `GET /api/pipelines/{p}/lineage/suggest` | pass-through lineage suggestions by name-matching the output schema against declared sources (409 if no schema is available yet) |
 | `GET /api/lineage/layers`, `PUT /api/lineage/layers` | the ordered layer list (PUT **admin**; write `pipelines/layers.yaml`; 409 if removing a layer still referenced by a pipeline) |
 | `GET /api/lineage/graph` | the lineage graph payload (nodes/edges/field-hops/layers) — see "Pipelines" above |
+| `GET /api/sandbox/notebooks`, `GET /api/sandbox/notebooks/{id}` | list / fetch a saved sandbox notebook — reads any role |
+| `POST/PUT/DELETE /api/sandbox/notebooks[/{id}]` | create/update/delete a sandbox notebook (**admin**; see "Sandbox notebooks" below) |
+| `POST /api/sandbox/run` | execute cells 0..`run_upto` of a (saved or unsaved) notebook and return each cell's output (**admin**) |
+| `POST /api/sandbox/convert` | text-only transform: detect a notebook's `read(...)` bucket calls and render a starter pipeline yaml (**admin**; never executes anything) |
 
 Query shape:
 
@@ -661,6 +669,9 @@ your role — viewers see no authoring controls at all):
 - **ACCOUNT** — self-service for every signed-in role: personal access
   tokens, password change, and (see [Themes](#themes)) picking one of the 4
   visual themes. Admins additionally get user management here.
+- **SANDBOX** — scratch polars/python notebooks over the bucket, with a
+  path into a saved pipeline once a script is worth keeping — see
+  [Sandbox notebooks](#sandbox-notebooks) below.
 
 ## Pipelines
 
@@ -804,6 +815,58 @@ history, and graph all populate live. (Run history lives in
 `cash_intel.db`, not the repo, so a fresh clone always starts with neither
 pipeline having run yet — that first click is the point: it's the same
 "queued → running → succeeded" flow a real pipeline goes through.)
+
+## Sandbox notebooks
+
+The **SANDBOX** surface is a multi-cell polars/python scratch notebook over
+the same bucket pipelines read from — the place to explore a dataset or
+prototype a transformation *before* it's worth saving as a pipeline. Cells
+run top-to-bottom in one shared namespace (`pl`, `bucket`, and a `read(path[,
+format])` helper that infers parquet/csv/delta from the extension) — later
+cells see earlier cells' variables, and a cell's last bare expression
+auto-displays, Jupyter-style: a polars `DataFrame`/`LazyFrame` renders as a
+table (capped preview, lazily collected), anything else as its `repr()`.
+**RUN** on a cell replays every cell from the top through that one; there is
+no persistent kernel between separate runs — each run recomputes its whole
+prefix from scratch, trading a little redundant work for never having
+stale/drifted state to reason about.
+
+The editor gets the same delight affordances as the model/pipeline yaml
+editor: syntax highlighting (`static/js/pyhighlight.js`, the python sibling
+of `yamlhighlight.js`) and intellisense — `read("` offers real bucket paths
+(clicking a file under **Bucket Files** in the side panel inserts one at the
+cursor too), `pl.` offers common polars constructors/scan functions, and a
+bare name offers every variable assigned in any cell. Notebooks persist as
+`{name, cells}` in SQLite (`sandbox_notebooks` — no execution state is ever
+saved, only the code); **+ CELL**, the per-cell ▶/↑/↓/+/✕ controls, and
+**SAVE**/**SAVE AS NEW**/**DELETE** round out authoring.
+
+**Convert to pipeline**: once a script is worth keeping, **→ CONVERT TO
+PIPELINE** combines the notebook's cells, detects every `read("path"[,
+format=...])` call as a would-be pipeline source (name derived from the
+path — a glob like `sales/*.parquet` names itself `sales`, not a generic
+placeholder), rewrites those call sites to the pipeline script convention
+(`sources["name"]`), and opens the result as an unsaved draft in the
+Modelling pipeline editor with a starter `target:`/`materialization:` the
+admin fills in and reviews before saving — this is a text-transform assist,
+never a silent one-click pipeline; a script with no `output = ...`
+assignment (the pipeline contract) surfaces a warning rather than guessing
+one. `app/sandbox.py`'s detection ignores anything mentioned only in a
+comment, so an explanatory `# e.g. read("s3://...")` note is never mistaken
+for a real source.
+
+**Trust model**: identical carve-out to a pipeline's `script:` (Principle
+VI) — real, unsandboxed Python at application-code trust, not a new
+eval-capable construct, just the existing pipeline-script trust boundary
+applied to throwaway exploratory code. Authoring, running, and converting
+all require the **admin** role; every role can browse saved notebooks
+read-only. Each run executes in its own subprocess
+(`app/sandbox_runner.py`) with a hard, killable timeout
+(`CI`-configurable via `app/config.py`'s `SANDBOX_TIMEOUT_DEFAULT`/`_MAX`,
+30s/120s by default) — the same crash/timeout containment pipelines get,
+just answered synchronously in the HTTP request rather than queued: a
+sandbox run is read-only (no materialization), so unlike pipeline runs it
+never needs to be serialized against other runs.
 
 ## Conversational analytics
 
