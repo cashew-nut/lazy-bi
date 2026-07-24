@@ -1,0 +1,91 @@
+# converted from sandbox notebook 'cycle_times' — review target + materialization below before saving
+name: cycle_times
+description: "Calculates cycle times between consecutive clinical trial milestones (Protocol Approved → First Site Activated → First Patient In) using planned dates."
+sources:
+  - name: milestones
+    format: parquet
+    path: s3://cash-intel/clinical-ops-synthetic/milestones.parquet
+target:
+  path: s3://cash-intel/clinical-ops-synthetic/cycle_times.parquet   # TODO: set a real target path before saving
+  format: parquet
+  layer: gold
+materialization:
+  mode: replace
+script: |
+  # pick a file under "Bucket Files" (right) to insert a read("s3://…") call —
+  # read() infers parquet/csv/delta from the path (iceberg needs an explicit
+  # read("...", format="iceberg")), and later cells can use earlier cells'
+  # variables, like a real notebook
+  df = sources["milestones"]
+
+  milestone_pairs = [('Protocol Approved', 'First Site Activated'), ('First Site Activated', 'First Patient In')]
+
+  def get_cycle_times(lf, milestone_pairs, id_col, date_type):
+      """
+      Calculate cycle times between milestone types for a specific date type.
+
+      Args:
+          lf: LazyFrame with milestone data
+          milestone_pairs: List of tuples of (start_type, end_type) pairs
+          id_col: Column name to join on (e.g., 'study_id')
+          date_type: Column to use for cycle time calculation ('planned_date' or 'actual_date')
+
+      Returns:
+          LazyFrame with columns: id_col, date_type, cycle_name, start_date, end_date, duration_days
+      """
+      m1 = lf.select(
+          pl.col(id_col),
+          pl.col('milestone_type').alias('start_type'),
+          pl.col(date_type).alias('start_date')
+      ).filter(pl.col('start_date').is_not_null())
+
+      m2 = lf.select(
+          pl.col(id_col),
+          pl.col('milestone_type').alias('end_type'),
+          pl.col(date_type).alias('end_date')
+      ).filter(pl.col('end_date').is_not_null())
+
+      pair_df = pl.LazyFrame({
+          'start_type': [p[0] for p in milestone_pairs],
+          'end_type': [p[1] for p in milestone_pairs]
+      })
+
+      cycles = m1.join(m2, on=id_col).join(
+          pair_df, on=['start_type', 'end_type']
+      ).filter(
+          pl.col('end_date') > pl.col('start_date')
+      ).with_columns(
+          cycle_name=pl.concat_str('start_type', 'end_type', separator=' → '),
+          duration_days=(pl.col('end_date') - pl.col('start_date')).dt.total_days()
+      ).select(
+          pl.col(id_col).alias('id'),
+          pl.lit(date_type).alias('date_type'),
+          pl.col('cycle_name'),
+          pl.col('start_date'),
+          pl.col('end_date'),
+          pl.col('duration_days')
+      )
+
+      return cycles
+
+  # Test with planned_date
+  output = get_cycle_times(df, milestone_pairs, 'study_id', 'planned_date')
+lineage:
+  - field: id
+    from: [milestones.study_id]
+    transform: pass-through
+  - field: date_type
+    from: []
+    transform: "literal constant 'planned_date'"
+  - field: cycle_name
+    from: [milestones.milestone_type]
+    transform: "concatenated start and end milestone types with ' → ' separator"
+  - field: start_date
+    from: [milestones.planned_date]
+    transform: pass-through
+  - field: end_date
+    from: [milestones.planned_date]
+    transform: pass-through
+  - field: duration_days
+    from: [milestones.planned_date]
+    transform: "days between end_date and start_date for matching milestone pairs"

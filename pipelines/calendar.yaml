@@ -1,0 +1,20 @@
+# converted from sandbox notebook 'untitled_sandbox' — review target + materialization below before saving
+name: calendar
+sources:
+  - name: raw
+    format: parquet
+    path: s3://REPLACE/ME/*.parquet   # TODO
+target:
+  path: s3://cash-intel/clinical-ops-synthetic/gold/calendar.parquet   # TODO: set a real target path before saving
+  format: parquet
+  layer: bronze
+materialization:
+  mode: replace
+script: |
+  import datetime
+
+  today = datetime.date.today()
+  start = today - datetime.timedelta(days=365*10)
+  end = today + datetime.timedelta(days=365*10)
+
+  output = pl.date_range(start, end, interval="1d", eager=True).to_frame("date")
