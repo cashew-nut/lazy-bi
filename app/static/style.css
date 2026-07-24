@@ -1499,7 +1499,10 @@ textarea.mm-expr { min-height: 76px; font-size: 13px; }
 .sbx-cells { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; padding-bottom: 4px; }
 #sbx-add-cell { margin-top: 10px; align-self: flex-start; }
 
-.sbx-cell { border: 1px solid var(--line); border-radius: 4px; background: var(--panel); overflow: hidden; }
+/* flex-shrink:0 is the fix here — without it, a flex column with overflow:auto
+   still shrinks its children to fit rather than actually overflowing, so
+   .sbx-cells never had anything to scroll no matter how many cells piled up */
+.sbx-cell { flex: none; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); overflow: hidden; }
 .sbx-cell-head {
   display: flex; align-items: center; gap: 4px; padding: 4px 8px;
   border-bottom: 1px solid var(--line); background: var(--panel-2);
