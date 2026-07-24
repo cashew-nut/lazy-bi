@@ -1,0 +1,37 @@
+# Semantic model: fixer-network support tickets — reads an Iceberg table
+name: support
+label: Support Tickets
+description: Customer support tickets across the fixer network, Iceberg source.
+source:
+  format: iceberg
+  path: s3://cash-intel/support/tickets
+
+# region comes from the `geography` common dimensional model (see
+# dimensions/geography.yaml) — shared with sales.yaml and logistics.yaml
+dimension_imports:
+  - bundle: geography
+    anchor_dataset: regions
+    on: region
+
+dimensions:
+  - name: ticket_date
+    label: Ticket Date
+    type: time
+  - name: category
+    label: Category
+  - name: priority
+    label: Priority
+  - name: channel
+    label: Channel
+
+measures:
+  - name: tickets
+    label: Tickets
+    expr: count()
+  - name: avg_resolution_hours
+    label: Avg Resolution Hours
+    expr: mean(resolution_hours)
+  - name: sla_breach_rate
+    label: SLA Breach Rate
+    format: percent
+    expr: sum(sla_breached) / count()

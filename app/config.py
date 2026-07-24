@@ -71,6 +71,21 @@ def storage_options() -> dict:
     }
 
 
+def iceberg_storage_options() -> dict:
+    """storage_options for polars scan_iceberg / pyiceberg's S3 FileIO — same
+    credentials as storage_options() above, translated to the `s3.*` key
+    names pyiceberg expects (see https://py.iceberg.apache.org/configuration/
+    #fileio). Path-style addressing is required against the moto/MinIO
+    emulator and works fine against real S3 too."""
+    return {
+        "s3.access-key-id": AWS_ACCESS_KEY_ID,
+        "s3.secret-access-key": AWS_SECRET_ACCESS_KEY,
+        "s3.region": AWS_REGION,
+        "s3.endpoint": S3_ENDPOINT,
+        "s3.path-style-access": "true",
+    }
+
+
 def delta_write_options() -> dict:
     """storage_options for deltalake writes (seeding). The unsafe-rename flag is
     fine here: single writer, emulated bucket."""

@@ -16,8 +16,8 @@ from typing import Optional
 
 import yaml
 
-SOURCE_FORMATS = ("parquet", "csv", "delta")
-TARGET_FORMATS = ("delta", "parquet")
+SOURCE_FORMATS = ("parquet", "csv", "delta", "iceberg")
+TARGET_FORMATS = ("delta", "parquet")  # iceberg is read-only — no write path yet
 MATERIALIZATION_MODES = ("replace", "upsert")
 DELETE_POLICIES = ("ignore", "sync", "soft_delete", "predicate")
 

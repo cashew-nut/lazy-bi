@@ -30,7 +30,7 @@ READ_RE = re.compile(
 _OUTPUT_RE = re.compile(r'(?m)^output\s*=')
 _SANITIZE_RE = re.compile(r'[^a-z0-9_]+')
 
-SOURCE_FORMATS = ("parquet", "csv", "delta")
+SOURCE_FORMATS = ("parquet", "csv", "delta", "iceberg")
 
 
 def combine_cells(sources: list[str]) -> str:
@@ -73,6 +73,8 @@ def _infer_format(path: str) -> str:
     if lower.endswith(".parquet"):
         return "parquet"
     return "delta"   # a bare table root, same default app/pipelines.py uses
+                      # (iceberg roots look the same on disk — an explicit
+                      # read("...", format="iceberg") call sidesteps this)
 
 
 def _slugify(text: str) -> str:

@@ -22,7 +22,7 @@ name: my_model
 label: My Model
 description: What this model covers.
 source:
-  format: parquet        # parquet | csv | delta
+  format: parquet        # parquet | csv | delta | iceberg
   path: s3://cash-intel/path/*.parquet
 
 # pick a real dataset with the "◇ DATASET" button above to fill in source,
@@ -188,19 +188,19 @@ const SCHEMAS = {
 // static enum values, keyed by [kind][block][key]
 const ENUMS = {
   model: {
-    source: { format: ["parquet", "csv", "delta"] },
+    source: { format: ["parquet", "csv", "delta", "iceberg"] },
     joins: { how: ["left", "inner"] },
     dimension_imports: { how: ["left", "inner"] },
     dimensions: { type: ["categorical", "time", "numeric"] },
     measures: { format: ["number", "currency", "percent"] },
   },
   bundle: {
-    source: { format: ["parquet", "csv", "delta"] },
+    source: { format: ["parquet", "csv", "delta", "iceberg"] },
     joins: { how: ["left", "inner"] },
     dimensions: { type: ["categorical", "time", "numeric"] },
   },
   pipeline: {
-    sources: { format: ["parquet", "csv", "delta"] },
+    sources: { format: ["parquet", "csv", "delta", "iceberg"] },
     target: { format: ["delta", "parquet"] },
     materialization: { mode: ["replace", "upsert"], on_delete: ["ignore", "sync", "soft_delete", "predicate"] },
     lineage: { transform: ["pass-through"] },
@@ -542,7 +542,7 @@ async function toggleDatasetPicker() {
     const readers = readerNames.length ? ` · read by ${readerNames.join(", ")}` : "";
     card.append(el("div", { class: "ds-pick-meta" },
       `${ds.object_count} obj · ${fmtBytes(ds.bytes)}${readers}${ds.format_ambiguous ? " · ⚠ mixed types" : ""}`));
-    if (ds.format !== "delta" && ds.objects.length > 1) {
+    if (ds.format !== "delta" && ds.format !== "iceberg" && ds.objects.length > 1) {
       const drill = el("div", { class: "import-datasets" });
       for (const o of ds.objects) {
         const chip = el("div", { class: "col-chip", title: `set source → this single object` },

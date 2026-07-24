@@ -49,7 +49,7 @@ export function datasetCards(onpick, current) {
         + (ds.models.length ? ` · read by ${[...new Set(ds.models.map((m) => m.name))].join(", ")}` : " · unmapped")
         + (ds.format_ambiguous ? " · ⚠ mixed types" : "")));
     card.addEventListener("click", () => onpick({ key: ds.key, path: ds.path, format: ds.format }));
-    if (ds.format !== "delta" && ds.objects.length > 1) {
+    if (ds.format !== "delta" && ds.format !== "iceberg" && ds.objects.length > 1) {
       const drill = el("div", { class: "import-datasets" });
       for (const o of ds.objects) {
         const chip = el("div", { class: "col-chip", title: `use just ${o.key}` },
@@ -116,7 +116,7 @@ export function pairRow(pair, leftCols, rightCols, { leftPh, rightPh, onchange, 
 /* manual path entry row: input + format select + apply button */
 export function manualPathRow(current, onapply) {
   const path = el("input", { value: current?.path || "", placeholder: "s3://bucket/prefix/*.parquet", spellcheck: "false" });
-  const fmt = el("select", {}, ...["parquet", "csv", "delta"].map((f) => el("option", { value: f }, f)));
+  const fmt = el("select", {}, ...["parquet", "csv", "delta", "iceberg"].map((f) => el("option", { value: f }, f)));
   fmt.value = current?.format || "parquet";
   const load = el("button", { class: "btn plain" }, "USE PATH");
   load.addEventListener("click", () => {

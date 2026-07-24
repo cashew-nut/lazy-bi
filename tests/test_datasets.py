@@ -61,6 +61,36 @@ def test_group_objects_delta_root_collapses():
     assert ds["bytes"] == 103
 
 
+def test_group_objects_iceberg_root_collapses():
+    objs = [
+        {"key": "support/tickets/metadata/00000-abc.metadata.json", "size": 3},
+        {"key": "support/tickets/metadata/00001-def.metadata.json", "size": 4},
+        {"key": "support/tickets/metadata/abc-m0.avro", "size": 5},
+        {"key": "support/tickets/data/00000-0-abc.parquet", "size": 100},
+    ]
+    datasets = semantic.group_objects(objs, "cash-intel")
+    # exactly one dataset, iceberg-rooted at the table dir (no glob)
+    assert len(datasets) == 1
+    ds = datasets[0]
+    assert ds["key"] == "support/tickets"
+    assert ds["format"] == "iceberg"
+    assert ds["path"] == "s3://cash-intel/support/tickets"
+    assert ds["object_count"] == 4
+    assert ds["bytes"] == 112
+
+
+def test_group_objects_delta_and_iceberg_dont_cross_contaminate():
+    objs = [
+        {"key": "logistics/shipments/_delta_log/00000.json", "size": 3},
+        {"key": "logistics/shipments/part-0001.parquet", "size": 40},
+        {"key": "support/tickets/metadata/00000-abc.metadata.json", "size": 3},
+        {"key": "support/tickets/data/00000-0-abc.parquet", "size": 100},
+    ]
+    by_key = {d["key"]: d for d in semantic.group_objects(objs, "cash-intel")}
+    assert by_key["logistics/shipments"]["format"] == "delta"
+    assert by_key["support/tickets"]["format"] == "iceberg"
+
+
 def test_group_objects_drops_unrecognized_prefix():
     datasets = semantic.group_objects([{"key": "docs/readme.txt", "size": 1}], "b")
     assert datasets == []
@@ -76,12 +106,15 @@ def test_datasets_endpoint_lists_seeded_prefixes(client, seeded):
     body = client.get("/api/datasets").json()
     assert body["bucket"] == "cash-intel"
     by_key = {d["key"]: d for d in body["datasets"]}
-    # seed layout: sales/*.parquet, ref/*.csv, logistics/shipments (delta)
+    # seed layout: sales/*.parquet, ref/*.csv, logistics/shipments (delta),
+    # support/tickets (iceberg)
     assert "sales" in by_key
     assert by_key["sales"]["format"] == "parquet"
     assert by_key["ref"]["format"] == "csv"
     assert "logistics/shipments" in by_key
     assert by_key["logistics/shipments"]["format"] == "delta"
+    assert "support/tickets" in by_key
+    assert by_key["support/tickets"]["format"] == "iceberg"
 
 
 def test_datasets_endpoint_maps_models(client, seeded):

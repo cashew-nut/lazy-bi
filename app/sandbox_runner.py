@@ -34,11 +34,17 @@ from decimal import Decimal
 
 import polars as pl
 
+from . import iceberg_util
+
 ROW_LIMIT_DEFAULT = 200
 TEXT_LIMIT = 4000
 
 
 def _infer_format(path: str) -> str:
+    """Extension-based guess. Delta and Iceberg are both bare directories, so
+    a path with no recognized extension defaults to delta (matching
+    app/pipelines.py/app/sandbox.py's default) — reading an iceberg table
+    needs an explicit `format="iceberg"` argument."""
     lower = path.lower()
     if lower.endswith(".csv"):
         return "csv"
@@ -54,6 +60,8 @@ def _make_read(storage_options: dict):
             return pl.scan_csv(path, storage_options=storage_options)
         if fmt == "delta":
             return pl.scan_delta(path, storage_options=storage_options)
+        if fmt == "iceberg":
+            return iceberg_util.scan(path)
         return pl.scan_parquet(path, storage_options=storage_options)
     return read
 

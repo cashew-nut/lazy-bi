@@ -32,6 +32,12 @@ def test_extract_reads_explicit_format_wins():
     assert sources[0]["format"] == "delta"
 
 
+def test_extract_reads_explicit_iceberg_format():
+    script = 'df = read("s3://cash-intel/support/tickets", format="iceberg")'
+    sources = sandbox.extract_reads(script)
+    assert sources[0]["format"] == "iceberg"
+
+
 def test_extract_reads_csv_extension():
     sources = sandbox.extract_reads('read("s3://b/ref/products.csv")')
     assert sources[0]["format"] == "csv"
@@ -262,6 +268,21 @@ def test_run_job_read_helper_uses_storage_options_and_infers_format(monkeypatch)
     result = sandbox_runner.run_job(job)
     assert result["cells"][0]["ok"] is True
     assert calls == [("parquet", "s3://b/x.parquet", {"aws_endpoint_url": "http://x"})]
+
+
+def test_run_job_read_helper_iceberg_requires_explicit_format(monkeypatch):
+    calls = []
+
+    def fake_iceberg_scan(path):
+        calls.append(path)
+        import polars as pl
+        return pl.DataFrame({"a": [1]}).lazy()
+
+    monkeypatch.setattr(sandbox_runner.iceberg_util, "scan", fake_iceberg_scan)
+    job = _job(['read("s3://cash-intel/support/tickets", format="iceberg")'])
+    result = sandbox_runner.run_job(job)
+    assert result["cells"][0]["ok"] is True
+    assert calls == ["s3://cash-intel/support/tickets"]
 
 
 def test_run_job_none_display_for_plain_statement():

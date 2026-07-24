@@ -100,6 +100,18 @@ def test_delta_source(models):
     assert sum(row["shipments"] for row in r["rows"]) == 20_000
 
 
+def test_iceberg_source(models):
+    r = run(models, "support", dimensions=["priority"], measures=["tickets"])
+    assert r["row_count"] == 4
+    assert sum(row["tickets"] for row in r["rows"]) == 15_000
+
+
+def test_iceberg_source_joined_dimension(models):
+    r = run(models, "support", dimensions=["region"], measures=["tickets", "avg_resolution_hours"])
+    assert r["row_count"] == 5
+    assert all(row["tickets"] > 0 for row in r["rows"])
+
+
 def test_spine_timeline_grows(models):
     r = run(models, "subscriptions",
             dimensions=[{"name": "active_at", "grain": "1y"}], measures=["active_customers"])

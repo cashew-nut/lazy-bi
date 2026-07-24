@@ -442,6 +442,43 @@ script: |
         _delete_pipeline(client, name)
 
 
+def test_iceberg_source_pipeline_end_to_end(client):
+    """A pipeline reading an Iceberg source (the seeded support/tickets
+    table) and materializing to a parquet target — iceberg is read-only, so
+    it's exercised here as a source, never a target."""
+    name = "test_pipe_iceberg_source"
+    target_key = f"pipeline_test/{name}.parquet"
+    target = f"s3://cash-intel/{target_key}"
+    yaml_text = f"""
+name: {name}
+sources:
+  - name: tickets
+    format: iceberg
+    path: s3://cash-intel/support/tickets
+target:
+  path: {target}
+  format: parquet
+materialization:
+  mode: replace
+script: |
+  output = sources["tickets"].select(["priority", "resolution_hours"]).head(5)
+"""
+    try:
+        run = _create_and_run(client, name, yaml_text)
+        assert run["status"] == "succeeded", run
+        assert run["rows_written"] == 5
+
+        import polars as pl
+
+        from app import config
+
+        result = pl.scan_parquet(target, storage_options=config.storage_options()).collect()
+        assert result.height == 5
+        assert set(result.columns) == {"priority", "resolution_hours"}
+    finally:
+        _delete_pipeline(client, name)
+
+
 def test_replace_pipeline_parquet_target_end_to_end(client):
     name = "test_pipe_replace_parquet"
     target_key = f"pipeline_test/{name}.parquet"

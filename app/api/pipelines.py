@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 import polars as pl
 
-from .. import config, pipeline_jobs, semantic
+from .. import config, iceberg_util, pipeline_jobs, semantic
 from .. import pipelines as pipelines_mod
 from ..auth import User, require_role
 from ..registry import registry
@@ -233,6 +233,8 @@ def _scan_source_schema(fmt: str, path: str):
         return pl.scan_csv(path, storage_options=opts).collect_schema()
     if fmt == "delta":
         return pl.scan_delta(path, storage_options=opts).collect_schema()
+    if fmt == "iceberg":
+        return iceberg_util.scan(path).collect_schema()
     return pl.scan_parquet(path, storage_options=opts).collect_schema()
 
 

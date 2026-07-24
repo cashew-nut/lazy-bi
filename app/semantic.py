@@ -1,6 +1,6 @@
 """Semantic layer: YAML model definitions on top of S3 files.
 
-A model maps a file source (parquet/csv/delta on S3) to named dimensions and
+A model maps a file source (parquet/csv/delta/iceberg on S3) to named dimensions and
 measures, optionally joining in other sources (lookup/dimension tables).
 Measures are written in polars expression syntax and evaluated in a namespace
 containing only `pl`. Models are trusted configuration, same as the
@@ -33,7 +33,7 @@ _FRAME_BUILTINS = {
 }
 
 TIME_GRAINS = {"1d": "Day", "1w": "Week", "1mo": "Month", "1q": "Quarter", "1y": "Year"}
-SOURCE_FORMATS = ("parquet", "csv", "delta")
+SOURCE_FORMATS = ("parquet", "csv", "delta", "iceberg")
 JOIN_KINDS = ("left", "inner")
 
 
@@ -97,7 +97,7 @@ def compile_frame(source: str, lf: pl.LazyFrame, dims: list[str], owner: str) ->
 
 @dataclass
 class Source:
-    path: str            # s3://bucket/prefix/*.parquet | .../table (delta root)
+    path: str            # s3://bucket/prefix/*.parquet | .../table (delta/iceberg root)
     format: str = "parquet"
 
 
@@ -933,6 +933,7 @@ def bundle_spec_to_yaml(spec: dict) -> str:
 
 _EXT_FORMAT = {".parquet": "parquet", ".csv": "csv"}
 _DELTA_MARKER = "/_delta_log/"
+_ICEBERG_METADATA_RE = re.compile(r"^(.*)/metadata/\d+-[^/]+\.metadata\.json$")
 
 
 def infer_format(keys: list[str]) -> tuple[Optional[str], bool]:
@@ -982,7 +983,7 @@ def model_source_matchers(
             if not src.path.startswith(prefix):
                 continue
             rel = src.path[len(prefix):]
-            if src.format == "delta":
+            if src.format in ("delta", "iceberg"):
                 root = rel.rstrip("/") + "/"
                 matchers.append((m.name, role, lambda k, r=root: k.startswith(r)))
             else:
@@ -1005,51 +1006,64 @@ def per_model_stats(
     return stats
 
 
+def _table_root(key: str) -> Optional[tuple[str, str]]:
+    """(root, format) if `key` belongs to a self-describing table directory —
+    Delta's ``_delta_log/`` marker, or an Iceberg ``metadata/<version>-
+    *.metadata.json`` file — else None."""
+    if _DELTA_MARKER in key:
+        return key.split(_DELTA_MARKER, 1)[0], "delta"
+    m = _ICEBERG_METADATA_RE.match(key)
+    if m:
+        return m.group(1), "iceberg"
+    return None
+
+
 def group_objects(objects: list[dict], bucket: str) -> list[dict]:
     """Group bucket objects (each ``{"key", "size"}``) into pickable datasets.
 
-    A Delta table (any object under a ``_delta_log/`` marker) collapses into a
-    single ``delta`` dataset rooted at the table directory; every other object
-    groups by its directory prefix into a format-inferred glob source. Prefixes
+    A Delta table (any object under a ``_delta_log/`` marker) or an Iceberg
+    table (any ``metadata/<version>-*.metadata.json`` file) collapses into a
+    single dataset rooted at the table directory; every other object groups
+    by its directory prefix into a format-inferred glob source. Prefixes
     whose objects carry no recognized data extension are dropped (they cannot
     back a valid source). Pure — no S3 access; ``bucket`` only builds paths."""
-    delta_roots: list[str] = []
+    table_roots: dict[str, str] = {}   # root -> format, first-seen order
     for obj in objects:
-        if _DELTA_MARKER in obj["key"]:
-            root = obj["key"].split(_DELTA_MARKER, 1)[0]
-            if root not in delta_roots:
-                delta_roots.append(root)
+        found = _table_root(obj["key"])
+        if found:
+            root, fmt = found
+            table_roots.setdefault(root, fmt)
 
-    def delta_root_of(key: str) -> Optional[str]:
-        for root in delta_roots:
+    def root_of(key: str) -> Optional[str]:
+        for root in table_roots:
             if key == root or key.startswith(root + "/"):
                 return root
         return None
 
-    # bucket every object by its delta root (or None) in a single pass, rather
-    # than rescanning all objects against delta_root_of once per root below
-    delta_members: dict[str, list[dict]] = {root: [] for root in delta_roots}
-    non_delta: list[dict] = []
+    # bucket every object by its table root (or None) in a single pass,
+    # rather than rescanning all objects against root_of once per root below
+    table_members: dict[str, list[dict]] = {root: [] for root in table_roots}
+    ungrouped: list[dict] = []
     for obj in objects:
-        root = delta_root_of(obj["key"])
-        (delta_members[root] if root is not None else non_delta).append(obj)
+        root = root_of(obj["key"])
+        (table_members[root] if root is not None else ungrouped).append(obj)
 
     datasets: list[dict] = []
 
-    for root in delta_roots:
-        members = delta_members[root]
+    for root, fmt in table_roots.items():
+        members = table_members[root]
         datasets.append({
             "key": root,
             "path": f"s3://{bucket}/{root}",
-            "format": "delta",
+            "format": fmt,
             "format_ambiguous": False,
             "object_count": len(members),
             "bytes": sum(o.get("size", 0) for o in members),
-            "objects": [{"key": o["key"], "size": o.get("size", 0), "format": "delta"} for o in members],
+            "objects": [{"key": o["key"], "size": o.get("size", 0), "format": fmt} for o in members],
         })
 
     groups: dict[str, list[dict]] = {}
-    for obj in non_delta:
+    for obj in ungrouped:
         groups.setdefault(_dirname(obj["key"]), []).append(obj)
 
     for prefix, members in groups.items():
