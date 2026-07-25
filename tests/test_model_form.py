@@ -226,17 +226,17 @@ def test_dataset_schema_bad_format_is_400(client):
 #    measure through the form silently stripped it and the reconstituted
 #    yaml then failed to compile — "the form says the model is invalid") ──
 
-def test_clinical_ops_spec_includes_frame(client):
-    spec = client.get("/api/models/clinical_ops_recruitment/spec").json()["spec"]
-    framed = next(m for m in spec["measures"] if m["name"] == "median_months_to_75pct_randomised")
+def test_subscriptions_spec_includes_frame(client):
+    spec = client.get("/api/models/subscriptions/spec").json()["spec"]
+    framed = next(m for m in spec["measures"] if m["name"] == "median_tenure_days")
     assert framed["frame"] and "group_by" in framed["frame"]
-    assert framed["frame_emits"] == ["event_date"]
+    assert framed["frame_emits"] == ["churn_month"]
 
 
-def test_clinical_ops_generate_round_trips_frame(client):
+def test_subscriptions_generate_round_trips_frame(client):
     """The exact form flow: GET .../spec -> POST /models/generate — must stay
     ok and keep the frame block, not silently regenerate a broken measure."""
-    spec = client.get("/api/models/clinical_ops_recruitment/spec").json()["spec"]
+    spec = client.get("/api/models/subscriptions/spec").json()["spec"]
     body = client.post("/api/models/generate", json=spec).json()
     assert body["ok"] is True, body.get("error")
     assert "frame:" in body["yaml"]

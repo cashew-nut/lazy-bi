@@ -152,7 +152,7 @@ def test_sanitize_strips_unknown_explainer_tone():
 def test_seeded_demo_notebook_passes_the_sanitizer_clean(client):
     """The hand-authored sample page and the LLM gate share one vocabulary —
     if this fails, seed.py and composer.py have drifted apart."""
-    demo = next(n for n in client.get("/api/notebooks").json() if n["name"] == "Recruitment Overview")
+    demo = next(n for n in client.get("/api/notebooks").json() if n["name"] == "Sales Overview")
     html = client.get(f"/api/notebooks/{demo['id']}").json()["html"]
     visuals = {v["id"] for v in client.get("/api/visuals").json()}
     dashboards = {d["id"] for d in client.get("/api/dashboards").json()}

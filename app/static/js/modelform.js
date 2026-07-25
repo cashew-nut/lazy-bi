@@ -787,7 +787,7 @@ async function runCheck(m, statusEl) {
 
 // dimensions the model has declared so far, offered as frame_emits candidates
 // (frame_emits names dimension(s) the frame recomputes itself — e.g. a
-// per-entity milestone date — see clinical_ops_recruitment.yaml)
+// per-entity milestone date — see subscriptions.yaml's median_tenure_days)
 function frameEmitsPicker(m, redraw) {
   const wrap = el("div", { class: "mf-subset" });
   if (!form.dimensions.length) {

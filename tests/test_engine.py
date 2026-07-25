@@ -630,35 +630,32 @@ def test_framed_measure_timeline_respects_grain(framed_model):
 
 
 
-def test_clinical_framed_measure_end_to_end(models):
-    # the shipped demo measure: median months from first actual randomisation
-    # to the month cumulative randomisations crossed 75% of the study total
-    r = run(models, "clinical_ops_recruitment",
-            dimensions=[], measures=["median_months_to_75pct_randomised"])
+def test_shipped_framed_measure_end_to_end(models):
+    # the shipped demo measure: median tenure (in days) of ended
+    # subscriptions, bucketed by churn month
+    r = run(models, "subscriptions", dimensions=[], measures=["median_tenure_days"])
     assert r["row_count"] == 1
-    v = r["rows"][0]["median_months_to_75pct_randomised"]
-    assert v is not None and 0 < v < 40
+    v = r["rows"][0]["median_tenure_days"]
+    assert v is not None and 0 < v < 2000
 
 
-def test_clinical_framed_measure_grouped_with_plain(models):
-    r = run(models, "clinical_ops_recruitment", dimensions=["therapeutic_area"],
-            measures=["randomised_actual", "median_months_to_75pct_randomised"])
-    assert r["row_count"] >= 3
-    with_events = [row for row in r["rows"] if row["randomised_actual"] > 0]
-    assert with_events and all(
-        row["median_months_to_75pct_randomised"] > 0 for row in with_events)
+def test_shipped_framed_measure_grouped_with_plain(models):
+    r = run(models, "subscriptions", dimensions=["plan"],
+            measures=["active_customers", "median_tenure_days"])
+    assert r["row_count"] == 3  # street, corpo, netrunner
+    with_customers = [row for row in r["rows"] if row["active_customers"] > 0]
+    assert with_customers and all(
+        row["median_tenure_days"] > 0 for row in with_customers)
 
 
-def test_clinical_framed_measure_on_timeline(models):
-    # bucketed by each study's 75% crossing quarter: only as many rows as
-    # there are distinct crossing quarters (10 studies -> <= 10 buckets),
-    # every bucketed median positive, and per-bucket study counts sum to the
-    # number of studies that crossed at all
-    r = run(models, "clinical_ops_recruitment",
-            dimensions=[{"name": "event_date", "grain": "1q"}],
-            measures=["median_months_to_75pct_randomised"])
-    assert 1 <= r["row_count"] <= 10
-    assert all(row["median_months_to_75pct_randomised"] > 0 for row in r["rows"])
+def test_shipped_framed_measure_on_timeline(models):
+    # bucketed by each churn month: only as many rows as there are distinct
+    # churn months in the demo window, every bucketed median positive
+    r = run(models, "subscriptions",
+            dimensions=[{"name": "churn_month", "grain": "1q"}],
+            measures=["median_tenure_days"])
+    assert r["row_count"] >= 1
+    assert all(row["median_tenure_days"] > 0 for row in r["rows"])
 
 
 # --- Window measures: running_total() / lag() over a query-time partition --

@@ -75,9 +75,8 @@ To point at a real bucket or an external emulator (MinIO, LocalStack), set
 `data_cache/`) and it's uploaded unmodeled on startup into the same
 `cash-intel` bucket, flat under `<dataset-name>/<filename>` — pick it up from
 the Modelling workspace's source picker and build a model on it from
-scratch. `raw_data/clinical-ops-synthetic/` ships as an example (20 studies /
-400 sites / 200 milestones / ~3.3k monthly recruitment rows — see its own
-`README.md` for the schema).
+scratch. The repo doesn't ship a `raw_data/` dataset by default; the demo
+catalog above is generated straight into the bucket instead.
 
 **Signing in**: everything requires an account (there is no anonymous mode —
 the demo exercises the same auth path as a real deployment). On first start
@@ -366,11 +365,13 @@ a timeline each entity then lands in the bucket of its own milestone date, and
 buckets only exist where some entity crossed. Dimensions *not* listed in
 `frame_emits` behave as before: carried through the step via `dims`.
 
-See `median_months_to_75pct_randomised` in `models/clinical_ops_recruitment.yaml`
-for a live example (median months for a study's cumulative randomisations to
-cross 75% of its total, bucketed on timelines by each study's crossing month).
-Inline/visual-scoped measures on the query API cannot use `frame`/`frame_emits` —
-that construct is authenticated-model-measure-only (see above).
+See `median_tenure_days` in `models/subscriptions.yaml` for a live example
+(median tenure of ended subscriptions, bucketed on timelines by each one's
+churn month — date arithmetic like `end_date - start_date` is outside the
+safe measure DSL, so it has to be derived in the frame step instead of a
+plain `expr`). Inline/visual-scoped measures on the query API cannot use
+`frame`/`frame_emits` — that construct is authenticated-model-measure-only
+(see above).
 
 ### Time-spine (point-in-time) measures
 
@@ -504,9 +505,8 @@ Two more things:
   Otherwise every measure on the model would silently multiply by the number of
   periods each row spans.
 - A bundle may be imported more than once — once on a key for its reference
-  data, once on a range for its calendar (`models/cycle_times.yaml` does both).
-  `between` is a `dimension_imports` mode only; plain `joins:` still take
-  `left`/`inner`.
+  data, once on a range for its calendar. `between` is a `dimension_imports`
+  mode only; plain `joins:` still take `left`/`inner`.
 
 ### Common dimensional models (shared dimensions)
 
@@ -1024,16 +1024,13 @@ by construction (each edge comes from one pipeline's own source/target
 declaration, never a recursive walk) and needs no live bucket scan, so it
 stays fast regardless of graph shape.
 
-### Demo: bronze → silver → gold
-
-`pipelines/silver_orders.yaml` and `pipelines/gold_daily_revenue.yaml` ship
-a working two-stage chain over the seeded sales data — run `silver_orders`
-then `gold_daily_revenue` from Modelling to materialize
-`models/gold_revenue.yaml`'s source and see the lineage section, run
-history, and graph all populate live. (Run history lives in
-`cash_intel.db`, not the repo, so a fresh clone always starts with neither
-pipeline having run yet — that first click is the point: it's the same
-"queued → running → succeeded" flow a real pipeline goes through.)
+The repo doesn't ship a bundled example chain — `pipelines/` starts empty.
+Build one from **MODELLING → PIPELINES** over the seeded sales/marketing/etc.
+data to see materialization, lineage, run history, and the graph populate
+live. (Run history lives in `cash_intel.db`, not the repo, so a fresh clone
+always starts with no pipelines defined and no runs — that first click is
+the point: it's the same "queued → running → succeeded" flow a real
+pipeline goes through.)
 
 ## Sandbox notebooks
 

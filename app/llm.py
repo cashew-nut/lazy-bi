@@ -286,7 +286,7 @@ _MEMORIES_PROPERTY = {
         "dimension/measure that its catalog entry doesn't list — subject is "
         "the declared name, content is the new term. kind 'note': a short, "
         "user-independent fact about the model's vocabulary or data (e.g. "
-        "'therapeutic_area values are title-cased English names'). NEVER "
+        "'category values are title-cased English names'). NEVER "
         "record anything about the current user: no preferences, no names, "
         "no habits, no favorite charts or formats, nothing session-specific "
         "— only facts about the model that hold for everyone."

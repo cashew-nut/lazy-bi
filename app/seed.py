@@ -245,213 +245,6 @@ def _support_frame(rng: random.Random) -> pl.DataFrame:
     return pl.DataFrame(rows)
 
 
-# ---------------------------------------------------------------------------
-# Clinical operations: studies -> study countries -> study sites (a common
-# dimensional model, dimensions/clinical_ops.yaml) plus a recruitment_events
-# fact table (models/clinical_ops_recruitment.yaml) with baseline (planned)
-# vs actual scenarios across the screen / randomised / screen_fail funnel.
-# ---------------------------------------------------------------------------
-
-STUDY_PHASES = {"Phase I": 10, "Phase II": 16, "Phase III": 24, "Phase IV": 30}  # -> planned duration, months
-
-# (study_id, name, phase, therapeutic area, sponsor, target enrollment, planned start, status)
-STUDIES = [
-    ("ST-001", "ORION-3 (Advanced NSCLC)", "Phase III", "Oncology", "Helios Pharma", 420, date(2024, 1, 15), "Active"),
-    ("ST-002", "CARDIA-EV", "Phase III", "Cardiology", "Meridian Biosciences", 650, date(2024, 3, 1), "Active"),
-    ("ST-003", "NEURO-LIGHT", "Phase II", "Neurology", "Novastra Therapeutics", 180, date(2024, 6, 1), "Recruiting"),
-    ("ST-004", "IMMUNO-PATH", "Phase II", "Immunology", "Cobalt Health", 240, date(2024, 2, 15), "Active"),
-    ("ST-005", "RESP-CLEAR", "Phase III", "Respiratory", "Helios Pharma", 500, date(2023, 9, 1), "Closed to Recruitment"),
-    ("ST-006", "ONCO-HORIZON", "Phase I", "Oncology", "Novastra Therapeutics", 60, date(2025, 1, 10), "Recruiting"),
-    ("ST-007", "CARDIA-PREVENT", "Phase IV", "Cardiology", "Meridian Biosciences", 900, date(2023, 9, 1), "Active"),
-    ("ST-008", "INFECT-SHIELD", "Phase III", "Infectious Disease", "Cobalt Health", 700, date(2024, 5, 1), "Active"),
-    ("ST-009", "NEURO-RESTORE", "Phase III", "Neurology", "Helios Pharma", 380, date(2024, 9, 1), "Recruiting"),
-    ("ST-010", "IMMUNO-BALANCE", "Phase III", "Immunology", "Novastra Therapeutics", 300, date(2025, 3, 1), "Planning"),
-]
-
-COUNTRIES_PER_PHASE = {"Phase I": (1, 2), "Phase II": (2, 4), "Phase III": (4, 7), "Phase IV": (3, 5)}
-SITES_PER_COUNTRY = (2, 6)
-
-COUNTRY_REGION = {
-    "United States": "North America", "Canada": "North America",
-    "United Kingdom": "Europe", "Germany": "Europe", "France": "Europe",
-    "Spain": "Europe", "Italy": "Europe", "Poland": "Europe",
-    "Japan": "Asia-Pacific", "South Korea": "Asia-Pacific", "Australia": "Asia-Pacific",
-    "Brazil": "Latin America", "Mexico": "Latin America",
-}
-COUNTRY_WEIGHTS = {  # bias toward the US/EU, like a real recruitment footprint
-    "United States": 8, "Canada": 3, "United Kingdom": 5, "Germany": 5, "France": 4,
-    "Spain": 4, "Italy": 3, "Poland": 3, "Japan": 3, "South Korea": 2,
-    "Australia": 2, "Brazil": 3, "Mexico": 2,
-}
-COUNTRY_CODE = {  # explicit (not sliced) so "United States"/"United Kingdom" don't collide
-    "United States": "USA", "Canada": "CAN", "United Kingdom": "GBR", "Germany": "DEU",
-    "France": "FRA", "Spain": "ESP", "Italy": "ITA", "Poland": "POL", "Japan": "JPN",
-    "South Korea": "KOR", "Australia": "AUS", "Brazil": "BRA", "Mexico": "MEX",
-}
-CITIES = {
-    "United States": ["Boston", "Houston", "Chicago", "Seattle", "Atlanta", "Denver"],
-    "Canada": ["Toronto", "Montreal", "Vancouver"],
-    "United Kingdom": ["London", "Manchester", "Birmingham"],
-    "Germany": ["Berlin", "Munich", "Hamburg"],
-    "France": ["Paris", "Lyon", "Marseille"],
-    "Spain": ["Madrid", "Barcelona", "Valencia"],
-    "Italy": ["Milan", "Rome", "Turin"],
-    "Poland": ["Warsaw", "Krakow"],
-    "Japan": ["Tokyo", "Osaka"],
-    "South Korea": ["Seoul", "Busan"],
-    "Australia": ["Sydney", "Melbourne"],
-    "Brazil": ["Sao Paulo", "Rio de Janeiro"],
-    "Mexico": ["Mexico City", "Guadalajara"],
-}
-SITE_TYPES = ["University Hospital", "Medical Center", "Regional Clinic", "Research Institute", "General Hospital"]
-INVESTIGATOR_FIRST = ["Elena", "Marcus", "Aiko", "Priya", "Thomas", "Fatima", "Lucas", "Ingrid", "Sofia", "Daniel", "Noor", "Kenji"]
-INVESTIGATOR_LAST = ["Novak", "Reyes", "Tanaka", "Sharma", "Weber", "Haddad", "Bianchi", "Larsen", "Moreau", "Kowalski", "Silva", "Park"]
-
-# baseline screen-fail assumption behind the recruitment plan (varies by
-# therapeutic area — stricter inclusion criteria plan for more screen fails)
-BASELINE_FAIL_RATE = {
-    "Oncology": 0.32, "Cardiology": 0.20, "Neurology": 0.28,
-    "Immunology": 0.25, "Infectious Disease": 0.18, "Respiratory": 0.22,
-}
-SITE_TIERS = [("small", 0.3, 1.2, 5), ("medium", 1.0, 3.0, 3), ("large", 2.5, 6.0, 2)]
-
-RECRUITMENT_NOW = DEMO_END                   # "actual" data stops here
-RECRUITMENT_PLAN_HORIZON = date(2026, 12, 31)  # baseline/plan projects further out
-
-
-def _month_start(d: date) -> date:
-    return d.replace(day=1)
-
-
-def _add_months(d: date, n: int) -> date:
-    total = d.month - 1 + n
-    return date(d.year + total // 12, total % 12 + 1, 1)
-
-
-def _iter_months(start: date, end: date):
-    m = _month_start(start)
-    end = _month_start(end)
-    while m <= end:
-        yield m
-        m = _add_months(m, 1)
-
-
-def _studies_frame() -> pl.DataFrame:
-    return pl.DataFrame([
-        {
-            "study_id": sid, "study_name": name, "phase": phase, "therapeutic_area": area,
-            "sponsor": sponsor, "target_enrollment": target, "planned_start_date": start, "status": status,
-        }
-        for sid, name, phase, area, sponsor, target, start, status in STUDIES
-    ])
-
-
-def _study_countries_and_sites(rng: random.Random) -> tuple[pl.DataFrame, pl.DataFrame]:
-    country_rows, site_rows = [], []
-    country_pool = list(COUNTRY_WEIGHTS)
-    weights = list(COUNTRY_WEIGHTS.values())
-
-    for sid, _name, phase, _area, _sponsor, _target, start, study_status in STUDIES:
-        lo, hi = COUNTRIES_PER_PHASE[phase]
-        n_countries = rng.randint(lo, hi)
-        chosen = rng.sample(country_pool, k=min(n_countries, len(country_pool)))
-        planning = study_status == "Planning"
-        for country in chosen:
-            study_country_id = f"{sid}-{COUNTRY_CODE[country]}"
-            activation = start + timedelta(days=rng.randint(0, 90))
-            country_status = "Not Yet Recruiting" if planning else rng.choices(
-                ["Recruiting", "Closed to Recruitment"], weights=[8, 2]
-            )[0]
-            country_rows.append({
-                "study_country_id": study_country_id, "study_id": sid, "country": country,
-                "region": COUNTRY_REGION[country], "country_status": country_status,
-                "country_activation_date": activation,
-            })
-
-            n_sites = rng.randint(*SITES_PER_COUNTRY)
-            for i in range(n_sites):
-                site_activation = activation + timedelta(days=rng.randint(0, 120))
-                if planning:
-                    site_status = "Not Yet Recruiting"
-                else:
-                    site_status = rng.choices(
-                        ["Active", "Closed", "Suspended", "Not Yet Recruiting"], weights=[62, 18, 6, 14]
-                    )[0]
-                city = rng.choice(CITIES[country])
-                site_rows.append({
-                    "site_id": f"{study_country_id}-{i + 1:02d}",
-                    "study_country_id": study_country_id,
-                    "site_name": f"{city} {rng.choice(SITE_TYPES)}",
-                    "city": city,
-                    "investigator": f"Dr. {rng.choice(INVESTIGATOR_FIRST)} {rng.choice(INVESTIGATOR_LAST)}",
-                    "site_activation_date": site_activation,
-                    "site_status": site_status,
-                    "_phase": phase, "_area": _area,  # carried through for the fact generator, dropped before upload
-                })
-
-    return pl.DataFrame(country_rows), pl.DataFrame(site_rows)
-
-
-def _funnel_split(rng: random.Random, screened: int, fail_rate: float) -> tuple[int, int]:
-    """Send each screened patient through the fail/pass funnel independently
-    so screened == randomised + screen_fail always holds, exactly like the
-    real screening log this fact table stands in for."""
-    fails = sum(1 for _ in range(screened) if rng.random() < fail_rate)
-    return screened - fails, fails
-
-
-def _recruitment_events_frame(rng: random.Random, sites_df: pl.DataFrame) -> pl.DataFrame:
-    rows = []
-    for site in sites_df.iter_rows(named=True):
-        phase, area = site["_phase"], site["_area"]
-        planned_duration = STUDY_PHASES[phase]
-        base_fail_rate = BASELINE_FAIL_RATE[area]
-        tier, lo, hi, _w = rng.choices(SITE_TIERS, weights=[w for *_, w in SITE_TIERS])[0]
-        monthly_randomised_target = rng.uniform(lo, hi)
-
-        activation = site["site_activation_date"]
-        started = site["site_status"] != "Not Yet Recruiting"
-
-        # baseline: the flat plan, generated regardless of what actually happened
-        planned_end = _add_months(activation, planned_duration)
-        baseline_end = min(planned_end, RECRUITMENT_PLAN_HORIZON)
-        if activation <= RECRUITMENT_PLAN_HORIZON:
-            br = round(monthly_randomised_target)
-            bf = round(br * base_fail_rate / (1 - base_fail_rate))
-            bs = br + bf
-            for month in _iter_months(activation, baseline_end):
-                for etype, count in (("screened", bs), ("randomised", br), ("screen_fail", bf)):
-                    rows.append({"event_month": month, "site_id": site["site_id"],
-                                 "scenario": "baseline", "event_type": etype, "event_count": count})
-
-        # actual: noisy, ramps up, only for sites that actually opened
-        if started and activation <= RECRUITMENT_NOW:
-            if site["site_status"] == "Closed":
-                actual_end = min(activation + timedelta(days=rng.randint(180, 720)), RECRUITMENT_NOW)
-            else:
-                actual_end = RECRUITMENT_NOW
-            fail_rate = min(0.6, max(0.05, base_fail_rate + rng.uniform(-0.05, 0.08)))
-            suspended = site["site_status"] == "Suspended"
-            months = list(_iter_months(activation, actual_end))
-            for idx, month in enumerate(months):
-                ramp = 0.3 if idx == 0 else 0.6 if idx == 1 else 0.85 if idx == 2 else 1.0
-                if idx >= len(months) - 2 and site["site_status"] == "Closed":
-                    ramp *= 0.5  # wind-down before closure
-                if suspended:
-                    ramp *= 0.15
-                if rng.random() < 0.08:
-                    screened = 0
-                else:
-                    mean = monthly_randomised_target / (1 - fail_rate) * ramp
-                    screened = max(0, round(rng.gauss(mean, max(mean * 0.4, 0.4))))
-                randomised, screen_fail = _funnel_split(rng, screened, fail_rate)
-                for etype, count in (("screened", screened), ("randomised", randomised), ("screen_fail", screen_fail)):
-                    rows.append({"event_month": month, "site_id": site["site_id"],
-                                 "scenario": "actual", "event_type": etype, "event_count": count})
-
-    return pl.DataFrame(rows)
-
-
 def _upload(client, key: str, df: pl.DataFrame) -> None:
     buf = io.BytesIO()
     df.write_parquet(buf)
@@ -510,13 +303,6 @@ def seed_bucket() -> bool:
     _write_iceberg("support/tickets", _support_frame(rng))
     _upload(client, "subscriptions/subs.parquet", _subscriptions_frame(rng))
     _upload(client, "ref/calendar.parquet", _calendar_frame())
-
-    countries, sites = _study_countries_and_sites(rng)
-    events = _recruitment_events_frame(rng, sites)
-    _upload_csv(client, "ref/studies.csv", _studies_frame())
-    _upload_csv(client, "ref/study_countries.csv", countries)
-    _upload_csv(client, "ref/study_sites.csv", sites.drop("_phase", "_area"))
-    _upload(client, "recruitment/events.parquet", events)
 
     _upload_local_cache(client)
     _upload_raw_data(client)
@@ -587,7 +373,7 @@ def seed_bootstrap_admin() -> bool:
 # "only if nothing exists yet" gate so a production DB never regresses.
 # ---------------------------------------------------------------------------
 
-_RECRUITMENT_MODEL = "clinical_ops_recruitment"
+_SALES_MODEL = "sales"
 
 
 def _dq(model: str, dimensions: list, measures: list, chartType: str = "auto",
@@ -604,66 +390,66 @@ def _dq(model: str, dimensions: list, measures: list, chartType: str = "auto",
 
 
 def seed_notebook_demo() -> bool:
-    """First-run only: when no notebooks exist yet and the recruitment demo
-    model is loaded, build a handful of saved visuals plus a dashboard (with
-    a named view) around clinical_ops_recruitment, then compose them into one
-    sample notebook. Returns True if seeded."""
+    """First-run only: when no notebooks exist yet and the sales demo model
+    is loaded, build a handful of saved visuals plus a dashboard (with a
+    named view) around sales, then compose them into one sample notebook.
+    Returns True if seeded."""
     store = registry.store
     if store.list_notebooks():
         return False
-    if _RECRUITMENT_MODEL not in registry.models:
+    if _SALES_MODEL not in registry.models:
         return False
 
     v_trend = store.create(
-        "Randomised — Actual vs Baseline", _RECRUITMENT_MODEL,
-        _dq(_RECRUITMENT_MODEL, ["event_date"], ["randomised_actual", "randomised_baseline"], chartType="line"),
+        "Revenue vs Profit Over Time", _SALES_MODEL,
+        _dq(_SALES_MODEL, ["order_date"], ["revenue", "profit"], chartType="line"),
     )
     v_total = store.create(
-        "Total Randomised (Actual)", _RECRUITMENT_MODEL,
-        _dq(_RECRUITMENT_MODEL, [], ["randomised_actual"], chartType="stat"),
+        "Total Revenue", _SALES_MODEL,
+        _dq(_SALES_MODEL, [], ["revenue"], chartType="stat"),
     )
-    v_funnel = store.create(
-        "Screening Funnel by Month", _RECRUITMENT_MODEL,
-        _dq(_RECRUITMENT_MODEL, ["event_date"], ["screened_actual", "screen_fails_actual"], chartType="bar"),
+    v_by_category = store.create(
+        "Revenue by Category", _SALES_MODEL,
+        _dq(_SALES_MODEL, ["category"], ["revenue"], chartType="bar"),
     )
-    v_failrate = store.create(
-        "Screen Failure Rate", _RECRUITMENT_MODEL,
-        _dq(_RECRUITMENT_MODEL, [], ["screen_failure_rate"], chartType="stat"),
+    v_margin = store.create(
+        "Margin %", _SALES_MODEL,
+        _dq(_SALES_MODEL, [], ["margin_pct"], chartType="stat"),
     )
-    rank_by_randomised = {"by": "randomised_actual", "desc": True}
-    v_by_country = store.create(
-        "Randomised (Actual) by Country", _RECRUITMENT_MODEL,
-        _dq(_RECRUITMENT_MODEL, ["country"], ["randomised_actual"], chartType="bar", sort=rank_by_randomised, limit=12),
-    )
+    rank_by_revenue = {"by": "revenue", "desc": True}
     v_by_region = store.create(
-        "Randomised (Actual) by Region", _RECRUITMENT_MODEL,
-        _dq(_RECRUITMENT_MODEL, ["region"], ["randomised_actual"], chartType="bar", sort=rank_by_randomised, limit=10),
+        "Revenue by Region", _SALES_MODEL,
+        _dq(_SALES_MODEL, ["region"], ["revenue"], chartType="bar", sort=rank_by_revenue, limit=12),
+    )
+    v_by_channel = store.create(
+        "Revenue by Channel", _SALES_MODEL,
+        _dq(_SALES_MODEL, ["channel"], ["revenue"], chartType="bar", sort=rank_by_revenue, limit=10),
     )
 
     dash = store.create_dashboard(
-        "Recruitment by Region",
-        items=[{"visual_id": v_by_region["id"], "w": 1}, {"visual_id": v_by_country["id"], "w": 1}],
+        "Revenue by Region",
+        items=[{"visual_id": v_by_channel["id"], "w": 1}, {"visual_id": v_by_region["id"], "w": 1}],
         views=[
-            {"name": "All Phases", "filters": []},
-            {"name": "Phase III only", "filters": [{"field": "phase", "op": "in", "value": "", "values": ["Phase III"]}]},
+            {"name": "All Categories", "filters": []},
+            {"name": "Cyberware only", "filters": [{"field": "category", "op": "in", "value": "", "values": ["Cyberware"]}]},
         ],
         active_view=0,
     )
 
     html = f"""
-<p>A first look at how <b>clinical_ops_recruitment</b> composes into a notebook: not a fixed grid — the sections below are tabs and a collapsible, each holding whatever mix of visuals (and a whole embedded dashboard, with its own saved view) the story needs.</p>
+<p>A first look at how <b>sales</b> composes into a notebook: not a fixed grid — the sections below are tabs and a collapsible, each holding whatever mix of visuals (and a whole embedded dashboard, with its own saved view) the story needs.</p>
 
 <div class="nb-tabs">
   <div class="nb-tab-list">
-    <button class="nb-tab-btn on" data-tab="enrollment">Enrollment</button>
-    <button class="nb-tab-btn" data-tab="screening">Screening Funnel</button>
+    <button class="nb-tab-btn on" data-tab="overview">Overview</button>
+    <button class="nb-tab-btn" data-tab="category">By Category</button>
     <button class="nb-tab-btn" data-tab="region">By Region</button>
   </div>
 
-  <div class="nb-tab-panel" data-tab="enrollment">
+  <div class="nb-tab-panel" data-tab="overview">
     <div class="nb-split">
       <div class="nb-side">
-        <p>Recruitment is the pacing item for every study in the portfolio. The headline count on the right is live — it moves as new screening logs land.</p>
+        <p>Revenue is the headline number for the whole street-market network. The total on the right is live — it moves as new order lines land.</p>
         <div class="nb-visual compact" data-visual-id="{v_total["id"]}"></div>
       </div>
       <div class="nb-side">
@@ -673,25 +459,25 @@ def seed_notebook_demo() -> bool:
     <details class="nb-collapsible">
       <summary><span class="tree-caret">▸</span>Methodology</summary>
       <div class="nb-collapsible-body">
-        <p>"Baseline" is the enrollment plan set when a study was designed; "actual" is what really happened. Every measure here is the same event count, filtered to a scenario (baseline/actual) and a funnel stage (screened, randomised, screen_fail) — so "randomised actual vs baseline" is two plain sums, not two different columns.</p>
+        <p>Revenue is sum(unit_price * quantity); profit nets out unit_cost the same way. Both are plain measures over the same order lines, so "revenue vs profit" is two sums, not two different tables.</p>
       </div>
     </details>
   </div>
 
-  <div class="nb-tab-panel" data-tab="screening" hidden>
-    <aside class="nb-explainer" data-tone="method" data-title="Reading the funnel">
-      <p>Screened splits into randomised and screen-fail — the two bars below always sum to the screened count for that month. A rising fail share with flat screening is an eligibility problem, not a sourcing one.</p>
+  <div class="nb-tab-panel" data-tab="category" hidden>
+    <aside class="nb-explainer" data-tone="method" data-title="Reading margin">
+      <p>Margin % is profit as a share of revenue. A category with strong revenue but thin margin (Vehicles) reads very differently from one with less revenue but a fatter margin (Netrunning).</p>
     </aside>
-    <div class="nb-visual compact" data-visual-id="{v_failrate["id"]}"></div>
-    <div class="nb-visual" data-visual-id="{v_funnel["id"]}"></div>
+    <div class="nb-visual compact" data-visual-id="{v_margin["id"]}"></div>
+    <div class="nb-visual" data-visual-id="{v_by_category["id"]}"></div>
   </div>
 
   <div class="nb-tab-panel" data-tab="region" hidden>
-    <p>The same dashboard used in the studio, embedded live at its "Phase III only" saved view.</p>
+    <p>The same dashboard used in the studio, embedded live at its "Cyberware only" saved view.</p>
     <div class="nb-dashboard" data-dashboard-id="{dash["id"]}" data-view="1"></div>
   </div>
 </div>
 """.strip()
 
-    store.create_notebook("Recruitment Overview", html)
+    store.create_notebook("Sales Overview", html)
     return True

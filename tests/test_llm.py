@@ -143,14 +143,14 @@ def test_system_prompt_explains_inline_measures():
 def test_catalog_text_includes_sample_values_when_present():
     catalog = [
         llm.ModelCatalogEntry(
-            name="clinical_ops_recruitment", label="Recruitment Events", description="",
-            dimensions=[{"name": "therapeutic_area", "label": "Therapeutic Area", "type": "categorical",
-                         "description": "", "synonyms": [], "sample_values": ["Cardiology", "Oncology"]}],
+            name="sales", label="Sales Orders", description="",
+            dimensions=[{"name": "category", "label": "Category", "type": "categorical",
+                         "description": "", "synonyms": [], "sample_values": ["Cyberware", "Netrunning"]}],
             measures=[],
         ),
     ]
     text = llm._catalog_text(catalog)
-    assert "sample values: Cardiology, Oncology" in text
+    assert "sample values: Cyberware, Netrunning" in text
 
 
 def test_catalog_text_omits_sample_values_marker_when_absent():

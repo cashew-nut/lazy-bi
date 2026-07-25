@@ -291,20 +291,20 @@ def test_ask_rejects_inline_measure_over_a_raw_column(viewer_client, fake_transl
 
 
 # ── categorical "common sense": case-insensitive correction against real
-# stored values (the reported bug: 'cardiology trials' matching nothing
-# against the stored 'Cardiology' under case-sensitive 'eq') ───────────────
+# stored values (the reported bug: 'cyberware sales' matching nothing
+# against the stored 'Cyberware' under case-sensitive 'eq') ───────────────
 
 def test_ask_corrects_categorical_filter_casing_and_finds_real_rows(viewer_client, fake_translator):
     fake_translator.responses.append(RawToolCall("propose_query", {
-        "model": "clinical_ops_recruitment", "dimensions": [], "measures": ["randomised_actual"],
-        "filters": [{"field": "therapeutic_area", "op": "eq", "value": "cardiology"}],
+        "model": "sales", "dimensions": [], "measures": ["revenue"],
+        "filters": [{"field": "category", "op": "eq", "value": "cyberware"}],
     }))
     conv = viewer_client.post("/api/conversations", json={}).json()
     res = viewer_client.post(f"/api/conversations/{conv['id']}/ask",
-                              json={"question": "randomised patients for cardiology trials"})
+                              json={"question": "revenue for cyberware sales"})
     body = res.json()
     assert body["response"]["resolved_query"]["filters"] == [
-        {"field": "therapeutic_area", "op": "eq", "value": "Cardiology"},
+        {"field": "category", "op": "eq", "value": "Cyberware"},
     ]
     assert body["response"]["outcome"] == "answered"
     assert body["response"]["result"]["row_count"] > 0
