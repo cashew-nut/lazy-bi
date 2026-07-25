@@ -173,6 +173,26 @@ def _subscriptions_frame(rng: random.Random) -> pl.DataFrame:
     return pl.DataFrame(rows)
 
 
+def _calendar_frame() -> pl.DataFrame:
+    """A standalone date table — one row per day across the demo window, with
+    the usual calendar attributes hung off it. Nothing relates it to any fact
+    table: models reach it with a `how: between` dimension import, which is
+    what turns "rows with a start and an end" into point-in-time reporting.
+    """
+    days = pl.date_range(DEMO_START, DEMO_END, interval="1d", eager=True).alias("date")
+    return pl.DataFrame(days).with_columns(
+        pl.col("date").dt.year().alias("year"),
+        pl.format("{}-Q{}", pl.col("date").dt.year(), pl.col("date").dt.quarter()).alias("quarter"),
+        pl.col("date").dt.truncate("1mo").alias("month_start"),
+        pl.col("date").dt.strftime("%Y-%m %b").alias("month"),
+        pl.col("date").dt.truncate("1w").alias("week_start"),
+        pl.col("date").dt.strftime("%A").alias("day_of_week"),
+        (pl.col("date").dt.day() == 1).alias("is_month_start"),
+        (pl.col("date").dt.month_end() == pl.col("date")).alias("is_month_end"),
+        (pl.col("date").dt.weekday() > 5).alias("is_weekend"),
+    )
+
+
 COURIERS = ["Trauma Freight", "Arasaka Logistics", "Militech Express", "Night Couriers"]
 
 
@@ -489,6 +509,7 @@ def seed_bucket() -> bool:
                     storage_options=config.delta_write_options())
     _write_iceberg("support/tickets", _support_frame(rng))
     _upload(client, "subscriptions/subs.parquet", _subscriptions_frame(rng))
+    _upload(client, "ref/calendar.parquet", _calendar_frame())
 
     countries, sites = _study_countries_and_sites(rng)
     events = _recruitment_events_frame(rng, sites)

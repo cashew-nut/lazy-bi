@@ -63,6 +63,13 @@ datasets:
     label: Num Sites
   - name: num_countries
     label: Num Countries
+# Standalone date table: it declares no join to the datasets above on purpose.
+# A model reaches it with an interval import — `how: between`, left_on the
+# model's [start, end] columns, right_on `date` — which is what makes
+# point-in-time ("active as of") aggregation work. The engine narrows this
+# table to one row per bucket at whatever grain a query asks for, so totals
+# hold up as the grain changes; `grain:` below says how far each column can be
+# narrowed. Materialized by the `calendar` pipeline.
 - name: calendar
   source:
     format: parquet
@@ -71,3 +78,34 @@ datasets:
   - name: date
     label: Date
     type: time
+    synonyms:
+    - as of
+    - as at
+    - point in time
+  - name: calendar_month
+    column: month
+    grain: 1mo
+    label: Calendar Month
+  - name: calendar_month_start
+    column: month_start
+    grain: 1mo
+    label: Calendar Month Start
+    type: time
+  - name: calendar_quarter
+    column: quarter
+    grain: 1q
+    label: Calendar Quarter
+  - name: calendar_year
+    column: year
+    grain: 1y
+    label: Calendar Year
+    type: numeric
+  # day-level flags: they describe a single day, so they read meaningfully at
+  # day grain. For month-end reporting set `match: period_end` on the import
+  # rather than filtering these
+  - name: calendar_is_month_start
+    column: is_month_start
+    label: Is Month Start
+  - name: calendar_is_month_end
+    column: is_month_end
+    label: Is Month End

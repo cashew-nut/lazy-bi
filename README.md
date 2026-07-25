@@ -392,12 +392,121 @@ measures:
 
 Grouping by `active_at` generates a timeline at the requested grain and
 interval-joins it against `[start_date, end_date]` (polars `join_where`), so
-each row counts in every bucket it was active for — semantics are "active as of
-the bucket start". Range filters on the spine (`>=`, `<=`, `=`) bound the
-timeline window; `=` gives a single-date snapshot even with no grouping.
-Buckets with zero active rows are omitted. One spine dimension per query.
-See `models/subscriptions.yaml` for a working example (active customers, MRR,
-ARPU over a 30-month timeline).
+each row counts in every period it was active for. Range filters on the spine
+(`>=`, `<=`, `=`) bound the timeline window; `=` gives a single-date snapshot
+even with no grouping. Buckets with zero active rows are omitted. One spine
+dimension per query. See `models/subscriptions.yaml` for a working example
+(active customers, MRR, ARPU over a 30-month timeline).
+
+#### What "active in this period" means (`match`)
+
+Three readings, and the choice changes the numbers — so it is explicit. Take
+two records: **A** open from Jan 1st with no end, **B** open Feb 2nd–15th only.
+
+```yaml
+    spine:
+      start: start_date
+      end: end_date
+      match: overlap       # overlap (default) | period_start | period_end
+```
+
+| `match` | Jan | Feb | Q1 | 2026 | reading |
+|---|---|---|---|---|---|
+| `overlap` | 1 | **2** | **2** | **2** | active at *any point* during the period |
+| `period_start` | 1 | 1 | 1 | 1 | already open on the period's first day |
+| `period_end` | 1 | 1 | 1 | 1 | still open on the period's last day |
+
+`overlap` is the default because it is what "active during February" normally
+means. The other two are *snapshots*: **B** spans neither Feb 1st nor Feb 28th,
+so it is invisible to both — and to a quarterly or yearly snapshot too, which
+is rarely what a reader of "active in Q1" expects. Choose a snapshot when you
+specifically want a point-in-time balance (month-end ARR, say); choose
+`overlap` when you want activity. At day grain all three agree.
+
+The same `match:` key, with the same three values and the same default, sits on
+an interval import (below) — the two mechanisms answer the same question.
+`tests/test_engine.py` pins the table above for both.
+
+The timeline is **generated**, not read from a table: `start`/`end` name the
+model's own interval columns, and there is nothing to create or maintain
+alongside them. That also bounds what a spine can do — it produces bare dates
+at the requested grain, so it carries no fiscal periods, holiday flags or
+week numbers, and each model declares its own. For any of those, join a real
+calendar table instead (next section).
+
+### Calendar tables (`how: between`)
+
+The other way to ask a point-in-time question is a **standalone date table**
+joined on the interval rather than on a key. Declare the calendar as a dataset
+in a dimension bundle — with **no join** to anything else, which is the whole
+idea — and import it with `how: between`:
+
+```yaml
+# models/subscriptions.yaml
+dimension_imports:
+  - bundle: calendar
+    anchor_dataset: days
+    how: between
+    left_on: [start_date, end_date]   # this model's interval; null end = still open
+    right_on: date                    # the calendar's day column
+```
+
+Each model row is then counted in every period it was open for, and every
+column of the calendar (`calendar_quarter`, `calendar_month_start`,
+`calendar_day_of_week`, …) becomes an ordinary dimension — groupable,
+filterable and cross-filterable like any other. Reach for this over a spine
+when the periods need attributes, when several models must share one
+definition of a period, or when the reporting window should be the calendar's
+rather than whatever range the data happens to cover. See
+`dimensions/calendar.yaml` and `models/subscriptions.yaml`, which declares both
+mechanisms side by side.
+
+**Grain is dynamic.** The table stores days, but the join is not a per-day
+join: before joining, the engine narrows the date table to **one row per bucket
+at the grain the query is asking for**. So a model row is counted once per
+bucket, and an additive measure (`sum`, not just `count_distinct`) is correct at
+every grain — change the builder's grain picker from Day to Quarter and the
+numbers stay right. It matches a spine dimension bucket for bucket at `1d`,
+`1w`, `1mo`, `1q` and `1y`; `tests/test_engine.py` asserts that for both an
+additive measure and a distinct count.
+
+The grain comes from whichever of the calendar's dimensions the query uses
+(finest wins). A time dimension takes it from the grain picker. A column that
+is *inherently* periodic declares its own, so it needs no picker at all:
+
+```yaml
+# dimensions/calendar.yaml
+- name: calendar_quarter
+  column: quarter
+  grain: 1q          # this column is constant across a quarter
+```
+
+Undeclared means the table's own row grain, which is right for a plain day
+column or a weekday flag. Those day-level attributes describe the one day that
+represents each bucket, so they read meaningfully at day grain.
+
+Which periods a row counts in is the same `match:` choice as a spine's —
+`overlap` (default), `period_start` or `period_end`, described
+[above](#what-active-in-this-period-means-match):
+
+```yaml
+    match: period_end    # month-end snapshot rather than "active during"
+```
+
+One refinement over the spine: a period's span is the days the date table
+*actually holds* for it, not calendar arithmetic. So a table that starts
+mid-month, or one listing only business days, reports the period it really
+covers — an overlap against a business-day calendar ignores weekends.
+
+Two more things:
+
+- **The join is applied only to queries that use one of its dimensions.**
+  Otherwise every measure on the model would silently multiply by the number of
+  periods each row spans.
+- A bundle may be imported more than once — once on a key for its reference
+  data, once on a range for its calendar (`models/cycle_times.yaml` does both).
+  `between` is a `dimension_imports` mode only; plain `joins:` still take
+  `left`/`inner`.
 
 ### Common dimensional models (shared dimensions)
 
@@ -443,7 +552,14 @@ dimension_imports:
 By default the *whole* bundle becomes available, including datasets only
 reachable through the bundle's own internal joins — importing `regions`
 above also pulls in `territory_name` from `territories`, with no separate
-declaration. Imported dimensions behave exactly like native ones everywhere
+declaration. Reachability cuts both ways, so "the whole bundle" never includes
+a dataset the bundle's joins don't connect to the anchor. Naming such a dataset
+explicitly under `datasets:` is a load-time error rather than a quiet omission
+— the failure mode otherwise being an import that reads correctly in the YAML
+while its dimensions never show up in the builder. Give it a join, or import it
+as its own entry: a disconnected calendar table anchors itself, see
+[`how: between`](#calendar-tables-how-between). Imported dimensions
+behave exactly like native ones everywhere
 (builder, filters, dashboards, cross-filtering by name); a same-named
 dimension declared natively on the fact model always wins over an imported
 one. See `dimensions/geography.yaml`, imported by both `models/sales.yaml`

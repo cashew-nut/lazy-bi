@@ -1146,13 +1146,17 @@ button.ghost.mk-new { margin-top: 2px; }
   border: 1px solid var(--line); border-radius: 3px; cursor: pointer;
   font-family: var(--mono); padding: 5px 0;
 }
-.mf-pair .rm:hover, .mf-measure .rm:hover, .mf-card-head .rm:hover { color: var(--bad); border-color: var(--bad); }
-.mf-card-head .rm {
+.mf-pair .rm:hover, .mf-measure .rm:hover, .mf-card-head .rm:hover,
+.mf-anchor-row .rm:hover { color: var(--bad); border-color: var(--bad); }
+.mf-card-head .rm, .mf-anchor-row .rm {
   background: transparent; color: var(--ink-3); border: 1px solid var(--line);
   border-radius: 3px; cursor: pointer; font-family: var(--mono); width: 26px; padding: 4px 0;
 }
-.mf-anchor-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.mf-anchor-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
 .mf-anchor-row select { width: auto; }
+.mf-anchor-row .rm { margin-left: auto; flex: none; }
+/* second and later relations to the same bundle stack in one card */
+.mf-anchor-row.mf-rel-sep { border-top: 1px solid var(--line); padding-top: 14px; margin-top: 16px; }
 .mf-subset { display: flex; align-items: center; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
 .mf-subset .chip { cursor: pointer; }
 .mf-subset .chip[disabled] { opacity: 0.6; cursor: default; }
@@ -1161,6 +1165,9 @@ button.ghost.mk-new { margin-top: 2px; }
 .mf-dim-row .chip { width: 300px; flex: none; }
 .mf-dim-row input { flex: 1; }
 .mf-dim-row select { width: 120px; flex: none; }
+.mf-dim-row select.grain { width: 104px; }
+/* the interval-match choices are sentences, so they need the room */
+select.match { width: auto; max-width: 100%; }
 .mf-dim-row.imported { color: var(--ink-3); font-size: 11px; padding: 6px 8px; gap: 8px; }
 .mf-dim-row.imported .tick { color: var(--pink); }
 .mf-dim-col { color: var(--ink-2); }

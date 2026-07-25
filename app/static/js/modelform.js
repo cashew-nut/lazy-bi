@@ -15,8 +15,8 @@ import { openEditor } from "./editor.js";
 import { openMemoriesModal } from "./memories.js";
 import {
   autoGrow, colsOf, columnImportPanel, datasetCards, dimFromColumn, loadDatasets,
-  manualPathRow, NAME_RE, note, pairRow, sectionRail, sourceSchema, spineCreatePanel, spineFields,
-  synonymsInput, textAreaField, textField,
+  manualPathRow, matchRow, NAME_RE, note, pairRow, sectionRail, sourceSchema, spineCreatePanel,
+  spineFields, synonymsInput, textAreaField, textField,
 } from "./formkit.js";
 import { $, api, el } from "./lib.js";
 import { setPanelDescription, setPanelModel } from "./panelchat.js";
@@ -40,7 +40,10 @@ const form = {
   name: "", label: "", description: "",
   source: null,        // {path, format}
   relations: [],       // {name, path, format, how, pairs:[{left,right}]} — yaml `joins`
-  imports: [],         // {bundle, anchor, datasets:null|[names], pairs:[{left,right}]}
+  // {bundle, anchor, datasets:null|[names], how, pairs:[{left,right}],
+  //  interval:{start,end,point}, match}
+  // `how: "between"` uses `interval`/`match` instead of `pairs` — see importControls
+  imports: [],
   dimensions: [],      // spec dimension dicts (column/type/label/spine/geo/synonyms preserved)
   measures: [],        // {name, label, expr, format, description, synonyms, frame?, frame_emits?}
   // transient UI state (never part of the spec)
@@ -78,7 +81,9 @@ function toSpec() {
     source: form.source || { path: "", format: "parquet" },
     joins: form.relations.map((r) => ({ name: r.name, path: r.path, format: r.format, how: r.how, ...pairsOf(r.pairs) })),
     dimension_imports: form.imports.map((i) => ({
-      bundle: i.bundle, anchor_dataset: i.anchor, datasets: i.datasets, ...pairsOf(i.pairs),
+      bundle: i.bundle, anchor_dataset: i.anchor, datasets: i.datasets, how: i.how || "left",
+      match: i.match || "overlap",
+      ...(i.how === "between" ? intervalOf(i.interval) : pairsOf(i.pairs)),
     })),
     dimensions: form.dimensions,
     measures: form.measures
@@ -126,9 +131,7 @@ export async function openModelForm(name) {
       name: spec.name, label: spec.label, description: spec.description,
       source: spec.source,
       relations: spec.joins.map((j) => ({ ...j, pairs: toPairs(j) })),
-      imports: spec.dimension_imports.map((i) => ({
-        bundle: i.bundle, anchor: i.anchor_dataset, datasets: i.datasets, pairs: toPairs(i),
-      })),
+      imports: spec.dimension_imports.map(importFromSpec),
       dimensions: spec.dimensions, measures: spec.measures,
     });
     setPanelModel(name, form.label || name);
@@ -142,8 +145,7 @@ export async function openModelForm(name) {
     // with the shared dimensions already on board
     const b = state.bundles.find((x) => x.name === seedBundle);
     if (b && b.datasets.length) {
-      const anchor = b.datasets[0];
-      form.imports.push({ bundle: b.name, anchor: anchor.name, datasets: null, pairs: [guessPair(anchor)] });
+      form.imports.push(newImport(b, b.datasets[0]));
       await anchorSchema(form.imports[0]);
     }
   }
@@ -154,6 +156,25 @@ export async function openModelForm(name) {
 hooks.openModelForm = openModelForm;
 
 const toPairs = (j) => j.left_on.map((l, idx) => ({ left: l, right: j.right_on[idx] ?? l }));
+
+/* An interval (`how: between`) import's keys: a [start, end] pair on this
+   model and one date column on the imported side. Emitted only once all three
+   are chosen — a partial one renders as empty keys, which /generate reports as
+   a problem rather than silently writing a broken join. */
+const intervalOf = (iv = {}) => (iv.start && iv.end && iv.point
+  ? { left_on: [iv.start, iv.end], right_on: [iv.point] }
+  : { left_on: [], right_on: [] });
+
+const toInterval = (j) => (j.how === "between"
+  ? { start: j.left_on[0] || "", end: j.left_on[1] || "", point: j.right_on[0] || "" }
+  : { start: "", end: "", point: "" });
+
+/* Form-state shape for one dimension_imports entry. */
+const importFromSpec = (i) => ({
+  bundle: i.bundle, anchor: i.anchor_dataset, datasets: i.datasets, how: i.how || "left",
+  pairs: i.how === "between" ? [{ left: "", right: "" }] : toPairs(i),
+  interval: toInterval(i), match: i.match || "overlap",
+});
 
 const bundleDataset = (bundleName, dsName) =>
   (state.bundles.find((b) => b.name === bundleName)?.datasets || []).find((d) => d.name === dsName);
@@ -180,7 +201,14 @@ function sectionProblem(id) {
   }
   if (id === "commons") {
     for (const i of form.imports) {
-      if (!i.pairs.some((p) => p.left && p.right)) return `import '${i.bundle}': relate at least one column pair`;
+      if (i.how === "between") {
+        const iv = i.interval || {};
+        if (!(iv.start && iv.end && iv.point)) {
+          return `import '${i.bundle}': a date-range relation needs a start, an end and their date column`;
+        }
+      } else if (!i.pairs.some((p) => p.left && p.right)) {
+        return `import '${i.bundle}': relate at least one column pair`;
+      }
     }
   }
   if (id === "measures") {
@@ -290,11 +318,14 @@ function renderOverview(main) {
     setPanelDescription(v);
     markDirty();
   }, "What this model covers — shown to Chat as context when answering questions about it."));
-  if (form.imports.length && !form.editingName) {
+  // a bundle can be imported more than once (different anchors/join modes) —
+  // name each one once here
+  const bundleNames = [...new Set(form.imports.map((i) => i.bundle))];
+  if (bundleNames.length && !form.editingName) {
     main.append(el("div", { class: "mf-picked", style: "margin-top:12px" },
       el("span", { class: "ok" }, "✓"),
-      ` started from common model${form.imports.length === 1 ? "" : "s"} `
-      + form.imports.map((i) => `'${i.bundle}'`).join(", ")
+      ` started from common model${bundleNames.length === 1 ? "" : "s"} `
+      + bundleNames.map((n) => `'${n}'`).join(", ")
       + " — its shared dimensions are imported and ready to relate under COMMON MODELS"));
   }
 }
@@ -414,33 +445,32 @@ function appendColumnImport(box, target, cols) {
 function renderImports(main) {
   main.append(el("div", { class: "sec-title" }, "Common models"));
   main.append(note("import shared dimensions declared once in a common dimension model. Anchor the import on "
-    + "one of its datasets and relate it to this model by column pairs. Imported dimensions are read-only "
-    + "here — they're managed in the common model, so every importer stays consistent."));
+    + "one of its datasets and relate it to this model — either by matching column pairs, or, for a "
+    + "calendar/date table, by the date range each of this model's rows covers. Imported dimensions are "
+    + "read-only here — they're managed in the common model, so every importer stays consistent."));
   if (!state.bundles.length) {
     main.append(note("none yet — create a common dimension model from the Modelling workspace first"));
     return;
   }
   for (const b of state.bundles) {
-    const imp = form.imports.find((i) => i.bundle === b.name);
-    const card = el("div", { class: "mf-card" + (imp ? " on" : "") });
-    const toggle = el("button", { class: "btn " + (imp ? "" : "plain") }, imp ? "✓ IMPORTED" : "IMPORT");
-    toggle.addEventListener("click", async () => {
-      if (imp) form.imports = form.imports.filter((i) => i !== imp);
-      else {
-        const anchor = b.datasets[0];
-        const next = { bundle: b.name, anchor: anchor.name, datasets: null, pairs: [guessPair(anchor)] };
-        form.imports.push(next);
-        markDirty();
-        render();
-        await anchorSchema(next);
-      }
+    // a bundle can be imported more than once — e.g. reference data joined on a
+    // key, and a date table in the same bundle joined on a range
+    const imps = form.imports.filter((i) => i.bundle === b.name);
+    const card = el("div", { class: "mf-card" + (imps.length ? " on" : "") });
+    const add = el("button", { class: "btn " + (imps.length ? "plain" : "") },
+      imps.length ? "+ RELATION" : "IMPORT");
+    add.addEventListener("click", async () => {
+      const next = newImport(b, b.datasets[0]);
+      form.imports.push(next);
       markDirty();
+      render();
+      await anchorSchema(next);
       render();
     });
     card.append(el("div", { class: "mf-card-head" },
       el("span", { class: "nm" }, b.label),
-      el("span", { class: "mf-colcount" }, b.datasets.map((d) => d.name).join(", ")), toggle));
-    if (imp) card.append(...importControls(b, imp));
+      el("span", { class: "mf-colcount" }, b.datasets.map((d) => d.name).join(", ")), add));
+    imps.forEach((imp, idx) => card.append(...importControls(b, imp, idx > 0)));
     main.append(card);
   }
 }
@@ -453,28 +483,104 @@ function guessPair(anchorDs) {
   return { left, right };
 }
 
-function importControls(b, imp) {
+const newImport = (b, anchorDs) => ({
+  bundle: b.name, anchor: anchorDs.name, datasets: null, how: "left",
+  pairs: [guessPair(anchorDs)], interval: { start: "", end: "", point: "" }, match: "overlap",
+});
+
+/* Column picker for the three keys of an interval import. Degrades to a plain
+   text input when the schema behind it is unreachable, like pairRow does. */
+function columnSelect(value, cols, placeholder, set) {
+  if (!cols || !cols.length) {
+    const input = el("input", { value, placeholder, spellcheck: "false" });
+    input.addEventListener("input", () => { set(input.value); markDirty(); });
+    return input;
+  }
+  const sel = el("select", {}, el("option", { value: "" }, `— ${placeholder} —`));
+  if (value && !cols.some((c) => c.name === value)) sel.append(el("option", { value }, value));
+  for (const c of cols) sel.append(el("option", { value: c.name }, `${c.name} · ${c.dtype}`));
+  sel.value = value;
+  sel.addEventListener("change", () => { set(sel.value); markDirty(); render(); });
+  return sel;
+}
+
+function intervalControls(b, imp, anchorDs) {
+  const iv = imp.interval;
+  const mine = modelColumns();
+  const theirs = anchorDs && colsOf(anchorDs);
+  const out = [el("div", { class: "field-label", style: "margin-top:8px" },
+    `DATE RANGE · this model's rows ⊇ ${b.name}.${imp.anchor}`)];
+  out.push(el("div", { class: "mf-pair" },
+    columnSelect(iv.start, mine, "start column", (v) => { iv.start = v; }),
+    el("span", { class: "mf-link" }, "→"),
+    columnSelect(iv.end, mine, "end column", (v) => { iv.end = v; }),
+    el("span", { class: "mf-link" }, "⊇"),
+    columnSelect(iv.point, theirs, "their date column", (v) => { iv.point = v; })));
+  out.push(note("a row of this model is counted in every period it was open for — an empty end means still "
+    + "open. Group by the imported date, or by its month/quarter/year columns, for point-in-time totals. "
+    + "The imported table is narrowed to one row per period at whatever grain the query asks for, so totals "
+    + "stay correct as the grain changes."));
+  out.push(matchRow(imp, (v) => { imp.match = v; markDirty(); render(); }));
+
+  if (!(iv.start && iv.end && iv.point)) {
+    out.push(el("div", { class: "mf-warn" }, "⚠ pick all three columns to complete this relation"));
+  }
+  return out;
+}
+
+const JOIN_MODES = [
+  ["left", "matching columns", "each row of this model picks up the shared row with the same key"],
+  ["between", "a date range", "each row of this model is counted in every period the imported table "
+    + "holds between its start and end columns — point-in-time aggregation, and the way to use a "
+    + "calendar table that relates to nothing else"],
+];
+
+/* `divider` rules off this relation from the one above it — a bundle imported
+   more than once stacks several of these blocks inside one card. */
+function importControls(b, imp, divider = false) {
   const out = [];
   const anchorSel = el("select", {}, ...b.datasets.map((d) => el("option", { value: d.name }, d.name)));
   anchorSel.value = imp.anchor;
   anchorSel.addEventListener("change", async () => {
     imp.anchor = anchorSel.value;
     imp.pairs = [guessPair(bundleDataset(b.name, imp.anchor))];
+    imp.interval = { ...imp.interval, point: "" };
     markDirty();
     await anchorSchema(imp);
     render();
   });
-  out.push(el("div", { class: "mf-anchor-row" },
+  const anchorRow = el("div", { class: "mf-anchor-row" + (divider ? " mf-rel-sep" : "") },
     el("span", { class: "field-label" }, "ANCHOR DATASET"), anchorSel,
-    el("span", { class: "mf-colcount" }, "the dataset this model relates to")));
+    el("span", { class: "mf-colcount" }, "the dataset this model relates to"));
+  // dropping the last relation to a bundle is how you un-import it
+  const rm = el("button", { class: "rm", title: "remove this relation" }, "✕");
+  rm.addEventListener("click", () => {
+    form.imports = form.imports.filter((i) => i !== imp);
+    markDirty();
+    render();
+  });
+  anchorRow.append(rm);
+  out.push(anchorRow);
+
+  const modeSel = el("select", {}, ...JOIN_MODES.map(([v, lbl]) => el("option", { value: v }, lbl)));
+  modeSel.value = imp.how === "between" ? "between" : "left";
+  modeSel.addEventListener("change", () => { imp.how = modeSel.value; markDirty(); render(); });
+  out.push(el("div", { class: "mf-anchor-row" },
+    el("span", { class: "field-label" }, "RELATE ON"), modeSel,
+    el("span", { class: "mf-colcount" }, JOIN_MODES.find(([v]) => v === modeSel.value)[2])));
 
   const anchorDs = bundleDataset(b.name, imp.anchor);
-  out.push(el("div", { class: "field-label", style: "margin-top:8px" }, `RELATION · this model ⇄ ${b.name}.${imp.anchor}`));
-  imp.pairs.forEach((p, pi) => out.push(modelPair(p, modelColumns(), anchorDs && colsOf(anchorDs),
-    () => { imp.pairs.splice(pi, 1); markDirty(); render(); })));
-  const addPair = el("button", { class: "ghost" }, "+ relate another column pair");
-  addPair.addEventListener("click", () => { imp.pairs.push({ left: "", right: "" }); markDirty(); render(); });
-  out.push(addPair);
+  if (imp.how === "between") {
+    out.push(...intervalControls(b, imp, anchorDs));
+  } else {
+    out.push(el("div", { class: "field-label", style: "margin-top:8px" },
+      `RELATION · this model ⇄ ${b.name}.${imp.anchor}`));
+    imp.pairs.forEach((p, pi) => out.push(modelPair(p, modelColumns(), anchorDs && colsOf(anchorDs),
+      () => { imp.pairs.splice(pi, 1); markDirty(); render(); })));
+    const addPair = el("button", { class: "ghost" }, "+ relate another column pair");
+    addPair.addEventListener("click", () => { imp.pairs.push({ left: "", right: "" }); markDirty(); render(); });
+    out.push(addPair);
+  }
 
   if (b.datasets.length > 1) {
     const subset = el("div", { class: "mf-subset" }, el("span", { class: "field-label" }, "DATASETS"));

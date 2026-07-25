@@ -370,6 +370,167 @@ def test_two_imports_with_colliding_dimension_rejected():
         semantic.resolve_imports(model, {"a": bundle_a, "b": bundle_b})
 
 
+# --- Interval (`how: between`) imports: disconnected calendar tables --------
+
+CAL_BUNDLE = """
+name: cal
+datasets:
+  - name: days
+    source: {format: parquet, path: s3://b/calendar.parquet}
+    dimensions:
+      - {name: as_of, column: date, label: As Of, type: time}
+      - {name: as_of_quarter, column: quarter, label: Quarter, grain: 1q}
+"""
+
+BETWEEN_IMPORT = (
+    "dimension_imports:\n"
+    "  - {bundle: cal, anchor_dataset: days, how: between, "
+    "left_on: [start_date, end_date], right_on: date}\n"
+)
+
+
+def test_interval_import_parses_and_contributes_dimensions():
+    model = semantic.parse_model_text(FACT + BETWEEN_IMPORT)
+    semantic.resolve_imports(model, {"cal": semantic.parse_bundle_text(CAL_BUNDLE)})
+    imp = model.imports[0]
+    assert imp.is_interval and imp.how == "between"
+    assert imp.left_on == ["start_date", "end_date"] and imp.right_on == ["date"]
+    assert {"as_of", "as_of_quarter"} <= set(model.dimensions)
+
+
+def test_dimension_grain_parses_and_is_validated():
+    bundle = semantic.parse_bundle_text(CAL_BUNDLE)
+    assert bundle.datasets["days"].dimensions["as_of_quarter"].grain == "1q"
+    assert bundle.datasets["days"].dimensions["as_of"].grain is None
+    with pytest.raises(semantic.ModelError, match="unsupported grain '1fortnight'"):
+        semantic.parse_bundle_text(CAL_BUNDLE.replace("grain: 1q", "grain: 1fortnight"))
+
+
+def test_interval_import_match_defaults_to_overlap_and_is_validated():
+    assert semantic.parse_model_text(FACT + BETWEEN_IMPORT).imports[0].match == "overlap"
+    with pytest.raises(semantic.ModelError, match="'match' must be one of"):
+        semantic.parse_model_text(
+            FACT + "dimension_imports:\n"
+            "  - {bundle: cal, anchor_dataset: days, how: between, "
+            "left_on: [start_date, end_date], right_on: date, match: sometimes}\n"
+        )
+
+
+def test_interval_import_match_round_trips_through_spec_and_yaml():
+    text = (
+        FACT + "dimension_imports:\n"
+        "  - {bundle: cal, anchor_dataset: days, how: between, "
+        "left_on: [start_date, end_date], right_on: date, match: period_end}\n"
+    )
+    model = semantic.parse_model_text(text)
+    assert model.imports[0].match == "period_end"
+    reparsed = semantic.parse_model_text(semantic.spec_to_yaml(semantic.model_to_spec(model)))
+    assert reparsed.imports[0].match == "period_end"
+
+
+def test_spine_match_defaults_to_overlap_and_is_validated():
+    spine = "dimensions:\n  - {name: active_at, type: time, spine: {start: s, end: e%s}}\n"
+    assert semantic.parse_model_text(FACT + spine % "").dimensions["active_at"].spine.match == "overlap"
+    with pytest.raises(semantic.ModelError, match="'match' must be one of"):
+        semantic.parse_model_text(FACT + spine % ", match: whenever")
+
+
+def test_spine_match_round_trips_through_spec_and_yaml():
+    model = semantic.parse_model_text(
+        FACT + "dimensions:\n"
+        "  - {name: active_at, type: time, spine: {start: s, end: e, match: period_end}}\n"
+    )
+    reparsed = semantic.parse_model_text(semantic.spec_to_yaml(semantic.model_to_spec(model)))
+    assert reparsed.dimensions["active_at"].spine.match == "period_end"
+
+
+def test_dimension_grain_round_trips_through_bundle_spec_and_yaml():
+    bundle = semantic.parse_bundle_text(CAL_BUNDLE)
+    reparsed = semantic.parse_bundle_text(
+        semantic.bundle_spec_to_yaml(semantic.bundle_to_spec(bundle)))
+    assert reparsed.datasets["days"].dimensions["as_of_quarter"].grain == "1q"
+    assert reparsed.datasets["days"].dimensions["as_of"].grain is None
+
+
+def test_interval_import_needs_a_start_and_an_end():
+    with pytest.raises(semantic.ModelError, match="start_column, end_column"):
+        semantic.parse_model_text(
+            FACT + "dimension_imports:\n"
+            "  - {bundle: cal, anchor_dataset: days, how: between, left_on: [start_date], right_on: date}\n"
+        )
+
+
+def test_interval_import_needs_a_single_date_column():
+    with pytest.raises(semantic.ModelError, match="single right_on"):
+        semantic.parse_model_text(
+            FACT + "dimension_imports:\n"
+            "  - {bundle: cal, anchor_dataset: days, how: between, "
+            "left_on: [start_date, end_date], right_on: [date, quarter]}\n"
+        )
+
+
+def test_between_is_not_a_join_kind_for_plain_joins():
+    with pytest.raises(semantic.ModelError, match="unsupported how 'between'"):
+        semantic.parse_model_text(
+            FACT + "joins:\n  - {name: j, source: {format: csv, path: s3://b/j.csv}, "
+            "on: k, how: between}\n"
+        )
+
+
+def test_interval_import_round_trips_through_spec_and_yaml():
+    model = semantic.parse_model_text(FACT + BETWEEN_IMPORT)
+    reparsed = semantic.parse_model_text(semantic.spec_to_yaml(semantic.model_to_spec(model)))
+    assert reparsed.imports[0].how == "between"
+    assert reparsed.imports[0].left_on == ["start_date", "end_date"]
+    assert reparsed.imports[0].right_on == ["date"]
+
+
+def test_import_naming_an_unconnected_dataset_is_rejected():
+    """The silent-drop bug: a dataset with no join edge to the anchor used to be
+    pruned quietly, so its dimensions never showed up in the builder."""
+    mixed = semantic.parse_bundle_text(BUNDLE + """
+  - name: days
+    source: {format: parquet, path: s3://b/calendar.parquet}
+    dimensions:
+      - {name: as_of, column: date, label: As Of, type: time}
+""")
+    model = semantic.parse_model_text(
+        FACT + "dimension_imports:\n"
+        "  - {bundle: geo, anchor_dataset: regions, on: region, datasets: [regions, days]}\n"
+    )
+    with pytest.raises(semantic.ModelError, match="no chain of joins connects"):
+        semantic.resolve_imports(model, {"geo": mixed})
+
+
+def test_one_bundle_can_be_imported_by_key_and_by_interval():
+    """The shape a bundle holding both reference data and a date table needs:
+    two entries, one equality-anchored, one interval-anchored."""
+    mixed = semantic.parse_bundle_text(BUNDLE + """
+  - name: days
+    source: {format: parquet, path: s3://b/calendar.parquet}
+    dimensions:
+      - {name: as_of, column: date, label: As Of, type: time}
+""")
+    model = semantic.parse_model_text(
+        FACT + "dimension_imports:\n"
+        "  - {bundle: geo, anchor_dataset: regions, on: region, datasets: [regions, territories]}\n"
+        "  - {bundle: geo, anchor_dataset: days, how: between, "
+        "left_on: [start_date, end_date], right_on: date, datasets: [days]}\n"
+    )
+    semantic.resolve_imports(model, {"geo": mixed})
+    assert {"region", "territory_name", "as_of"} <= set(model.dimensions)
+    assert [b.import_spec.is_interval for b in model.import_bindings] == [False, True]
+
+
+def test_real_calendar_bundle_resolves_into_subscriptions(models):
+    subs = models["subscriptions"]
+    assert "calendar_quarter" in subs.dimensions
+    assert subs.dimensions["calendar_date"].type == "time"
+    interval = [b for b in subs.import_bindings if b.import_spec.is_interval]
+    assert len(interval) == 1
+    assert interval[0].import_spec.left_on == ["start_date", "end_date"]
+
+
 def test_real_geography_bundle_resolves_into_sales(models):
     # `models` fixture resolves imports against the real dimensions/*.yaml
     sales = models["sales"]

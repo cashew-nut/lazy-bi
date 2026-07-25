@@ -1,0 +1,83 @@
+# Common dimensional model: a standalone date table.
+#
+# Nothing relates this bundle to any fact model by a shared key — that is the
+# point. A model reaches it with an *interval* import:
+#
+#   dimension_imports:
+#     - bundle: calendar
+#       anchor_dataset: days
+#       how: between
+#       left_on: [start_date, end_date]   # the interval on the fact model
+#       right_on: date                    # this table's day column
+#
+# which matches each fact row against every period it was open for. Grouping by
+# any dimension below then aggregates point-in-time ("what was active in this
+# period") rather than by the date a row happened to start on. A null end
+# column means still open. The calendar's own range bounds every such report.
+#
+# The table stores days, but the join is not a per-day join: the engine narrows
+# it to one row per period at the grain the query is asking for, so a model row
+# is counted once per period and additive measures are correct at every grain,
+# not just at day grain. `grain:` below is what tells it how far each column
+# can be narrowed — a quarter label is constant across a quarter, a day flag is
+# not.
+#
+# Which periods a row lands in is the import's `match:` — `overlap` (default:
+# active at any point during the period), or `period_start` / `period_end` for
+# a point-in-time snapshot. A period's span is the days this table actually
+# holds for it, so a business-day calendar reports business days.
+name: calendar
+label: Calendar
+description: "Standalone date table for point-in-time reporting — import it with `how: between` against a start/end column pair."
+
+datasets:
+  - name: days
+    source:
+      format: parquet
+      path: s3://cash-intel/ref/calendar.parquet
+    dimensions:
+      - name: calendar_date
+        column: date
+        label: Calendar Date
+        type: time
+        description: One row per day. Group by it — at day grain or any coarser grain from the picker — for a point-in-time series.
+        synonyms: [as of, as at, point in time, active date]
+      - name: calendar_month
+        column: month
+        grain: 1mo
+        label: Calendar Month
+        description: Sortable year-month label, e.g. "2026-01 Jan".
+      - name: calendar_month_start
+        column: month_start
+        grain: 1mo
+        label: Calendar Month Start
+        type: time
+      - name: calendar_quarter
+        column: quarter
+        grain: 1q
+        label: Calendar Quarter
+        description: Year-qualified quarter, e.g. "2026-Q1".
+      - name: calendar_year
+        column: year
+        grain: 1y
+        label: Calendar Year
+        type: numeric
+      - name: calendar_week_start
+        column: week_start
+        grain: 1w
+        label: Calendar Week Start
+        type: time
+      - name: calendar_day_of_week
+        column: day_of_week
+        label: Calendar Day Of Week
+      - name: calendar_is_month_start
+        column: is_month_start
+        label: Is Month Start
+        description: A property of the day, so it only reads meaningfully at day grain.
+      - name: calendar_is_month_end
+        column: is_month_end
+        label: Is Month End
+        description: "A property of the day. For month-end reporting set `match: period_end` on the import instead of filtering this."
+      - name: calendar_is_weekend
+        column: is_weekend
+        label: Is Weekend

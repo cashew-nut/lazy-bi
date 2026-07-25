@@ -13,6 +13,17 @@ dimension_imports:
   right_on: study_id
   datasets:
   - studies
+# the calendar relates to nothing by key — it is joined on the interval each
+# cycle was open for, so grouping by its columns counts a cycle in every period
+# it spanned rather than only the one it started in
+- bundle: clinops_common_dimensions
+  anchor_dataset: calendar
+  how: between
+  left_on:
+  - start_date
+  - end_date
+  right_on: date
+  datasets:
   - calendar
 dimensions:
 - name: date_type

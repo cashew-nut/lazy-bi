@@ -30,6 +30,7 @@ class YamlIn(BaseModel):
 class SpineSpec(BaseModel):
     start: str
     end: str
+    match: str = "overlap"   # see semantic.MATCH_MODES
 
 
 class GeoSpec(BaseModel):
@@ -50,6 +51,7 @@ class DimensionSpec(BaseModel):
     description: str = ""
     spine: SpineSpec | None = None
     geo: GeoSpec | None = None
+    grain: str | None = None
     synonyms: list[str] = []
 
 
@@ -86,6 +88,7 @@ class ImportSpec(BaseModel):
     right_on: list[str] = []
     how: str = "left"
     datasets: list[str] | None = None
+    match: str = "overlap"    # `how: between` only — see semantic.MATCH_MODES
 
 
 class ModelSpec(BaseModel):

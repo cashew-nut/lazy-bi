@@ -352,6 +352,25 @@ function renderDims(main) {
   if (!form.datasets.length) main.append(note("add a dataset first (DATASETS section)"));
 }
 
+/* A column's `grain:` — the bucket it stays constant across. It only matters
+   for a date table imported with `how: between`: the engine narrows such a
+   table to one row per bucket so measures stay correct at whatever grain a
+   query asks for, and this is how it knows how far each column can be
+   narrowed. Blank (the default) means the table's own row grain. */
+const GRAINS = [["", "— per row —"], ["1d", "a day"], ["1w", "a week"],
+                ["1mo", "a month"], ["1q", "a quarter"], ["1y", "a year"]];
+
+function grainSelect(dim) {
+  const sel = el("select", {
+    class: "grain",
+    title: "date tables only: the period this column is constant across, so an interval "
+      + "(how: between) import can narrow to one row per period",
+  }, ...GRAINS.map(([v, lbl]) => el("option", { value: v }, lbl)));
+  sel.value = dim.grain || "";
+  sel.addEventListener("change", () => { dim.grain = sel.value || null; markDirty(); });
+  return sel;
+}
+
 function renderDatasetDims(box, d) {
   box.innerHTML = "";
   const cols = colsOf(d) || [];
@@ -377,7 +396,7 @@ function renderDatasetDims(box, d) {
       el("span", { class: "chip on" }, el("span", { class: "tick" }, "✓"),
         el("span", { class: "lbl" }, colName),
         el("span", { class: "hint" }, dim.spine ? "generated timeline" : dtype)),
-      label, type,
+      label, type, grainSelect(dim),
       synonymsInput(dim.synonyms || (dim.synonyms = []), markDirty));
     if (dim.geo) row.append(el("span", { class: "mf-colcount" }, "◎ geo"));
     row.append(rm);

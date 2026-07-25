@@ -144,6 +144,64 @@ def test_form_save_flow_creates_model_with_unmatched_key_names(client):
         assert client.delete("/api/models/form_smoke").status_code == 204
 
 
+def test_spec_round_trip_preserves_interval_import(client):
+    """The form opens `subscriptions`, which imports the calendar on a date
+    range: `how` and the [start, end] key pair must survive spec -> yaml."""
+    spec = client.get("/api/models/subscriptions/spec").json()["spec"]
+    imp = spec["dimension_imports"][0]
+    assert imp["how"] == "between"
+    assert imp["left_on"] == ["start_date", "end_date"] and imp["right_on"] == ["date"]
+    body = client.post("/api/models/generate", json=spec).json()
+    assert body["ok"] is True
+    assert "how: between" in body["yaml"]
+    assert client.post("/api/models/validate", json={"yaml": body["yaml"]}).json()["ok"] is True
+
+
+def test_form_save_flow_creates_model_with_interval_import(client):
+    """Backend path behind the form's "relate on a date range" mode: a model
+    whose only relation to the calendar is the window each of its rows covers."""
+    spec = {
+        "name": "interval_smoke", "label": "Interval Smoke", "description": "",
+        "source": {"path": "s3://cash-intel/subscriptions/*.parquet", "format": "parquet"},
+        "joins": [],
+        "dimension_imports": [{
+            "bundle": "calendar", "anchor_dataset": "days", "how": "between",
+            "left_on": ["start_date", "end_date"], "right_on": ["date"], "datasets": None,
+        }],
+        "dimensions": [{"name": "plan", "column": "plan", "label": "Plan",
+                        "type": "categorical", "description": "", "spine": None, "geo": None}],
+        "measures": [{"name": "actives", "expr": "count_distinct(customer_id)", "label": "Actives",
+                      "format": "number", "description": ""}],
+    }
+    gen = client.post("/api/models/generate", json=spec).json()
+    assert gen["ok"] is True
+    # the form's column list is the post-join scan, so it sees the calendar side
+    assert "quarter" in [c["name"] for c in gen["columns"]]
+    created = client.post("/api/models", json={"yaml": gen["yaml"]})
+    assert created.status_code == 201
+    try:
+        q = client.post("/api/query", json={
+            "model": "interval_smoke", "dimensions": [{"name": "calendar_quarter"}],
+            "measures": ["actives"], "filters": [], "limit": 20,
+        })
+        assert q.status_code == 200
+        rows = q.json()["rows"]
+        assert rows and all(r["actives"] > 0 for r in rows)
+    finally:
+        assert client.delete("/api/models/interval_smoke").status_code == 204
+
+
+def test_generate_reports_incomplete_interval_import(client):
+    """A half-filled date-range relation must come back as a problem, not as a
+    silently broken join."""
+    spec = client.get("/api/models/subscriptions/spec").json()["spec"]
+    spec["dimension_imports"][0]["left_on"] = []
+    spec["dimension_imports"][0]["right_on"] = []
+    body = client.post("/api/models/generate", json=spec).json()
+    assert body["ok"] is False
+    assert "left_on" in body["error"] or "'on'" in body["error"]
+
+
 def test_dataset_schema_endpoint(client):
     res = client.get("/api/datasets/schema", params={
         "path": "s3://cash-intel/ref/products.csv", "format": "csv"})
