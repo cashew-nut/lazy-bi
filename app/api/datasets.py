@@ -8,12 +8,20 @@ Read-only. Reuses semantic.model_source_matchers (shared with app/api/explorer.p
 semantic.per_model_stats and semantic.group_objects for the grouping itself."""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+import re
+from pathlib import PurePosixPath
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from .. import config, engine, s3, semantic
+from ..auth import require_role
 from ..registry import registry
 
 router = APIRouter(tags=["datasets"])
+
+_SAFE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
+_SAFE_FILENAME = re.compile(r"^[A-Za-z0-9_.-]+$")
+_UPLOAD_FORMATS = {".csv": "csv", ".parquet": "parquet"}
 
 
 @router.get("/datasets")
@@ -68,3 +76,51 @@ def dataset_schema(path: str, format: str = "parquet"):
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"source not reachable: {exc}")
     return {"columns": [{"name": n, "dtype": str(t)} for n, t in schema.items()]}
+
+
+@router.post("/datasets/local", status_code=201, dependencies=[Depends(require_role("author"))])
+async def upload_local_dataset(name: str = Form(...), file: UploadFile = File(...)):
+    """Upload a .csv/.parquet file into the bucket under local/<name>/ —
+    unmodeled, exactly like a raw_data/ file, so it immediately shows up in
+    GET /datasets ready to build a model on from the Modelling workspace's
+    source picker. Nothing about this touches the git-tracked codebase: the
+    bytes land in the bucket (the emulator or a real external bucket), never
+    in a committed directory."""
+    if not _SAFE_NAME.match(name):
+        raise HTTPException(status_code=400, detail="name must be alphanumeric (a-z, 0-9, _, -)")
+    filename = PurePosixPath(file.filename or "").name
+    ext = PurePosixPath(filename).suffix.lower()
+    if ext not in _UPLOAD_FORMATS:
+        raise HTTPException(status_code=400, detail="only .csv and .parquet files are supported")
+    if not _SAFE_FILENAME.match(filename):
+        raise HTTPException(status_code=400, detail="filename must be alphanumeric (a-z, 0-9, _, -, .)")
+
+    key = f"local/{name}/{filename}"
+    body = await file.read()
+    s3.client().put_object(Bucket=config.BUCKET, Key=key, Body=body)
+
+    fmt = _UPLOAD_FORMATS[ext]
+    path = f"s3://{config.BUCKET}/{key}"
+    try:
+        schema = engine.scan_source(semantic.Source(path=path, format=fmt)).collect_schema()
+        columns = [{"name": n, "dtype": str(t)} for n, t in schema.items()]
+    except Exception:
+        columns = None
+    return {"path": path, "format": fmt, "key": key, "columns": columns}
+
+
+@router.delete("/datasets/local/{name}", status_code=204, dependencies=[Depends(require_role("author"))])
+def delete_local_dataset(name: str):
+    """Remove every object uploaded under local/<name>/ — the counterpart to
+    upload_local_dataset above. 404s if the name doesn't exist so a typo
+    isn't silently a no-op."""
+    client = s3.client()
+    prefix = f"local/{name}/"
+    keys = [
+        o["Key"]
+        for page in client.get_paginator("list_objects_v2").paginate(Bucket=config.BUCKET, Prefix=prefix)
+        for o in page.get("Contents", [])
+    ]
+    if not keys:
+        raise HTTPException(status_code=404, detail=f"no local dataset named '{name}'")
+    client.delete_objects(Bucket=config.BUCKET, Delete={"Objects": [{"Key": k} for k in keys]})

@@ -71,7 +71,8 @@ def _sync_lineage(registry, pipeline: Pipeline, output_schema: Optional[list]) -
             model = registry.models[model_name]
             updated = datetime.now(timezone.utc).isoformat(timespec="seconds")
             section = pipelines_mod.build_lineage_section(pipeline, output_schema, issues, updated)
-            model.origin.write_text(semantic.replace_lineage_yaml(model.origin.read_text(), section))
+            new_text = semantic.replace_lineage_yaml(registry.read_model_text(model), section)
+            registry.write_model_text(model, new_text)
             registry.reload_all()
     except Exception:
         pass

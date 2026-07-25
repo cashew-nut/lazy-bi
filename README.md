@@ -773,6 +773,34 @@ never partially saved. Provenance is recorded in a separate SQLite table
 (`measure_provenance`, in `cash_intel.db`) alongside the yaml write; the yaml
 file remains the sole executable source of truth, the table is the audit log.
 
+### Locked (built-in) vs. local models
+
+The 7 models under `models/` (plus `dimensions/geography.yaml` and
+`dimensions/calendar.yaml`) are the built-in demo catalog — curated to be the
+minimal set that exercises every core-engine capability (a lazy read of each
+supported format, a shared dimension bundle, single- and multi-fact models, a
+`frame:` expression, point-in-time range joins) plus one large fact table for
+a performance benchmark. `GET /api/models` reports each one `"locked": true`.
+Structural changes — `POST /api/models` under an existing name, `PUT
+/api/models/{m}/yaml`, `DELETE /api/models/{m}` — 403 on a locked model even
+for admin; the catalog only changes by editing a file and committing it. The
+lock is structural only: measure-lab edits (create/update/delete a measure)
+still work on a locked model exactly as documented above.
+
+Any *new* model created through the app — `POST /api/models`, or the guided
+form's generate-then-save flow — is a **local** model instead: its yaml lives
+in `cash_intel.db` (`app/localmodelstore.py`, same gitignored SQLite file as
+visuals/dashboards/pipeline runs), never as a file under `models/`. It reports
+`"locked": false`, is freely renamable/editable/deletable through the API,
+and survives a restart (it's a real row in a real database) without ever
+becoming something `git status` notices. Build one over your own data by
+uploading a `.csv`/`.parquet` file first — `POST /api/datasets/local` (author
+role; multipart `name` + `file`) drops it into the bucket under
+`local/<name>/<filename>`, unmodeled, where it shows up in `GET /api/datasets`
+exactly like a `raw_data/` file — then open the Modelling workspace's source
+picker and build a model on it from scratch. `DELETE /api/datasets/local/{name}`
+removes every object under that prefix again.
+
 ## API
 
 Every route requires a signed-in identity — a session cookie from
@@ -794,8 +822,9 @@ route-by-route matrix lives in
 | `GET /api/models/{m}/dimensions/{d}/values` | distinct values (filter pickers) |
 | `GET/PUT /api/models/{m}/yaml` | read / save a model's YAML (save validates + hot-reloads) |
 | `POST /api/models/validate` | parse-check YAML + introspect source columns |
-| `POST /api/models`, `DELETE /api/models/{m}` | create a model file / delete one |
+| `POST /api/models`, `DELETE /api/models/{m}` | create a local model / delete one — 403 on a locked (built-in) model, see "Locked vs. local models" above |
 | `GET /api/datasets` | bucket objects grouped into pickable datasets (source picker) |
+| `POST /api/datasets/local`, `DELETE /api/datasets/local/{name}` | **author**: upload/remove a `.csv`/`.parquet` under `local/{name}/` — a source for a new local model |
 | `POST/PUT/DELETE /api/models/{m}/measures[/{name}]` | create/update/delete a model measure (**author** role; `frame:` payloads **admin** — see "Authoring model measures" above) |
 | `GET /api/models/{m}/measures/{name}/history` | append-only provenance for a saved measure |
 | `POST /api/query` | run a semantic query, returns columns + rows + timing |

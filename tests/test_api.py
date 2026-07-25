@@ -523,6 +523,100 @@ def test_editor_create_and_delete_model(client, tmp_path):
     assert "temp_probe" not in client.get("/api/health").json()["models"]
 
 
+# ── locked (built-in) vs local models — app/localmodelstore.py ─────────────
+
+def test_locked_models_reject_structural_changes(client):
+    """The 7 built-in demo models can't be replaced or deleted through the
+    app, even by an admin — the catalog itself only changes via a code
+    change. Measure-lab edits on a locked model are still allowed (tested
+    separately below) — the lock is structural only."""
+    yaml_text = client.get("/api/models/logistics/yaml").json()["yaml"]
+    assert client.put("/api/models/logistics/yaml", json={"yaml": yaml_text}).status_code == 403
+    assert client.delete("/api/models/logistics").status_code == 403
+
+
+def test_locked_model_still_accepts_measure_lab_edits(client):
+    created = client.post("/api/models/logistics/measures",
+                           json={"name": "temp_measure", "expr": "count()"})
+    assert created.status_code == 201
+    try:
+        updated = client.put("/api/models/logistics/measures/temp_measure",
+                              json={"name": "temp_measure", "expr": "count()", "label": "Temp"})
+        assert updated.status_code == 200
+    finally:
+        assert client.delete("/api/models/logistics/measures/temp_measure").status_code == 204
+
+
+def test_local_model_created_via_api_is_unlocked_and_not_a_file(client):
+    from app import config
+
+    yaml_text = ("name: local_probe\nsource: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
+                 "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: count()\n")
+    created = client.post("/api/models", json={"yaml": yaml_text})
+    assert created.status_code == 201
+    assert created.json()["locked"] is False
+    try:
+        assert not (config.MODELS_DIR / "local_probe.yaml").exists()
+        model = next(m for m in client.get("/api/models").json() if m["name"] == "local_probe")
+        assert model["locked"] is False
+        assert model["file"] is None
+
+        # unlocked — structural edits succeed here, unlike on a built-in model
+        good = yaml_text + "\n# a comment\n"
+        assert client.put("/api/models/local_probe/yaml", json={"yaml": good}).status_code == 200
+        assert "a comment" in client.get("/api/models/local_probe/yaml").json()["yaml"]
+    finally:
+        assert client.delete("/api/models/local_probe").status_code == 204
+    assert "local_probe" not in client.get("/api/health").json()["models"]
+
+
+def test_local_model_survives_reload(client):
+    yaml_text = ("name: local_reload_probe\nsource: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
+                 "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: count()\n")
+    assert client.post("/api/models", json={"yaml": yaml_text}).status_code == 201
+    try:
+        assert "local_reload_probe" in client.post("/api/models/reload").json()["loaded"]
+        assert "local_reload_probe" in client.get("/api/health").json()["models"]
+    finally:
+        client.delete("/api/models/local_reload_probe")
+
+
+# ── local dataset upload — app/api/datasets.py ─────────────────────────────
+
+def test_local_dataset_upload_appears_in_picker_and_delete_removes_it(client):
+    csv_bytes = b"a,b\n1,2\n3,4\n"
+    res = client.post("/api/datasets/local", data={"name": "my_upload"},
+                       files={"file": ("probe.csv", csv_bytes, "text/csv")})
+    assert res.status_code == 201
+    body = res.json()
+    assert body["format"] == "csv"
+    assert body["path"] == "s3://cash-intel/local/my_upload/probe.csv"
+    assert {c["name"] for c in body["columns"]} == {"a", "b"}
+
+    datasets = client.get("/api/datasets").json()["datasets"]
+    keys = {o["key"] for ds in datasets for o in ds["objects"]}
+    assert "local/my_upload/probe.csv" in keys
+
+    assert client.delete("/api/datasets/local/my_upload").status_code == 204
+    assert client.delete("/api/datasets/local/my_upload").status_code == 404
+
+    datasets_after = client.get("/api/datasets").json()["datasets"]
+    keys_after = {o["key"] for ds in datasets_after for o in ds["objects"]}
+    assert "local/my_upload/probe.csv" not in keys_after
+
+
+def test_local_dataset_upload_rejects_bad_format(client):
+    res = client.post("/api/datasets/local", data={"name": "bad_upload"},
+                       files={"file": ("probe.txt", b"hello", "text/plain")})
+    assert res.status_code == 400
+
+
+def test_local_dataset_upload_rejects_unsafe_name(client):
+    res = client.post("/api/datasets/local", data={"name": "../etc"},
+                       files={"file": ("probe.csv", b"a,b\n1,2\n", "text/csv")})
+    assert res.status_code == 400
+
+
 # ── 007-modelling-workspace ──────────────────────────────────
 
 def test_guided_import_roundtrip(client):
