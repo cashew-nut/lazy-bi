@@ -966,6 +966,8 @@ body.portal-dash #dash-name { pointer-events: none; }
 .mk-row .ic.dash { color: var(--neon); }
 .mk-row .nm { flex: 1; min-width: 0; color: var(--ink); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mk-row .mk-meta { flex: none; max-width: 50%; color: var(--ink-3); font-size: 9.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* multi-fact marker: a model built from several fact tables rather than a source */
+.mk-row .mk-tag { flex: none; padding: 0 4px; border: 1px solid color-mix(in srgb, var(--pink) 45%, transparent); border-radius: 2px; color: var(--pink); font-size: 8.5px; letter-spacing: 0.04em; text-transform: uppercase; }
 .mk-row .mk-meta.ok { color: var(--ok); }
 .mk-row .mk-meta.err { color: var(--bad); }
 

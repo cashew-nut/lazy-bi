@@ -35,6 +35,17 @@ source:
 #     anchor_dataset: regions
 #     on: region
 
+# To read several fact models on one axis instead, replace source/dimensions/
+# measures below with a facts: list. They are never joined to each other —
+# each is queried on its own and the results merge on the dimensions they all
+# share, so no measure inflates. A map: entry gives two differently-named
+# dimensions one shared name; anything they already agree on needs no entry.
+# facts:
+#   - model: marketing
+#     map: {date: month}
+#   - model: sales
+#     map: {date: order_date}
+
 dimensions:
   - name: some_column
   # - name: created_at
@@ -158,8 +169,11 @@ const COLUMN_KEYS = new Set(["column", "on", "left_on", "right_on", "start", "en
 // server round trip is still the only real arbiter of a valid document.
 const SCHEMAS = {
   model: {
-    top: ["name", "label", "description", "source", "joins", "dimension_imports", "dimensions", "measures"],
+    // `facts` is the alternative to `source`: a multi-fact model lists other
+    // models instead of a file, and borrows their measures
+    top: ["name", "label", "description", "source", "facts", "joins", "dimension_imports", "dimensions", "measures"],
     source: ["format", "path"],
+    facts: ["model", "alias", "map"],
     joins: ["name", "on", "left_on", "right_on", "how"],
     dimension_imports: ["bundle", "anchor_dataset", "on", "left_on", "right_on", "how", "match", "datasets"],
     dimensions: ["name", "column", "label", "type", "grain", "description", "spine", "geo", "synonyms"],

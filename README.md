@@ -578,6 +578,93 @@ directly — and one that's currently imported can't be deleted until its
 importers drop it. Endpoints mirror the model API under `/api/dimensions`
 (list, validate, create, `{name}/yaml` GET/PUT, delete, reload).
 
+### Multi-fact models (several fact tables on one axis)
+
+A dimension bundle solves "these models share a dimension". It does not solve
+"put these models' measures on the same chart". Marketing spend, sales revenue
+and active subscriptions live in three files with no key between them, and a
+single-source model can only ever measure one of them.
+
+A model that declares `facts:` instead of `source:` measures all of them:
+
+```yaml
+# models/commercial_overview.yaml
+name: commercial_overview
+label: Commercial Overview
+facts:
+  - model: marketing
+    map: { date: month }
+  - model: sales
+    map: { date: order_date }
+  - model: subscriptions
+    alias: subs
+    map: { date: calendar_date }
+```
+
+```
+date       marketing.spend  sales.revenue  subs.active_customers
+2025-01-01       241,880.55    3,918,204.10                  1,204
+2025-02-01       238,014.02    3,655,901.44                  1,231
+```
+
+**The facts are never joined to each other.** Each is queried on its own at the
+grain the query asked for, and the per-fact *results* are merged on the
+dimensions they share. This is the only shape that works: joining the fact
+tables would pair every order with every spend row for its month and inflate
+both sides. Running them separately and merging the aggregates leaves every
+measure at the grain of its own table, so asking for one measure or five
+returns identical numbers for each.
+
+How each fact reaches its date is its own business, and the model above uses
+three different mechanisms without caring:
+
+| fact | dimension | how it gets there |
+| --- | --- | --- |
+| `sales` | `order_date` | an event date, one row per order |
+| `marketing` | `month` | already monthly |
+| `subs` | `calendar_date` | an [interval import](#calendar-tables-how-between) — a subscription counts in every period it was open for |
+
+A spine dimension works here too. Whatever a fact does to answer "group me by
+time", it does before the merge.
+
+**`map:` conforms the names.** Three tables that all mean "date" call it three
+things; a `map:` entry says which of a fact's dimensions answers to a shared
+name. Dimensions the facts already agree on need no entry — `region` above is
+imported from the `geography` bundle by one fact and declared natively by the
+other two, and they all already call it `region`. That is the other half of
+what a dimension bundle is for.
+
+**Only dimensions every fact offers are groupable** — the intersection, not the
+union. `commercial_overview` exposes exactly `date` and `region`. `channel` is
+on sales and marketing but not subscriptions, so it isn't offered: there is no
+honest subscriptions number to put on a row labelled "net ads". Slicing by
+channel is a question for the sales or marketing model. Grouping or filtering
+by a non-shared dimension is a query error naming what *is* available.
+
+**Measures are prefixed by fact** (`sales.revenue`, `marketing.spend`) because
+two facts can easily both have a measure called `orders`. `alias:` renames the
+prefix; it defaults to the fact model's name.
+
+Other things worth knowing:
+
+- A bucket only one fact has rows for keeps its row and leaves the others null
+  — "this fact has nothing here", which is what happened. Charts draw a gap;
+  zero would be a number nobody measured.
+- Only the facts a query names a measure from are read at all. A query asking
+  for `sales.revenue` alone never touches the other two files.
+- Sorting and the row limit apply *after* the merge, so a limit can't drop a
+  bucket another fact still has rows for.
+- Facts don't nest — list the fact models directly.
+- A multi-fact model declares nothing else: no source, joins, dimensions,
+  measures or imports of its own. Those belong to the facts, and a load-time
+  error says so rather than silently ignoring them.
+
+**In the app**: *+ CREATE MULTI-FACT MODEL* in the Modelling workspace's create
+chooser. It has no single source to pick, so it edits as YAML rather than
+through the guided form; the list marks it `multi-fact` and shows its facts.
+Everywhere else it behaves like any other model — Studio, dashboards,
+cross-filtering, Chat.
+
 ### Performance (13M-row fact table)
 
 `python -m app.load_taxi` downloads 4 months of the public NYC TLC yellow-taxi

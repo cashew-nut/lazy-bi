@@ -53,6 +53,11 @@ class Registry:
         self.models = semantic.load_models(config.MODELS_DIR)
         for model in self.models.values():
             semantic.resolve_imports(model, self.dimension_bundles)
+        # facts resolve in a second pass: a multi-fact model conforms on its
+        # facts' *imported* dimensions too, so every model's imports must
+        # already be merged in before any of them is read as a fact
+        for model in self.models.values():
+            semantic.resolve_facts(model, self.models)
         self.layers = pipelines_mod.load_layers(config.PIPELINES_DIR)
         self.pipelines = pipelines_mod.load_pipelines(config.PIPELINES_DIR, self.layers)
 

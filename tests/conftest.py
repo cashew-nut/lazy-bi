@@ -59,6 +59,8 @@ def models(seeded):
     loaded = semantic.load_models(config.MODELS_DIR)
     for model in loaded.values():
         semantic.resolve_imports(model, bundles)
+    for model in loaded.values():
+        semantic.resolve_facts(model, loaded)
     return loaded
 
 

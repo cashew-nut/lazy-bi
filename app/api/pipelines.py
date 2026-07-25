@@ -280,6 +280,8 @@ def suggest_lineage(name: str):
 
 def _find_model_for(path: str, fmt: str) -> Optional[str]:
     for name, model in registry.models.items():
+        if model.is_composite:
+            continue  # borrows its facts' data; scans no path of its own
         src = model.source
         if fmt == "delta":
             if src.format == "delta" and src.path.rstrip("/") == path.rstrip("/"):
