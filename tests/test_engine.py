@@ -150,37 +150,83 @@ def test_interval_import_dimension_groups_point_in_time(models):
     assert all(row["active_customers"] > 100 for row in r["rows"])
 
 
-def test_interval_import_matches_the_generated_spine_day_for_day(models):
-    """The two mechanisms are answering the same question — they must agree."""
-    window = lambda field: [{"field": field, "op": "gte", "value": "2025-03-01"},
-                            {"field": field, "op": "lte", "value": "2025-03-05"}]
-    spine = run(models, "subscriptions", dimensions=[{"name": "active_at", "grain": "1d"}],
-                measures=["active_customers", "mrr"], filters=window("active_at"))
-    cal = run(models, "subscriptions", dimensions=["calendar_date"],
-              measures=["active_customers", "mrr"], filters=window("calendar_date"))
-    assert [(r["active_at"], r["active_customers"], r["mrr"]) for r in spine["rows"]] \
-        == [(r["calendar_date"], r["active_customers"], r["mrr"]) for r in cal["rows"]]
-
-
-def test_interval_import_pinned_to_one_row_per_period_matches_spine(models):
-    """A daily calendar grouped at month grain counts each row once per day; a
-    snapshot filter pins it to one row per month and reproduces the spine."""
-    spine = run(models, "subscriptions", dimensions=[{"name": "active_at", "grain": "1mo"}],
-                measures=["active_customers", "mrr"], limit=200)
-    snapshot = run(models, "subscriptions", dimensions=["calendar_month_start"],
-                   measures=["active_customers", "mrr"],
-                   filters=[{"field": "calendar_is_month_start", "op": "eq", "value": True}], limit=200)
-    by_month = {r["active_at"]: r for r in spine["rows"]}
-    assert snapshot["row_count"] > 12
-    for row in snapshot["rows"]:
-        spine_row = by_month[row["calendar_month_start"]]
+@pytest.mark.parametrize("grain", ["1d", "1w", "1mo", "1q", "1y"])
+def test_interval_import_matches_the_generated_spine_at_every_grain(models, grain):
+    """The whole point of narrowing the date table to the query's grain: the
+    calendar and the spine answer the same question, so they must agree bucket
+    for bucket as the grain picker moves — for the *additive* mrr as much as for
+    a distinct count, since a per-day join would inflate the former."""
+    spine = run(models, "subscriptions", dimensions=[{"name": "active_at", "grain": grain}],
+                measures=["active_customers", "mrr"], limit=1000)
+    cal = run(models, "subscriptions", dimensions=[{"name": "calendar_date", "grain": grain}],
+              measures=["active_customers", "mrr"], limit=1000)
+    by_bucket = {r["active_at"]: r for r in spine["rows"]}
+    # the calendar's own range bounds it, so it can hold fewer buckets than the
+    # spine's generated timeline — every bucket it does hold must match
+    assert cal["row_count"] > 1
+    for row in cal["rows"]:
+        spine_row = by_bucket[row["calendar_date"]]
         assert spine_row["active_customers"] == row["active_customers"]
         assert spine_row["mrr"] == pytest.approx(row["mrr"])
 
 
+@pytest.mark.parametrize("dimension,spine_grain", [
+    ("calendar_month_start", "1mo"), ("calendar_quarter", "1q"), ("calendar_year", "1y"),
+])
+def test_interval_import_declared_grain_needs_no_grain_picker(models, dimension, spine_grain):
+    """A column that is inherently periodic declares its own grain, so grouping
+    by it alone — no grain on the query — still narrows the table correctly."""
+    spine = run(models, "subscriptions", dimensions=[{"name": "active_at", "grain": spine_grain}],
+                measures=["active_customers", "mrr"], limit=1000)
+    cal = run(models, "subscriptions", dimensions=[dimension],
+              measures=["active_customers", "mrr"], limit=1000)
+    spine_values = {(r["active_customers"], round(r["mrr"], 6)) for r in spine["rows"]}
+    assert cal["row_count"] > 1
+    for row in cal["rows"]:
+        assert (row["active_customers"], round(row["mrr"], 6)) in spine_values
+
+
+def test_interval_import_mixed_grains_uses_the_finest(models):
+    """Quarter (declared 1q) alongside a day-grain date: the day wins, and the
+    quarter is then just an attribute of that day."""
+    r = run(models, "subscriptions",
+            dimensions=["calendar_quarter", {"name": "calendar_date", "grain": "1d"}],
+            measures=["active_customers"],
+            filters=[{"field": "calendar_date", "op": "gte", "value": "2025-03-01"},
+                     {"field": "calendar_date", "op": "lte", "value": "2025-03-05"}])
+    assert r["row_count"] == 5
+    assert {row["calendar_quarter"] for row in r["rows"]} == {"2025-Q1"}
+
+
+def test_interval_import_snapshot_end_reads_the_last_day_of_each_bucket(models):
+    """`snapshot: end` is the month-end convention: same buckets, but each one
+    reports what was open on its last day rather than its first."""
+    subs = models["subscriptions"]
+    binding = next(b for b in subs.import_bindings if b.import_spec.is_interval)
+    assert binding.import_spec.snapshot == "start"
+    query = {"dimensions": [{"name": "calendar_date", "grain": "1mo"}],
+             "measures": ["active_customers"], "limit": 1000}
+    at_start = engine.run_query(subs, query)
+    binding.import_spec.snapshot = "end"
+    try:
+        at_end = engine.run_query(subs, query)
+    finally:
+        binding.import_spec.snapshot = "start"
+    start_by_bucket = {r["calendar_date"]: r["active_customers"] for r in at_start["rows"]}
+    end_by_bucket = {r["calendar_date"]: r["active_customers"] for r in at_end["rows"]}
+    # same buckets, bar the ones that had nothing open on day 1 but did by the
+    # last — the demo's first month, whose earliest subscription starts mid-month
+    assert set(start_by_bucket) < set(end_by_bucket)
+    assert "2024-01-01" in end_by_bucket and "2024-01-01" not in start_by_bucket
+    # a growing business: month end is always at least month start, usually more
+    shared = sorted(start_by_bucket)
+    assert all(end_by_bucket[b] >= start_by_bucket[b] for b in shared)
+    assert any(end_by_bucket[b] > start_by_bucket[b] for b in shared)
+
+
 def test_interval_import_carries_its_own_attributes(models):
     r = run(models, "subscriptions", dimensions=["calendar_quarter"], measures=["active_customers"],
-            filters=[{"field": "calendar_is_month_end", "op": "eq", "value": True}], limit=50)
+            limit=50)
     assert all(re.fullmatch(r"20\d\d-Q[1-4]", row["calendar_quarter"]) for row in r["rows"])
 
 
@@ -190,8 +236,8 @@ def test_interval_import_skipped_when_no_calendar_dimension_used(models):
     plain = run(models, "subscriptions", dimensions=["plan"], measures=["signups"])
     assert sum(row["signups"] for row in plain["rows"]) == 9000  # one row per customer
     subs = models["subscriptions"]
-    assert "quarter" not in engine.scan(subs, {"plan"}).collect_schema()
-    assert "quarter" in engine.scan(subs, {"calendar_quarter"}).collect_schema()
+    assert "quarter" not in engine.scan(subs, {"plan": None}).collect_schema()
+    assert "quarter" in engine.scan(subs, {"calendar_quarter": None}).collect_schema()
     assert "quarter" in engine.scan(subs).collect_schema()  # None = introspection
 
 

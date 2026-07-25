@@ -379,7 +379,7 @@ datasets:
     source: {format: parquet, path: s3://b/calendar.parquet}
     dimensions:
       - {name: as_of, column: date, label: As Of, type: time}
-      - {name: as_of_quarter, column: quarter, label: Quarter}
+      - {name: as_of_quarter, column: quarter, label: Quarter, grain: 1q}
 """
 
 BETWEEN_IMPORT = (
@@ -396,6 +396,44 @@ def test_interval_import_parses_and_contributes_dimensions():
     assert imp.is_interval and imp.how == "between"
     assert imp.left_on == ["start_date", "end_date"] and imp.right_on == ["date"]
     assert {"as_of", "as_of_quarter"} <= set(model.dimensions)
+
+
+def test_dimension_grain_parses_and_is_validated():
+    bundle = semantic.parse_bundle_text(CAL_BUNDLE)
+    assert bundle.datasets["days"].dimensions["as_of_quarter"].grain == "1q"
+    assert bundle.datasets["days"].dimensions["as_of"].grain is None
+    with pytest.raises(semantic.ModelError, match="unsupported grain '1fortnight'"):
+        semantic.parse_bundle_text(CAL_BUNDLE.replace("grain: 1q", "grain: 1fortnight"))
+
+
+def test_interval_import_snapshot_defaults_to_start_and_is_validated():
+    assert semantic.parse_model_text(FACT + BETWEEN_IMPORT).imports[0].snapshot == "start"
+    with pytest.raises(semantic.ModelError, match="'snapshot' must be one of"):
+        semantic.parse_model_text(
+            FACT + "dimension_imports:\n"
+            "  - {bundle: cal, anchor_dataset: days, how: between, "
+            "left_on: [start_date, end_date], right_on: date, snapshot: middle}\n"
+        )
+
+
+def test_interval_import_snapshot_round_trips_through_spec_and_yaml():
+    text = (
+        FACT + "dimension_imports:\n"
+        "  - {bundle: cal, anchor_dataset: days, how: between, "
+        "left_on: [start_date, end_date], right_on: date, snapshot: end}\n"
+    )
+    model = semantic.parse_model_text(text)
+    assert model.imports[0].snapshot == "end"
+    reparsed = semantic.parse_model_text(semantic.spec_to_yaml(semantic.model_to_spec(model)))
+    assert reparsed.imports[0].snapshot == "end"
+
+
+def test_dimension_grain_round_trips_through_bundle_spec_and_yaml():
+    bundle = semantic.parse_bundle_text(CAL_BUNDLE)
+    reparsed = semantic.parse_bundle_text(
+        semantic.bundle_spec_to_yaml(semantic.bundle_to_spec(bundle)))
+    assert reparsed.datasets["days"].dimensions["as_of_quarter"].grain == "1q"
+    assert reparsed.datasets["days"].dimensions["as_of"].grain is None
 
 
 def test_interval_import_needs_a_start_and_an_end():

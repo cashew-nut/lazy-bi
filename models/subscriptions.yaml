@@ -16,14 +16,13 @@
 #    period, or when the reporting window should be the calendar's rather than
 #    whatever range the data happens to cover.
 #
-# The calendar is a *daily* table, so it puts a subscription in the frame once
-# per day it was open. Group by calendar_date and that is exactly right. Group
-# by a coarser column (calendar_month_start, calendar_quarter) and a count of
-# distinct customers still reads correctly — "active at any point in the
-# period" — but an additive measure like mrr sums once per day and inflates.
-# Pin the calendar to one row per period first: filtering
-# calendar_is_month_start = true and grouping by calendar_month_start
-# reproduces `active_at` at grain 1mo measure for measure.
+# The two agree. The calendar stores days, but the engine narrows it to one row
+# per bucket at whatever grain the query asks for, so a subscription is counted
+# once per bucket either way: `active_at` at grain 1mo and calendar_date at
+# grain 1mo return the same active_customers *and* the same mrr, and so do 1w,
+# 1q and 1y. calendar_quarter and calendar_year need no grain picker at all —
+# they declare their own in the bundle. The only difference left is reach: the
+# spine's timeline runs to today, the calendar's to whatever the table holds.
 #
 # The import is only applied to queries that actually use one of its
 # dimensions, so nothing here changes signups or any other by-cohort query.

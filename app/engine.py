@@ -178,20 +178,42 @@ def _as_date(lf: pl.LazyFrame, column: str, schema: pl.Schema, what: str) -> pl.
     return lf
 
 
-def _join_interval(lf: pl.LazyFrame, binding: ImportBinding) -> pl.LazyFrame:
-    """Apply a `how: between` dimension import: an interval join that fans each
-    model row out across every row of the imported (calendar) side whose date
-    falls inside the model row's [start, end] window.
+def _thin_to_grain(lf: pl.LazyFrame, point: str, grain: str, snapshot: str) -> pl.LazyFrame:
+    """Keep one row of a date table per `grain` bucket: the bucket's first day
+    (snapshot "start") or its last (snapshot "end").
+
+    This is what makes an interval import grain-correct. The table stores days,
+    but a query grouping at month grain wants each model row counted *once* for
+    the month, not once for each of its 30 days — thinning first means the join
+    itself produces one row per (model row, bucket), so an additive measure
+    sums each row once at whatever grain is being asked for. At grain 1d both
+    branches are no-ops, which is exactly right: every day is its own bucket.
+    """
+    col = pl.col(point)
+    if snapshot == "end":
+        # last day of the bucket: the next day already belongs to the next one
+        return lf.filter(col.dt.truncate(grain) != col.dt.offset_by("1d").dt.truncate(grain))
+    return lf.filter(col == col.dt.truncate(grain))
+
+
+def _join_interval(lf: pl.LazyFrame, binding: ImportBinding, grain: str) -> pl.LazyFrame:
+    """Apply a `how: between` dimension import: an interval join against a date
+    table, thinned to one row per `grain` bucket first.
 
     This is the "disconnected calendar table" shape — the imported dataset
     declares no relation to the model's other data, and this join is the only
     thing that connects them. Once joined, its columns are ordinary dimensions:
     grouping by the calendar's date (or its year/quarter/month attributes)
     yields point-in-time aggregation, because a model row is present in every
-    period it was active for rather than only the one it started in.
+    bucket it was active for rather than only the one it started in.
+
+    Because the table is thinned to the query's grain before the join, the
+    result matches a spine dimension bucket for bucket at *every* grain, for
+    additive measures as much as for distinct counts. `grain` comes from the
+    dimensions actually in play — see _interval_grain.
 
     A null end column means "still open" (same convention as Dimension.spine),
-    and the join is inner: periods with nothing active drop out rather than
+    and the join is inner: buckets with nothing active drop out rather than
     appearing as zero rows.
     """
     imp = binding.import_spec
@@ -205,6 +227,7 @@ def _join_interval(lf: pl.LazyFrame, binding: ImportBinding) -> pl.LazyFrame:
 
     right = _scan_bundle(binding)
     right = _as_date(right, point, right.collect_schema(), f"'{imp.bundle}' date")
+    right = _thin_to_grain(right, point, grain, imp.snapshot)
     return lf.join_where(
         right,
         pl.col(point) >= pl.col(start),
@@ -212,17 +235,44 @@ def _join_interval(lf: pl.LazyFrame, binding: ImportBinding) -> pl.LazyFrame:
     )
 
 
-def scan(model: Model, dimensions: Optional[set[str]] = None) -> pl.LazyFrame:
+GRAIN_ORDER = list(TIME_GRAINS)  # finest to coarsest: 1d, 1w, 1mo, 1q, 1y
+
+
+def _interval_grain(model: Model, binding: ImportBinding, dimensions: dict) -> str:
+    """The bucket size a date table has to be thinned to for this query: the
+    finest grain among the import's dimensions in play.
+
+    Each contributes the grain the query asked it for (a time dimension read
+    through the builder's grain picker), else the grain it declares (a quarter
+    or month label column is constant across that bucket), else the table's own
+    row grain. Finest wins: grouping by both a day and its quarter needs a row
+    per day, and the quarter is then just an attribute of that day.
+    """
+    grains = []
+    for name, query_grain in dimensions.items():
+        if name not in binding.dimension_owners:
+            continue
+        declared = model.dimensions[name].grain if name in model.dimensions else None
+        grains.append(query_grain or declared or GRAIN_ORDER[0])
+    return min(grains, key=GRAIN_ORDER.index) if grains else GRAIN_ORDER[0]
+
+
+def scan(model: Model, dimensions: Optional[dict] = None) -> pl.LazyFrame:
     """Base source plus any semantic-layer joins and imported dimension
     bundles, all lazy — polars pushes the needed columns down into each
     side of every join.
 
-    `dimensions` is the set of dimension names the caller is about to use. It
-    matters only for interval (`how: between`) imports, which are applied just
-    when one of their dimensions is in play: that join multiplies the model's
-    rows by the number of periods each is active for, so bringing it into a
-    query that never groups by the calendar would silently inflate every
-    measure. None means "unknown — apply everything", the right answer for
+    `dimensions` maps each dimension name the caller is about to use to the
+    grain it wants it at (None for "the dimension's own"). It matters only for
+    interval (`how: between`) imports, which are
+
+      - applied only when one of their dimensions is in play, since that join
+        puts a model row in every bucket it spans and a query that never reads
+        the date table would otherwise see every measure multiply; and
+      - thinned to the finest grain among those dimensions, so the join lands
+        one row per bucket rather than one per day.
+
+    None means "unknown — apply everything at day grain", the right answer for
     schema introspection.
     """
     lf = _scan_source(model.source)
@@ -233,8 +283,10 @@ def scan(model: Model, dimensions: Optional[set[str]] = None) -> pl.LazyFrame:
         )
     for binding in model.import_bindings:
         if binding.import_spec.is_interval:
-            if dimensions is None or (dimensions & set(binding.dimension_owners)):
-                lf = _join_interval(lf, binding)
+            if dimensions is None:
+                lf = _join_interval(lf, binding, GRAIN_ORDER[0])
+            elif set(dimensions) & set(binding.dimension_owners):
+                lf = _join_interval(lf, binding, _interval_grain(model, binding, dimensions))
             continue
         lf = lf.join(
             _scan_bundle(binding),
@@ -392,15 +444,20 @@ def resolve_parameter_values(parameters: list, parameter_values: dict) -> dict:
     return resolved
 
 
-def _referenced_dimensions(query: dict) -> set[str]:
-    """Every dimension name a query touches — grouped or filtered. Drives which
-    interval imports scan() has to bring in (see its docstring)."""
-    names = {
-        (entry if isinstance(entry, str) else entry.get("name"))
-        for entry in query.get("dimensions", [])
-    }
-    names |= {spec.get("field") for spec in query.get("filters", [])}
-    return {n for n in names if n}
+def _referenced_dimensions(query: dict) -> dict:
+    """Every dimension name a query touches -> the grain it asked for (None if
+    it didn't). Drives which interval imports scan() brings in, and how far it
+    thins them — see scan()."""
+    names: dict = {}
+    for entry in query.get("dimensions", []):
+        if isinstance(entry, str):
+            entry = {"name": entry}
+        if entry.get("name"):
+            names[entry["name"]] = entry.get("grain")
+    for spec in query.get("filters", []):
+        if spec.get("field"):
+            names.setdefault(spec["field"], None)
+    return names
 
 
 def run_query(model: Model, query: dict) -> dict:
@@ -744,7 +801,7 @@ def dimension_values(model: Model, dimension: str, limit: int = 100) -> list:
     # model's rows — read them off the imported side; anything else needs no
     # interval join at all, hence the empty dimension set
     interval = _interval_binding_for(model, dimension)
-    base = _scan_bundle(interval) if interval else scan(model, set())
+    base = _scan_bundle(interval) if interval else scan(model, {})
     df = (
         base
         .select(pl.col(dim.column).alias(dim.name))

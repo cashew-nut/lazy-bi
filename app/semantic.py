@@ -39,6 +39,8 @@ JOIN_KINDS = ("left", "inner")
 # date column on the imported side against a [start, end] pair on the importing
 # model. See Import.is_interval and engine._join_interval.
 IMPORT_JOIN_KINDS = ("left", "inner", "between")
+# which day of a bucket represents it in a `how: between` import — see Import.snapshot
+SNAPSHOT_POINTS = ("start", "end")
 
 
 class ModelError(Exception):
@@ -150,6 +152,14 @@ class Dimension:
     description: str = ""
     spine: Optional[Spine] = None
     geo: Optional[Geo] = None
+    # for a column of a date table imported with `how: between`: the size of
+    # the bucket this column is constant across ("1mo" for a month label,
+    # "1q" for a quarter). It tells the engine how far to thin the date table
+    # before the interval join, so one row of it represents one bucket and
+    # measures aggregate at that grain without counting a row once per day.
+    # Absent means the table's own row grain (a plain day column, a weekday
+    # flag) — see engine._join_interval.
+    grain: Optional[str] = None
     # alternate business vocabulary a question might use instead of the
     # declared name/label (e.g. "date" for order_date) — advisory only, never
     # a second valid identifier: Model.dimension() still resolves by `name`
@@ -233,6 +243,11 @@ class Import:
     right_on: list[str]
     how: str = "left"
     datasets: Optional[list[str]] = None  # None = whole bundle
+    # interval imports only: which day of each bucket stands for the bucket
+    # once the date table is thinned to the query's grain — the first ("as of
+    # the start of the month", matching Dimension.spine) or the last ("as of
+    # month end", the usual finance convention).
+    snapshot: str = "start"
 
     @property
     def is_interval(self) -> bool:
@@ -401,10 +416,16 @@ def _parse_dimensions(raw_list: list, owner: str) -> dict[str, Dimension]:
             description=d.get("description", ""),
             spine=Spine(start=spine_raw["start"], end=spine_raw["end"]) if spine_raw else None,
             geo=Geo(lat=geo_raw["lat"], lon=geo_raw["lon"]) if geo_raw else None,
+            grain=d.get("grain"),
             synonyms=_as_list(d["synonyms"]) if d.get("synonyms") else [],
         )
         if dim.spine and dim.type != "time":
             raise ModelError(f"{owner}: spine dimension '{dim.name}' must have type: time")
+        if dim.grain is not None and dim.grain not in TIME_GRAINS:
+            raise ModelError(
+                f"{owner}: dimension '{dim.name}': unsupported grain '{dim.grain}' "
+                f"(one of {', '.join(TIME_GRAINS)})"
+            )
         dims[dim.name] = dim
     return dims
 
@@ -415,7 +436,13 @@ def _parse_import(raw: dict, owner: str) -> Import:
         raise ModelError(f"{owner}: dimension_imports entry needs 'anchor_dataset'")
     desc = f"import of '{raw.get('bundle')}'"
     left_on, right_on, how = _parse_join_keys(raw, owner, desc, kinds=IMPORT_JOIN_KINDS)
+    snapshot = raw.get("snapshot", "start")
     if how == "between":
+        if snapshot not in SNAPSHOT_POINTS:
+            raise ModelError(
+                f"{owner}: {desc}: 'snapshot' must be one of {', '.join(SNAPSHOT_POINTS)}, "
+                f"got '{snapshot}'"
+            )
         if len(left_on) != 2:
             raise ModelError(
                 f"{owner}: {desc}: 'how: between' needs left_on: [start_column, end_column] — "
@@ -431,7 +458,7 @@ def _parse_import(raw: dict, owner: str) -> Import:
         raise ModelError(f"{owner}: {desc}: 'datasets' must be a list")
     return Import(
         bundle=raw["bundle"], anchor_dataset=anchor,
-        left_on=left_on, right_on=right_on, how=how, datasets=datasets,
+        left_on=left_on, right_on=right_on, how=how, datasets=datasets, snapshot=snapshot,
     )
 
 
@@ -774,6 +801,7 @@ def _dimension_to_spec(d: Dimension) -> dict:
         "description": d.description,
         "spine": {"start": d.spine.start, "end": d.spine.end} if d.spine else None,
         "geo": {"lat": d.geo.lat, "lon": d.geo.lon} if d.geo else None,
+        "grain": d.grain,
         "synonyms": list(d.synonyms),
     }
 
@@ -794,7 +822,7 @@ def model_to_spec(model: Model) -> dict:
         "dimension_imports": [
             {"bundle": i.bundle, "anchor_dataset": i.anchor_dataset,
              "left_on": i.left_on, "right_on": i.right_on, "how": i.how,
-             "datasets": i.datasets}
+             "datasets": i.datasets, "snapshot": i.snapshot}
             for i in model.imports
         ],
         "dimensions": [_dimension_to_spec(d) for d in model.dimensions.values()],
@@ -839,6 +867,8 @@ def _spec_dimension_entries(dims: list[dict]) -> list[dict]:
             entry["type"] = d["type"]
         if d.get("description"):
             entry["description"] = d["description"]
+        if d.get("grain"):
+            entry["grain"] = d["grain"]
         if d.get("spine"):
             entry["spine"] = {"start": d["spine"]["start"], "end": d["spine"]["end"]}
         if d.get("geo"):
@@ -894,6 +924,8 @@ def spec_to_yaml(spec: dict) -> str:
     for i in spec.get("dimension_imports") or []:
         entry = {"bundle": i["bundle"], "anchor_dataset": i["anchor_dataset"]}
         _spec_join_keys(entry, i)
+        if i.get("how") == "between" and i.get("snapshot", "start") != "start":
+            entry["snapshot"] = i["snapshot"]
         if i.get("datasets") is not None:
             entry["datasets"] = list(i["datasets"])
         imports.append(entry)

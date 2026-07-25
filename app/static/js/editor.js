@@ -185,19 +185,23 @@ const SCHEMAS = {
   },
 };
 
+// time grains, as accepted by a dimension's `grain:` (a date table's column
+// bucket size) and by the builder's grain picker
+const GRAINS = ["1d", "1w", "1mo", "1q", "1y"];
+
 // static enum values, keyed by [kind][block][key]
 const ENUMS = {
   model: {
     source: { format: ["parquet", "csv", "delta", "iceberg"] },
     joins: { how: ["left", "inner"] },
-    dimension_imports: { how: ["left", "inner", "between"] },
-    dimensions: { type: ["categorical", "time", "numeric"] },
+    dimension_imports: { how: ["left", "inner", "between"], snapshot: ["start", "end"] },
+    dimensions: { type: ["categorical", "time", "numeric"], grain: GRAINS },
     measures: { format: ["number", "currency", "percent"] },
   },
   bundle: {
     source: { format: ["parquet", "csv", "delta", "iceberg"] },
     joins: { how: ["left", "inner"] },
-    dimensions: { type: ["categorical", "time", "numeric"] },
+    dimensions: { type: ["categorical", "time", "numeric"], grain: GRAINS },
   },
   pipeline: {
     sources: { format: ["parquet", "csv", "delta", "iceberg"] },

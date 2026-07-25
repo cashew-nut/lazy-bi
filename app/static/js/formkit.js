@@ -133,7 +133,7 @@ export const titleCase = (name) => name.replace(/_/g, " ").replace(/\b\w/g, (ch)
 export const dimFromColumn = (c) => ({
   name: c.name, column: c.name, label: titleCase(c.name),
   type: /date|time/i.test(c.dtype) ? "time" : "categorical",
-  description: "", spine: null, geo: null, synonyms: [],
+  description: "", spine: null, geo: null, grain: null, synonyms: [],
 });
 
 // ── section rail (shared by both guided forms) ──

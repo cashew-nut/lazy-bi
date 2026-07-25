@@ -423,9 +423,9 @@ dimension_imports:
     right_on: date                    # the calendar's day column
 ```
 
-Each model row is then matched against every calendar day it was open for, and
-every column of the calendar (`calendar_quarter`, `calendar_month_start`,
-`calendar_is_month_end`, …) becomes an ordinary dimension — groupable,
+Each model row is then counted in every period it was open for, and every
+column of the calendar (`calendar_quarter`, `calendar_month_start`,
+`calendar_day_of_week`, …) becomes an ordinary dimension — groupable,
 filterable and cross-filterable like any other. Reach for this over a spine
 when the periods need attributes, when several models must share one
 definition of a period, or when the reporting window should be the calendar's
@@ -433,24 +433,48 @@ rather than whatever range the data happens to cover. See
 `dimensions/calendar.yaml` and `models/subscriptions.yaml`, which declares both
 mechanisms side by side.
 
-Two things to know:
+**Grain is dynamic.** The table stores days, but the join is not a per-day
+join: before joining, the engine narrows the date table to **one row per bucket
+at the grain the query is asking for**. So a model row is counted once per
+bucket, and an additive measure (`sum`, not just `count_distinct`) is correct at
+every grain — change the builder's grain picker from Day to Quarter and the
+numbers stay right. It matches a spine dimension bucket for bucket at `1d`,
+`1w`, `1mo`, `1q` and `1y`; `tests/test_engine.py` asserts that for both an
+additive measure and a distinct count.
 
-- **It is a per-day join.** Grouping by `calendar_date` is exact, and a
-  distinct count at a coarser grain reads correctly ("active at any point in
-  the quarter"). But an *additive* measure grouped by `calendar_quarter` sums
-  once per day and inflates. Pin the calendar to one row per period first —
-  `calendar_is_month_start` / `calendar_is_month_end` are there for exactly
-  this. Filtering `calendar_is_month_start` and grouping by
-  `calendar_month_start` reproduces the spine at grain `1mo` measure for
-  measure (`tests/test_engine.py` asserts it).
+The grain comes from whichever of the calendar's dimensions the query uses
+(finest wins). A time dimension takes it from the grain picker. A column that
+is *inherently* periodic declares its own, so it needs no picker at all:
+
+```yaml
+# dimensions/calendar.yaml
+- name: calendar_quarter
+  column: quarter
+  grain: 1q          # this column is constant across a quarter
+```
+
+Undeclared means the table's own row grain, which is right for a plain day
+column or a weekday flag. Those day-level attributes describe the one day that
+represents each bucket, so they read meaningfully at day grain.
+
+Which day represents a bucket is the import's choice:
+
+```yaml
+    snapshot: end    # default "start"
+```
+
+`start` counts what was open on the first day of each period and matches a
+spine exactly; `end` gives the month-end convention finance usually wants.
+
+Two more things:
+
 - **The join is applied only to queries that use one of its dimensions.**
   Otherwise every measure on the model would silently multiply by the number of
   periods each row spans.
-
-A bundle may be imported more than once — once on a key for its reference data,
-once on a range for its calendar (`models/cycle_times.yaml` does both). Note
-that `between` is a `dimension_imports` mode only; plain `joins:` still take
-`left`/`inner`.
+- A bundle may be imported more than once — once on a key for its reference
+  data, once on a range for its calendar (`models/cycle_times.yaml` does both).
+  `between` is a `dimension_imports` mode only; plain `joins:` still take
+  `left`/`inner`.
 
 ### Common dimensional models (shared dimensions)
 
