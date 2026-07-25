@@ -1166,6 +1166,8 @@ button.ghost.mk-new { margin-top: 2px; }
 .mf-dim-row input { flex: 1; }
 .mf-dim-row select { width: 120px; flex: none; }
 .mf-dim-row select.grain { width: 104px; }
+/* the interval-match choices are sentences, so they need the room */
+select.match { width: auto; max-width: 100%; }
 .mf-dim-row.imported { color: var(--ink-3); font-size: 11px; padding: 6px 8px; gap: 8px; }
 .mf-dim-row.imported .tick { color: var(--pink); }
 .mf-dim-col { color: var(--ink-2); }

@@ -178,22 +178,60 @@ def _as_date(lf: pl.LazyFrame, column: str, schema: pl.Schema, what: str) -> pl.
     return lf
 
 
-def _thin_to_grain(lf: pl.LazyFrame, point: str, grain: str, snapshot: str) -> pl.LazyFrame:
-    """Keep one row of a date table per `grain` bucket: the bucket's first day
-    (snapshot "start") or its last (snapshot "end").
+# hidden columns carrying a reporting period's span alongside the row that
+# represents it; dropped again as soon as the join that needs them is built
+PERIOD_FROM = "__period_from"
+PERIOD_TO = "__period_to"
+
+
+def _period_conditions(start: str, end: str, match: str) -> list[pl.Expr]:
+    """Join predicates matching a row's [start, end] interval against a
+    reporting period spanning [PERIOD_FROM, PERIOD_TO].
+
+    Three readings of "was this row active in this period", shared by both
+    point-in-time mechanisms (Dimension.spine and a `how: between` import) so
+    they always answer the same question:
+
+      overlap       the interval touches the period at all — a row opened on
+                    Feb 2nd and closed Feb 15th counts in February, in Q1 and
+                    in the year, which is what "active during" normally means
+      period_start  it was already open on the period's first day
+      period_end    it was still open on the period's last day
+
+    The last two are snapshots, so a row that opens and closes inside a period
+    without spanning its boundary is not counted; `overlap` is the default for
+    that reason. At day grain the period is one day wide and all three agree.
+    """
+    lo, hi = pl.col(PERIOD_FROM), pl.col(PERIOD_TO)
+    s, e = pl.col(start), pl.col(end)
+    if match == "period_start":
+        return [s <= lo, e >= lo]
+    if match == "period_end":
+        return [s <= hi, e >= hi]
+    return [s <= hi, e >= lo]
+
+
+def _period_rows(lf: pl.LazyFrame, point: str, grain: str) -> pl.LazyFrame:
+    """Collapse a date table to one row per `grain` bucket, carrying that
+    bucket's span in PERIOD_FROM/PERIOD_TO.
 
     This is what makes an interval import grain-correct. The table stores days,
     but a query grouping at month grain wants each model row counted *once* for
-    the month, not once for each of its 30 days — thinning first means the join
-    itself produces one row per (model row, bucket), so an additive measure
-    sums each row once at whatever grain is being asked for. At grain 1d both
-    branches are no-ops, which is exactly right: every day is its own bucket.
+    the month, not once for each of its 30 days — one row per bucket means the
+    join produces one row per (model row, bucket), so an additive measure sums
+    each row once at whatever grain is being asked for.
+
+    The span is the days the table actually holds for that bucket, not the
+    calendar-arithmetic bounds: a table that starts mid-month, or one that only
+    lists business days, reports the period it really covers. At grain 1d each
+    bucket is a single day and the span collapses to it.
     """
-    col = pl.col(point)
-    if snapshot == "end":
-        # last day of the bucket: the next day already belongs to the next one
-        return lf.filter(col.dt.truncate(grain) != col.dt.offset_by("1d").dt.truncate(grain))
-    return lf.filter(col == col.dt.truncate(grain))
+    bucket = pl.col(point).dt.truncate(grain)
+    lf = lf.with_columns(
+        pl.col(point).min().over(bucket).alias(PERIOD_FROM),
+        pl.col(point).max().over(bucket).alias(PERIOD_TO),
+    )
+    return lf.filter(pl.col(point) == pl.col(PERIOD_FROM))
 
 
 def _join_interval(lf: pl.LazyFrame, binding: ImportBinding, grain: str) -> pl.LazyFrame:
@@ -207,10 +245,11 @@ def _join_interval(lf: pl.LazyFrame, binding: ImportBinding, grain: str) -> pl.L
     yields point-in-time aggregation, because a model row is present in every
     bucket it was active for rather than only the one it started in.
 
-    Because the table is thinned to the query's grain before the join, the
-    result matches a spine dimension bucket for bucket at *every* grain, for
-    additive measures as much as for distinct counts. `grain` comes from the
-    dimensions actually in play — see _interval_grain.
+    Because the table is collapsed to one row per bucket at the query's grain
+    before the join, the result matches a spine dimension bucket for bucket at
+    *every* grain, for additive measures as much as for distinct counts.
+    `grain` comes from the dimensions actually in play — see _interval_grain,
+    and _period_conditions for what "active in this bucket" means.
 
     A null end column means "still open" (same convention as Dimension.spine),
     and the join is inner: buckets with nothing active drop out rather than
@@ -227,12 +266,9 @@ def _join_interval(lf: pl.LazyFrame, binding: ImportBinding, grain: str) -> pl.L
 
     right = _scan_bundle(binding)
     right = _as_date(right, point, right.collect_schema(), f"'{imp.bundle}' date")
-    right = _thin_to_grain(right, point, grain, imp.snapshot)
-    return lf.join_where(
-        right,
-        pl.col(point) >= pl.col(start),
-        pl.col(point) <= pl.col(end),
-    )
+    right = _period_rows(right, point, grain)
+    joined = lf.join_where(right, *_period_conditions(start, end, imp.match))
+    return joined.drop(PERIOD_FROM, PERIOD_TO)
 
 
 GRAIN_ORDER = list(TIME_GRAINS)  # finest to coarsest: 1d, 1w, 1mo, 1q, 1y
@@ -552,12 +588,17 @@ def run_query(model: Model, query: dict) -> dict:
         if lo is None or hi < lo:
             raise QueryError("no rows in the timeline window")
         lo = pl.Series([lo]).dt.truncate(grain)[0]
-        spine_lf = pl.LazyFrame({sdim.name: pl.date_range(lo, hi, interval=grain, eager=True)})
-        lf = spine_lf.join_where(
-            lf,
-            pl.col(sdim.spine.start) <= pl.col(sdim.name),
-            pl.col(sdim.spine.end) >= pl.col(sdim.name),
+        # one row per bucket, carrying the bucket's span so the same three
+        # readings of "active in this period" apply here as to a real date
+        # table (see _period_conditions)
+        buckets = pl.date_range(lo, hi, interval=grain, eager=True)
+        spine_lf = pl.LazyFrame({sdim.name: buckets}).with_columns(
+            pl.col(sdim.name).alias(PERIOD_FROM),
+            pl.col(sdim.name).dt.offset_by(grain).dt.offset_by("-1d").alias(PERIOD_TO),
         )
+        lf = spine_lf.join_where(
+            lf, *_period_conditions(sdim.spine.start, sdim.spine.end, sdim.spine.match),
+        ).drop(PERIOD_FROM, PERIOD_TO)
 
     dim_specs = []
     for dim, grain, is_spine in dim_entries:

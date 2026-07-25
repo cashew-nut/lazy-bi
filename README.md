@@ -392,12 +392,40 @@ measures:
 
 Grouping by `active_at` generates a timeline at the requested grain and
 interval-joins it against `[start_date, end_date]` (polars `join_where`), so
-each row counts in every bucket it was active for — semantics are "active as of
-the bucket start". Range filters on the spine (`>=`, `<=`, `=`) bound the
-timeline window; `=` gives a single-date snapshot even with no grouping.
-Buckets with zero active rows are omitted. One spine dimension per query.
-See `models/subscriptions.yaml` for a working example (active customers, MRR,
-ARPU over a 30-month timeline).
+each row counts in every period it was active for. Range filters on the spine
+(`>=`, `<=`, `=`) bound the timeline window; `=` gives a single-date snapshot
+even with no grouping. Buckets with zero active rows are omitted. One spine
+dimension per query. See `models/subscriptions.yaml` for a working example
+(active customers, MRR, ARPU over a 30-month timeline).
+
+#### What "active in this period" means (`match`)
+
+Three readings, and the choice changes the numbers — so it is explicit. Take
+two records: **A** open from Jan 1st with no end, **B** open Feb 2nd–15th only.
+
+```yaml
+    spine:
+      start: start_date
+      end: end_date
+      match: overlap       # overlap (default) | period_start | period_end
+```
+
+| `match` | Jan | Feb | Q1 | 2026 | reading |
+|---|---|---|---|---|---|
+| `overlap` | 1 | **2** | **2** | **2** | active at *any point* during the period |
+| `period_start` | 1 | 1 | 1 | 1 | already open on the period's first day |
+| `period_end` | 1 | 1 | 1 | 1 | still open on the period's last day |
+
+`overlap` is the default because it is what "active during February" normally
+means. The other two are *snapshots*: **B** spans neither Feb 1st nor Feb 28th,
+so it is invisible to both — and to a quarterly or yearly snapshot too, which
+is rarely what a reader of "active in Q1" expects. Choose a snapshot when you
+specifically want a point-in-time balance (month-end ARR, say); choose
+`overlap` when you want activity. At day grain all three agree.
+
+The same `match:` key, with the same three values and the same default, sits on
+an interval import (below) — the two mechanisms answer the same question.
+`tests/test_engine.py` pins the table above for both.
 
 The timeline is **generated**, not read from a table: `start`/`end` name the
 model's own interval columns, and there is nothing to create or maintain
@@ -457,14 +485,18 @@ Undeclared means the table's own row grain, which is right for a plain day
 column or a weekday flag. Those day-level attributes describe the one day that
 represents each bucket, so they read meaningfully at day grain.
 
-Which day represents a bucket is the import's choice:
+Which periods a row counts in is the same `match:` choice as a spine's —
+`overlap` (default), `period_start` or `period_end`, described
+[above](#what-active-in-this-period-means-match):
 
 ```yaml
-    snapshot: end    # default "start"
+    match: period_end    # month-end snapshot rather than "active during"
 ```
 
-`start` counts what was open on the first day of each period and matches a
-spine exactly; `end` gives the month-end convention finance usually wants.
+One refinement over the spine: a period's span is the days the date table
+*actually holds* for it, not calendar arithmetic. So a table that starts
+mid-month, or one listing only business days, reports the period it really
+covers — an overlap against a business-day calendar ignores weekends.
 
 Two more things:
 

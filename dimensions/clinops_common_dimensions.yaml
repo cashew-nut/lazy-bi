@@ -101,8 +101,8 @@ datasets:
     label: Calendar Year
     type: numeric
   # day-level flags: they describe a single day, so they read meaningfully at
-  # day grain. For month-end reporting set `snapshot: end` on the import rather
-  # than filtering these
+  # day grain. For month-end reporting set `match: period_end` on the import
+  # rather than filtering these
   - name: calendar_is_month_start
     column: is_month_start
     label: Is Month Start

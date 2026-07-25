@@ -1,9 +1,9 @@
 # Semantic model: subscriptions — demonstrates both ways to do point-in-time
-# ("active as of") reporting over rows that have a start and an end.
+# reporting over rows that have a start and an end.
 #
 # 1. SPINE — `active_at` is not a real column: it is a timeline the engine
 #    generates at the requested grain and interval-joins against
-#    [start_date, end_date], so a subscription counts in every bucket it was
+#    [start_date, end_date], so a subscription counts in every period it was
 #    active for (null end_date = still active). Nothing to model or maintain,
 #    and the timeline is built to fit the query. Filters on active_at
 #    (>=, <=, =) bound it; it carries no attributes beyond the date itself.
@@ -17,12 +17,18 @@
 #    whatever range the data happens to cover.
 #
 # The two agree. The calendar stores days, but the engine narrows it to one row
-# per bucket at whatever grain the query asks for, so a subscription is counted
-# once per bucket either way: `active_at` at grain 1mo and calendar_date at
+# per period at whatever grain the query asks for, so a subscription is counted
+# once per period either way: `active_at` at grain 1mo and calendar_date at
 # grain 1mo return the same active_customers *and* the same mrr, and so do 1w,
 # 1q and 1y. calendar_quarter and calendar_year need no grain picker at all —
 # they declare their own in the bundle. The only difference left is reach: the
 # spine's timeline runs to today, the calendar's to whatever the table holds.
+#
+# Both count a subscription in every period its [start, end] interval OVERLAPS
+# — one that ran Feb 2nd to Feb 15th is in February, in Q1 and in the year. Set
+# `match: period_start` or `period_end` on either for a point-in-time snapshot
+# instead (what was open on the 1st / on the last day), which excludes a
+# subscription that opened and closed inside the period.
 #
 # The import is only applied to queries that actually use one of its
 # dimensions, so nothing here changes signups or any other by-cohort query.

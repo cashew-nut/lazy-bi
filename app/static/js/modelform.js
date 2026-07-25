@@ -15,8 +15,8 @@ import { openEditor } from "./editor.js";
 import { openMemoriesModal } from "./memories.js";
 import {
   autoGrow, colsOf, columnImportPanel, datasetCards, dimFromColumn, loadDatasets,
-  manualPathRow, NAME_RE, note, pairRow, sectionRail, sourceSchema, spineCreatePanel, spineFields,
-  synonymsInput, textAreaField, textField,
+  manualPathRow, matchRow, NAME_RE, note, pairRow, sectionRail, sourceSchema, spineCreatePanel,
+  spineFields, synonymsInput, textAreaField, textField,
 } from "./formkit.js";
 import { $, api, el } from "./lib.js";
 import { setPanelDescription, setPanelModel } from "./panelchat.js";
@@ -41,8 +41,8 @@ const form = {
   source: null,        // {path, format}
   relations: [],       // {name, path, format, how, pairs:[{left,right}]} — yaml `joins`
   // {bundle, anchor, datasets:null|[names], how, pairs:[{left,right}],
-  //  interval:{start,end,point}, snapshot}
-  // `how: "between"` uses `interval`/`snapshot` instead of `pairs` — see importControls
+  //  interval:{start,end,point}, match}
+  // `how: "between"` uses `interval`/`match` instead of `pairs` — see importControls
   imports: [],
   dimensions: [],      // spec dimension dicts (column/type/label/spine/geo/synonyms preserved)
   measures: [],        // {name, label, expr, format, description, synonyms, frame?, frame_emits?}
@@ -82,7 +82,7 @@ function toSpec() {
     joins: form.relations.map((r) => ({ name: r.name, path: r.path, format: r.format, how: r.how, ...pairsOf(r.pairs) })),
     dimension_imports: form.imports.map((i) => ({
       bundle: i.bundle, anchor_dataset: i.anchor, datasets: i.datasets, how: i.how || "left",
-      snapshot: i.snapshot || "start",
+      match: i.match || "overlap",
       ...(i.how === "between" ? intervalOf(i.interval) : pairsOf(i.pairs)),
     })),
     dimensions: form.dimensions,
@@ -173,7 +173,7 @@ const toInterval = (j) => (j.how === "between"
 const importFromSpec = (i) => ({
   bundle: i.bundle, anchor: i.anchor_dataset, datasets: i.datasets, how: i.how || "left",
   pairs: i.how === "between" ? [{ left: "", right: "" }] : toPairs(i),
-  interval: toInterval(i), snapshot: i.snapshot || "start",
+  interval: toInterval(i), match: i.match || "overlap",
 });
 
 const bundleDataset = (bundleName, dsName) =>
@@ -485,7 +485,7 @@ function guessPair(anchorDs) {
 
 const newImport = (b, anchorDs) => ({
   bundle: b.name, anchor: anchorDs.name, datasets: null, how: "left",
-  pairs: [guessPair(anchorDs)], interval: { start: "", end: "", point: "" }, snapshot: "start",
+  pairs: [guessPair(anchorDs)], interval: { start: "", end: "", point: "" }, match: "overlap",
 });
 
 /* Column picker for the three keys of an interval import. Degrades to a plain
@@ -520,25 +520,13 @@ function intervalControls(b, imp, anchorDs) {
     + "open. Group by the imported date, or by its month/quarter/year columns, for point-in-time totals. "
     + "The imported table is narrowed to one row per period at whatever grain the query asks for, so totals "
     + "stay correct as the grain changes."));
-
-  const snapSel = el("select", {}, ...SNAPSHOT_POINTS.map(([v, lbl]) => el("option", { value: v }, lbl)));
-  snapSel.value = imp.snapshot || "start";
-  snapSel.addEventListener("change", () => { imp.snapshot = snapSel.value; markDirty(); render(); });
-  out.push(el("div", { class: "mf-anchor-row" },
-    el("span", { class: "field-label" }, "READ EACH PERIOD AS OF"), snapSel,
-    el("span", { class: "mf-colcount" },
-      SNAPSHOT_POINTS.find(([v]) => v === snapSel.value)[2])));
+  out.push(matchRow(imp, (v) => { imp.match = v; markDirty(); render(); }));
 
   if (!(iv.start && iv.end && iv.point)) {
     out.push(el("div", { class: "mf-warn" }, "⚠ pick all three columns to complete this relation"));
   }
   return out;
 }
-
-const SNAPSHOT_POINTS = [
-  ["start", "its first day", "a month counts what was open on the 1st — matches a time-spine dimension"],
-  ["end", "its last day", "a month counts what was open on the last day — the usual finance convention"],
-];
 
 const JOIN_MODES = [
   ["left", "matching columns", "each row of this model picks up the shared row with the same key"],

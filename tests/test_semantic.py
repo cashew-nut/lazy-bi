@@ -406,26 +406,42 @@ def test_dimension_grain_parses_and_is_validated():
         semantic.parse_bundle_text(CAL_BUNDLE.replace("grain: 1q", "grain: 1fortnight"))
 
 
-def test_interval_import_snapshot_defaults_to_start_and_is_validated():
-    assert semantic.parse_model_text(FACT + BETWEEN_IMPORT).imports[0].snapshot == "start"
-    with pytest.raises(semantic.ModelError, match="'snapshot' must be one of"):
+def test_interval_import_match_defaults_to_overlap_and_is_validated():
+    assert semantic.parse_model_text(FACT + BETWEEN_IMPORT).imports[0].match == "overlap"
+    with pytest.raises(semantic.ModelError, match="'match' must be one of"):
         semantic.parse_model_text(
             FACT + "dimension_imports:\n"
             "  - {bundle: cal, anchor_dataset: days, how: between, "
-            "left_on: [start_date, end_date], right_on: date, snapshot: middle}\n"
+            "left_on: [start_date, end_date], right_on: date, match: sometimes}\n"
         )
 
 
-def test_interval_import_snapshot_round_trips_through_spec_and_yaml():
+def test_interval_import_match_round_trips_through_spec_and_yaml():
     text = (
         FACT + "dimension_imports:\n"
         "  - {bundle: cal, anchor_dataset: days, how: between, "
-        "left_on: [start_date, end_date], right_on: date, snapshot: end}\n"
+        "left_on: [start_date, end_date], right_on: date, match: period_end}\n"
     )
     model = semantic.parse_model_text(text)
-    assert model.imports[0].snapshot == "end"
+    assert model.imports[0].match == "period_end"
     reparsed = semantic.parse_model_text(semantic.spec_to_yaml(semantic.model_to_spec(model)))
-    assert reparsed.imports[0].snapshot == "end"
+    assert reparsed.imports[0].match == "period_end"
+
+
+def test_spine_match_defaults_to_overlap_and_is_validated():
+    spine = "dimensions:\n  - {name: active_at, type: time, spine: {start: s, end: e%s}}\n"
+    assert semantic.parse_model_text(FACT + spine % "").dimensions["active_at"].spine.match == "overlap"
+    with pytest.raises(semantic.ModelError, match="'match' must be one of"):
+        semantic.parse_model_text(FACT + spine % ", match: whenever")
+
+
+def test_spine_match_round_trips_through_spec_and_yaml():
+    model = semantic.parse_model_text(
+        FACT + "dimensions:\n"
+        "  - {name: active_at, type: time, spine: {start: s, end: e, match: period_end}}\n"
+    )
+    reparsed = semantic.parse_model_text(semantic.spec_to_yaml(semantic.model_to_spec(model)))
+    assert reparsed.dimensions["active_at"].spine.match == "period_end"
 
 
 def test_dimension_grain_round_trips_through_bundle_spec_and_yaml():

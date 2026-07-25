@@ -137,6 +137,97 @@ def test_spine_window_bounds_timeline(models):
     assert r["row_count"] == 3
 
 
+# --- Period matching: the worked two-record example -----------------------
+# One record open from Jan 1st 2026 with no end, one open Feb 2nd-15th only.
+# Both point-in-time mechanisms must place them in the same periods.
+
+@pytest.fixture(scope="module")
+def two_records(seeded):
+    client = s3.client()
+    buf = io.BytesIO()
+    pl.DataFrame(
+        {"id": ["A", "B"],
+         "start_date": [date(2026, 1, 1), date(2026, 2, 2)],
+         "end_date": [None, date(2026, 2, 15)]},
+        schema_overrides={"start_date": pl.Date, "end_date": pl.Date},
+    ).write_parquet(buf)
+    client.put_object(Bucket=config.BUCKET, Key="test/two_records.parquet", Body=buf.getvalue())
+
+    days = pl.date_range(date(2026, 1, 1), date(2026, 12, 31), interval="1d", eager=True).alias("date")
+    cal = io.BytesIO()
+    pl.DataFrame(days).with_columns(
+        pl.format("{}-Q{}", pl.col("date").dt.year(), pl.col("date").dt.quarter()).alias("quarter"),
+        pl.col("date").dt.year().alias("year"),
+    ).write_parquet(cal)
+    client.put_object(Bucket=config.BUCKET, Key="test/two_records_cal.parquet", Body=cal.getvalue())
+
+    bundle = semantic.parse_bundle_text(f"""
+name: two_cal
+datasets:
+  - name: days
+    source: {{format: parquet, path: s3://{config.BUCKET}/test/two_records_cal.parquet}}
+    dimensions:
+      - {{name: as_of, column: date, label: As Of, type: time}}
+      - {{name: as_of_quarter, column: quarter, label: Quarter, grain: 1q}}
+      - {{name: as_of_year, column: year, label: Year, type: numeric, grain: 1y}}
+""")
+
+    def build(match):
+        model = semantic.parse_model_text(f"""
+name: two_records
+source: {{format: parquet, path: s3://{config.BUCKET}/test/two_records.parquet}}
+dimension_imports:
+  - {{bundle: two_cal, anchor_dataset: days, how: between,
+      left_on: [start_date, end_date], right_on: date, match: {match}}}
+dimensions:
+  - {{name: active_at, label: Active At, type: time,
+      spine: {{start: start_date, end: end_date, match: {match}}}}}
+measures:
+  - {{name: n, expr: count()}}
+""")
+        return semantic.resolve_imports(model, {"two_cal": bundle})
+
+    return build
+
+
+def test_overlap_counts_a_record_in_every_period_it_touches(two_records):
+    """The stated example: a record open Feb 2nd-15th belongs to February, to
+    Q1 and to the year, even though it spans none of their boundaries."""
+    model = two_records("overlap")
+    q = lambda **kw: engine.run_query(model, {"measures": ["n"], "limit": 50, **kw})
+
+    months = q(dimensions=[{"name": "as_of", "grain": "1mo"}])
+    assert [(r["as_of"][:7], r["n"]) for r in months["rows"]] == \
+        [("2026-01", 1), ("2026-02", 2)] + [(f"2026-{m:02d}", 1) for m in range(3, 13)]
+
+    quarters = q(dimensions=["as_of_quarter"])
+    assert sorted((r["as_of_quarter"], r["n"]) for r in quarters["rows"]) == \
+        [("2026-Q1", 2), ("2026-Q2", 1), ("2026-Q3", 1), ("2026-Q4", 1)]
+
+    assert [(r["as_of_year"], r["n"]) for r in q(dimensions=["as_of_year"])["rows"]] == [(2026, 2)]
+
+
+def test_overlap_holds_for_the_spine_too(two_records):
+    """The generated timeline answers it the same way as the date table."""
+    model = two_records("overlap")
+    q = lambda grain: engine.run_query(model, {
+        "dimensions": [{"name": "active_at", "grain": grain}], "measures": ["n"], "limit": 50})
+    assert [(r["active_at"][:7], r["n"]) for r in q("1mo")["rows"]][:3] == \
+        [("2026-01", 1), ("2026-02", 2), ("2026-03", 1)]
+    assert q("1q")["rows"][0]["n"] == 2  # Q1
+
+
+@pytest.mark.parametrize("match", ["period_start", "period_end"])
+def test_snapshot_matches_exclude_a_record_that_spans_no_boundary(two_records, match):
+    """The other two readings are snapshots, so the Feb 2nd-15th record — open
+    on neither the 1st nor the 28th — is absent from every period."""
+    model = two_records(match)
+    q = lambda **kw: engine.run_query(model, {"measures": ["n"], "limit": 50, **kw})
+    assert all(r["n"] == 1 for r in q(dimensions=[{"name": "as_of", "grain": "1mo"}])["rows"])
+    assert all(r["n"] == 1 for r in q(dimensions=["as_of_quarter"])["rows"])
+    assert [r["n"] for r in q(dimensions=["as_of_year"])["rows"]] == [1]
+
+
 # --- Interval (`how: between`) imports: the `calendar` bundle -> subscriptions
 # The same point-in-time question the spine answers, asked through a real,
 # standalone date table that relates to the model by nothing but the interval.
@@ -198,30 +289,31 @@ def test_interval_import_mixed_grains_uses_the_finest(models):
     assert {row["calendar_quarter"] for row in r["rows"]} == {"2025-Q1"}
 
 
-def test_interval_import_snapshot_end_reads_the_last_day_of_each_bucket(models):
-    """`snapshot: end` is the month-end convention: same buckets, but each one
-    reports what was open on its last day rather than its first."""
+def test_interval_import_match_modes_rank_as_expected(models):
+    """On real data with churn: whatever was open on a month's first or last
+    day was open during that month, so overlap dominates both snapshots — and
+    strictly so wherever a subscription lived and died inside one month."""
     subs = models["subscriptions"]
     binding = next(b for b in subs.import_bindings if b.import_spec.is_interval)
-    assert binding.import_spec.snapshot == "start"
+    assert binding.import_spec.match == "overlap"
     query = {"dimensions": [{"name": "calendar_date", "grain": "1mo"}],
              "measures": ["active_customers"], "limit": 1000}
-    at_start = engine.run_query(subs, query)
-    binding.import_spec.snapshot = "end"
-    try:
-        at_end = engine.run_query(subs, query)
-    finally:
-        binding.import_spec.snapshot = "start"
-    start_by_bucket = {r["calendar_date"]: r["active_customers"] for r in at_start["rows"]}
-    end_by_bucket = {r["calendar_date"]: r["active_customers"] for r in at_end["rows"]}
-    # same buckets, bar the ones that had nothing open on day 1 but did by the
-    # last — the demo's first month, whose earliest subscription starts mid-month
-    assert set(start_by_bucket) < set(end_by_bucket)
-    assert "2024-01-01" in end_by_bucket and "2024-01-01" not in start_by_bucket
-    # a growing business: month end is always at least month start, usually more
-    shared = sorted(start_by_bucket)
-    assert all(end_by_bucket[b] >= start_by_bucket[b] for b in shared)
-    assert any(end_by_bucket[b] > start_by_bucket[b] for b in shared)
+
+    def counts(match):
+        binding.import_spec.match = match
+        try:
+            return {r["calendar_date"]: r["active_customers"] for r in engine.run_query(subs, query)["rows"]}
+        finally:
+            binding.import_spec.match = "overlap"
+
+    overlap, at_start, at_end = counts("overlap"), counts("period_start"), counts("period_end")
+    assert set(at_start) <= set(overlap) and set(at_end) <= set(overlap)
+    for bucket, n in at_start.items():
+        assert overlap[bucket] >= n
+    for bucket, n in at_end.items():
+        assert overlap[bucket] >= n
+    assert any(overlap[b] > at_start[b] for b in at_start)
+    assert any(overlap[b] > at_end[b] for b in at_end)
 
 
 def test_interval_import_carries_its_own_attributes(models):

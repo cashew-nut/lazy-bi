@@ -39,8 +39,12 @@ JOIN_KINDS = ("left", "inner")
 # date column on the imported side against a [start, end] pair on the importing
 # model. See Import.is_interval and engine._join_interval.
 IMPORT_JOIN_KINDS = ("left", "inner", "between")
-# which day of a bucket represents it in a `how: between` import — see Import.snapshot
-SNAPSHOT_POINTS = ("start", "end")
+# how a row's [start, end] interval is matched against a reporting period —
+# see Spine.match / Import.match, and engine._period_conditions
+#   overlap       counted in every period its interval touches at all
+#   period_start  counted only where it was already open on the period's first day
+#   period_end    counted only where it was still open on the period's last day
+MATCH_MODES = ("overlap", "period_start", "period_end")
 
 
 class ModelError(Exception):
@@ -128,11 +132,13 @@ class DatasetJoin:
 
 @dataclass
 class Spine:
-    """Marks a time dimension as a generated timeline: a row is counted in every
-    time bucket between its start and end columns (point-in-time semantics —
-    'active as of the bucket start'). Null end = still active."""
+    """Marks a time dimension as a generated timeline: a row is counted in the
+    time buckets its [start, end] interval matches, at whatever grain the query
+    asks for. Null end = still active. `match` picks which periods count — by
+    default every period the interval overlaps at all."""
     start: str
     end: str
+    match: str = "overlap"
 
 
 @dataclass
@@ -243,11 +249,10 @@ class Import:
     right_on: list[str]
     how: str = "left"
     datasets: Optional[list[str]] = None  # None = whole bundle
-    # interval imports only: which day of each bucket stands for the bucket
-    # once the date table is thinned to the query's grain — the first ("as of
-    # the start of the month", matching Dimension.spine) or the last ("as of
-    # month end", the usual finance convention).
-    snapshot: str = "start"
+    # interval imports only: which reporting periods a model row counts in —
+    # see MATCH_MODES. Same field, same meaning and same default as Spine.match,
+    # so the two mechanisms answer the same question.
+    match: str = "overlap"
 
     @property
     def is_interval(self) -> bool:
@@ -414,13 +419,20 @@ def _parse_dimensions(raw_list: list, owner: str) -> dict[str, Dimension]:
             label=d.get("label", d["name"].replace("_", " ").title()),
             type=d.get("type", "categorical"),
             description=d.get("description", ""),
-            spine=Spine(start=spine_raw["start"], end=spine_raw["end"]) if spine_raw else None,
+            spine=(Spine(start=spine_raw["start"], end=spine_raw["end"],
+                         match=spine_raw.get("match", "overlap"))
+                   if spine_raw else None),
             geo=Geo(lat=geo_raw["lat"], lon=geo_raw["lon"]) if geo_raw else None,
             grain=d.get("grain"),
             synonyms=_as_list(d["synonyms"]) if d.get("synonyms") else [],
         )
         if dim.spine and dim.type != "time":
             raise ModelError(f"{owner}: spine dimension '{dim.name}' must have type: time")
+        if dim.spine and dim.spine.match not in MATCH_MODES:
+            raise ModelError(
+                f"{owner}: spine dimension '{dim.name}': 'match' must be one of "
+                f"{', '.join(MATCH_MODES)}, got '{dim.spine.match}'"
+            )
         if dim.grain is not None and dim.grain not in TIME_GRAINS:
             raise ModelError(
                 f"{owner}: dimension '{dim.name}': unsupported grain '{dim.grain}' "
@@ -436,12 +448,12 @@ def _parse_import(raw: dict, owner: str) -> Import:
         raise ModelError(f"{owner}: dimension_imports entry needs 'anchor_dataset'")
     desc = f"import of '{raw.get('bundle')}'"
     left_on, right_on, how = _parse_join_keys(raw, owner, desc, kinds=IMPORT_JOIN_KINDS)
-    snapshot = raw.get("snapshot", "start")
+    match = raw.get("match", "overlap")
     if how == "between":
-        if snapshot not in SNAPSHOT_POINTS:
+        if match not in MATCH_MODES:
             raise ModelError(
-                f"{owner}: {desc}: 'snapshot' must be one of {', '.join(SNAPSHOT_POINTS)}, "
-                f"got '{snapshot}'"
+                f"{owner}: {desc}: 'match' must be one of {', '.join(MATCH_MODES)}, "
+                f"got '{match}'"
             )
         if len(left_on) != 2:
             raise ModelError(
@@ -458,7 +470,7 @@ def _parse_import(raw: dict, owner: str) -> Import:
         raise ModelError(f"{owner}: {desc}: 'datasets' must be a list")
     return Import(
         bundle=raw["bundle"], anchor_dataset=anchor,
-        left_on=left_on, right_on=right_on, how=how, datasets=datasets, snapshot=snapshot,
+        left_on=left_on, right_on=right_on, how=how, datasets=datasets, match=match,
     )
 
 
@@ -799,7 +811,8 @@ def _dimension_to_spec(d: Dimension) -> dict:
     return {
         "name": d.name, "column": d.column, "label": d.label, "type": d.type,
         "description": d.description,
-        "spine": {"start": d.spine.start, "end": d.spine.end} if d.spine else None,
+        "spine": ({"start": d.spine.start, "end": d.spine.end, "match": d.spine.match}
+                  if d.spine else None),
         "geo": {"lat": d.geo.lat, "lon": d.geo.lon} if d.geo else None,
         "grain": d.grain,
         "synonyms": list(d.synonyms),
@@ -822,7 +835,7 @@ def model_to_spec(model: Model) -> dict:
         "dimension_imports": [
             {"bundle": i.bundle, "anchor_dataset": i.anchor_dataset,
              "left_on": i.left_on, "right_on": i.right_on, "how": i.how,
-             "datasets": i.datasets, "snapshot": i.snapshot}
+             "datasets": i.datasets, "match": i.match}
             for i in model.imports
         ],
         "dimensions": [_dimension_to_spec(d) for d in model.dimensions.values()],
@@ -871,6 +884,8 @@ def _spec_dimension_entries(dims: list[dict]) -> list[dict]:
             entry["grain"] = d["grain"]
         if d.get("spine"):
             entry["spine"] = {"start": d["spine"]["start"], "end": d["spine"]["end"]}
+            if d["spine"].get("match", "overlap") != "overlap":
+                entry["spine"]["match"] = d["spine"]["match"]
         if d.get("geo"):
             entry["geo"] = {"lat": d["geo"]["lat"], "lon": d["geo"]["lon"]}
         if d.get("synonyms"):
@@ -924,8 +939,8 @@ def spec_to_yaml(spec: dict) -> str:
     for i in spec.get("dimension_imports") or []:
         entry = {"bundle": i["bundle"], "anchor_dataset": i["anchor_dataset"]}
         _spec_join_keys(entry, i)
-        if i.get("how") == "between" and i.get("snapshot", "start") != "start":
-            entry["snapshot"] = i["snapshot"]
+        if i.get("how") == "between" and i.get("match", "overlap") != "overlap":
+            entry["match"] = i["match"]
         if i.get("datasets") is not None:
             entry["datasets"] = list(i["datasets"])
         imports.append(entry)

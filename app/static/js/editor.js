@@ -161,19 +161,19 @@ const SCHEMAS = {
     top: ["name", "label", "description", "source", "joins", "dimension_imports", "dimensions", "measures"],
     source: ["format", "path"],
     joins: ["name", "on", "left_on", "right_on", "how"],
-    dimension_imports: ["bundle", "anchor_dataset", "on", "left_on", "right_on", "how", "datasets"],
-    dimensions: ["name", "column", "label", "type", "description", "spine", "geo", "synonyms"],
+    dimension_imports: ["bundle", "anchor_dataset", "on", "left_on", "right_on", "how", "match", "datasets"],
+    dimensions: ["name", "column", "label", "type", "grain", "description", "spine", "geo", "synonyms"],
     measures: ["name", "label", "expr", "format", "description"],
-    spine: ["start", "end"],
+    spine: ["start", "end", "match"],
     geo: ["lat", "lon"],
   },
   bundle: {
     top: ["name", "label", "description", "datasets"],
     datasets: ["name", "source", "dimensions", "joins"],
     source: ["format", "path"],
-    dimensions: ["name", "column", "label", "type", "description", "spine", "geo", "synonyms"],
+    dimensions: ["name", "column", "label", "type", "grain", "description", "spine", "geo", "synonyms"],
     joins: ["to", "on", "left_on", "right_on", "how"],
-    spine: ["start", "end"],
+    spine: ["start", "end", "match"],
     geo: ["lat", "lon"],
   },
   pipeline: {
@@ -189,19 +189,25 @@ const SCHEMAS = {
 // bucket size) and by the builder's grain picker
 const GRAINS = ["1d", "1w", "1mo", "1q", "1y"];
 
+// how an interval is matched against a reporting period (a spine dimension's
+// or an interval import's `match:`) — see app/semantic.py MATCH_MODES
+const MATCH_MODES = ["overlap", "period_start", "period_end"];
+
 // static enum values, keyed by [kind][block][key]
 const ENUMS = {
   model: {
     source: { format: ["parquet", "csv", "delta", "iceberg"] },
     joins: { how: ["left", "inner"] },
-    dimension_imports: { how: ["left", "inner", "between"], snapshot: ["start", "end"] },
+    dimension_imports: { how: ["left", "inner", "between"], match: MATCH_MODES },
     dimensions: { type: ["categorical", "time", "numeric"], grain: GRAINS },
+    spine: { match: MATCH_MODES },
     measures: { format: ["number", "currency", "percent"] },
   },
   bundle: {
     source: { format: ["parquet", "csv", "delta", "iceberg"] },
     joins: { how: ["left", "inner"] },
     dimensions: { type: ["categorical", "time", "numeric"], grain: GRAINS },
+    spine: { match: MATCH_MODES },
   },
   pipeline: {
     sources: { format: ["parquet", "csv", "delta", "iceberg"] },

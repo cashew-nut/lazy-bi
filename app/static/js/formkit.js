@@ -88,6 +88,29 @@ export function textAreaField(label, value, oninput, ph = "") {
   return el("div", { class: "mf-field mf-field-wide" }, el("div", { class: "field-label" }, label), ta);
 }
 
+/* How a row's [start, end] interval is matched against a reporting period.
+   Shared by the two point-in-time mechanisms — a spine dimension and an
+   interval (`how: between`) import — because they answer the same question;
+   mirrors MATCH_MODES in app/semantic.py. */
+export const MATCH_MODES = [
+  ["overlap", "it overlaps the period at all",
+   "open Feb 2nd–15th counts in February, in Q1 and in the year — \"active during\""],
+  ["period_start", "it was open on the period's first day",
+   "a snapshot: February counts only what was already open on the 1st"],
+  ["period_end", "it was open on the period's last day",
+   "a snapshot: February counts only what was still open on the last day"],
+];
+
+export function matchRow(holder, set, label = "COUNT A ROW IN A PERIOD WHEN") {
+  const sel = el("select", { class: "match" },
+    ...MATCH_MODES.map(([v, lbl]) => el("option", { value: v }, lbl)));
+  sel.value = holder.match || "overlap";
+  sel.addEventListener("change", () => set(sel.value));
+  return el("div", { class: "mf-anchor-row" },
+    el("span", { class: "field-label" }, label), sel,
+    el("span", { class: "mf-colcount" }, MATCH_MODES.find(([v]) => v === sel.value)[2]));
+}
+
 /* A LEFT↔RIGHT relationship pair row; either side degrades to a text input
    when its schema is unreachable. The two names do not have to match. */
 export function pairRow(pair, leftCols, rightCols, { leftPh, rightPh, onchange, onremove, oninput = () => {} }) {
@@ -249,6 +272,8 @@ export function spineCreatePanel(cols, { onapply, ondismiss }) {
   const label = el("input", { placeholder: "Active At", spellcheck: "false" });
   const startSel = el("select", {}, el("option", { value: "" }, "— start column —"), ...pick.map(opt));
   const endSel = el("select", {}, el("option", { value: "" }, "— end column —"), ...pick.map(opt));
+  const matchSel = el("select", { class: "match" },
+    ...MATCH_MODES.map(([v, lbl]) => el("option", { value: v }, lbl)));
   const create = el("button", { class: "btn" }, "CREATE SPINE DIMENSION");
   create.addEventListener("click", () => {
     const n = name.value.trim();
@@ -256,16 +281,18 @@ export function spineCreatePanel(cols, { onapply, ondismiss }) {
     onapply({
       name: n, column: n, label: label.value.trim() || titleCase(n), type: "time",
       description: "", geo: null, synonyms: [],
-      spine: { start: startSel.value, end: endSel.value },
+      spine: { start: startSel.value, end: endSel.value, match: matchSel.value },
     });
   });
   const cancel = el("button", { class: "btn plain" }, "CANCEL");
   cancel.addEventListener("click", ondismiss);
   return el("div", { class: "mf-import-cols" },
     el("div", { class: "mf-import-head" }, el("span", { class: "field-label" }, "NEW TIME-SPINE DIMENSION")),
-    note("a generated timeline, not a real column — every row counts in each bucket it's active for "
-      + "(the [start, end) interval; a null end means still active). Powers point-in-time \"active\" "
-      + "measures like active customers or MRR — see subscriptions.yaml for a worked example."),
+    note("a generated timeline, not a real column — every row counts in each period it's active for "
+      + "(the [start, end] interval; a null end means still active), at whatever grain the query asks "
+      + "for. Powers point-in-time \"active\" measures like active customers or MRR — see "
+      + "subscriptions.yaml for a worked example."),
+    matchRow({ match: "overlap" }, () => {}),
     el("div", { class: "mf-row3" },
       el("div", { class: "mf-field" }, el("div", { class: "field-label" }, "NAME"), name),
       el("div", { class: "mf-field" }, el("div", { class: "field-label" }, "LABEL"), label)),
@@ -287,10 +314,16 @@ export function spineFields(dim, cols, onchange) {
     s.addEventListener("change", () => { set(s.value); onchange(); });
     return s;
   };
+  const matchSel = el("select", { class: "match" },
+    ...MATCH_MODES.map(([v, lbl]) => el("option", { value: v }, lbl)));
+  matchSel.value = dim.spine.match || "overlap";
+  matchSel.title = MATCH_MODES.find(([v]) => v === matchSel.value)[2];
+  matchSel.addEventListener("change", () => { dim.spine.match = matchSel.value; onchange(); });
   return el("div", { class: "mf-spine-fields" },
     el("span", { class: "mf-colcount" }, "⧗ spine"),
     el("span", { class: "field-label" }, "START"), sel(dim.spine.start, (v) => { dim.spine.start = v; }),
-    el("span", { class: "field-label" }, "END"), sel(dim.spine.end, (v) => { dim.spine.end = v; }));
+    el("span", { class: "field-label" }, "END"), sel(dim.spine.end, (v) => { dim.spine.end = v; }),
+    el("span", { class: "field-label" }, "COUNTS WHEN"), matchSel);
 }
 
 // ── auto-growing textarea (single-line look, grows with content) ──
