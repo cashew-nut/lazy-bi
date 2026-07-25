@@ -398,6 +398,8 @@ def match_target_model(pipeline: Pipeline, models: dict) -> Optional[str]:
     match when the model's source glob fnmatches the target's object key."""
     target = pipeline.target
     for name, model in models.items():
+        if model.is_composite:
+            continue  # borrows its facts' data; scans no target of its own
         src = model.source
         if target.format == "delta":
             if src.format == "delta" and src.path.rstrip("/") == target.path.rstrip("/"):

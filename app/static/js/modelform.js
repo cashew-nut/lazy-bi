@@ -126,7 +126,16 @@ export async function openModelForm(name) {
   if (!state.bundles.length) state.bundles = await api("/api/dimensions").catch(() => []);
   await loadDatasets();
   if (name) {
-    const { spec } = await api(`/api/models/${name}/spec`);
+    // the guided form edits one fact table; a multi-fact model has none of its
+    // own, and /spec says so — send it to the yaml editor rather than opening
+    // a form with nothing in it
+    let spec;
+    try {
+      ({ spec } = await api(`/api/models/${name}/spec`));
+    } catch (err) {
+      setStatus("");
+      return navigate(paths.modellingModelYaml(name));
+    }
     Object.assign(form, {
       name: spec.name, label: spec.label, description: spec.description,
       source: spec.source,

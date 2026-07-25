@@ -1,0 +1,51 @@
+# Multi-fact model: three fact tables that have nothing to do with each other,
+# read on one axis.
+#
+# Marketing spend, sales revenue and active subscriptions live in separate
+# files with no key between them. Plotting all three on one timeline is the
+# thing a single-source model cannot do — and joining the three together would
+# be worse than not doing it at all, since every order would be paired with
+# every spend row for its month and both measures would balloon.
+#
+# So this model doesn't join them. It lists them as `facts:`, and the engine
+# answers a query by running it separately against each fact at the requested
+# grain and merging the per-fact *results* on the dimensions they share. Each
+# measure keeps the grain of its own table.
+#
+# `map:` is how three tables that all mean "date" agree on one name. Note that
+# each fact reaches its date differently, and none of that matters here:
+#
+#   sales        order_date     — an event date, one row per order
+#   marketing    month          — already monthly
+#   subs         calendar_date  — an interval join (`how: between`) against the
+#                                 calendar bundle, so a subscription counts in
+#                                 every period it was open for, not just the
+#                                 one it started in
+#
+# `region` needs no entry: sales imports it from the geography bundle and the
+# other two declare it natively, so all three already call it the same thing.
+#
+# Those two are the whole shared catalog — the intersection, not the union.
+# `channel` is on sales and marketing but not subscriptions, so it isn't
+# offered: there is no honest number to put in a subscriptions column on a row
+# labelled "net ads". To slice by channel, use the sales or marketing model.
+#
+# Measures are prefixed by fact alias (`sales.revenue`, `marketing.spend`)
+# because two facts can easily both have a measure called `orders`.
+name: commercial_overview
+label: Commercial Overview
+description: Marketing spend, sales revenue and active subscriptions on one timeline — three unrelated fact tables conformed on date and region.
+
+facts:
+  - model: marketing
+    alias: marketing
+    map:
+      date: month
+  - model: sales
+    alias: sales
+    map:
+      date: order_date
+  - model: subscriptions
+    alias: subs
+    map:
+      date: calendar_date

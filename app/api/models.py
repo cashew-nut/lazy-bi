@@ -132,11 +132,18 @@ def _reload_or_400() -> None:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+def _resolve(model: semantic.Model) -> semantic.Model:
+    """Merge a freshly-parsed model's imported dimensions, then — for a
+    multi-fact model — its facts' shared catalog, both against what's
+    currently loaded. Raises semantic.ModelError."""
+    semantic.resolve_imports(model, registry.dimension_bundles)
+    semantic.resolve_facts(model, registry.models)
+    return model
+
+
 def _parse_or_400(text: str) -> semantic.Model:
     try:
-        model = semantic.parse_model_text(text)
-        semantic.resolve_imports(model, registry.dimension_bundles)
-        return model
+        return _resolve(semantic.parse_model_text(text))
     except semantic.ModelError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -147,8 +154,20 @@ def _model_out(parsed: semantic.Model) -> dict:
     out = {
         "ok": True, "error": None,
         "model": {"name": parsed.name, "label": parsed.label,
+                  "kind": "composite" if parsed.is_composite else "fact",
                   "dimensions": len(parsed.dimensions), "measures": len(parsed.measures)},
     }
+    if parsed.is_composite:
+        # no source of its own to introspect; what the editor wants to see is
+        # which dimensions actually survived the conform
+        out["columns"] = None
+        out["facts"] = [
+            {"alias": b.alias, "model": b.model.name,
+             "measures": len(b.model.measures)}
+            for b in parsed.fact_bindings
+        ]
+        out["shared_dimensions"] = list(parsed.dimensions)
+        return out
     try:
         schema = engine.scan(parsed).collect_schema()
         out["columns"] = [{"name": n, "dtype": str(t)} for n, t in schema.items()]
@@ -174,8 +193,7 @@ def validate_model(body: YamlIn):
     """Parse-check editor YAML; if it parses, also introspect the source schema
     so the editor can show the columns available to dimensions and measures."""
     try:
-        parsed = semantic.parse_model_text(body.yaml)
-        semantic.resolve_imports(parsed, registry.dimension_bundles)
+        parsed = _resolve(semantic.parse_model_text(body.yaml))
     except semantic.ModelError as exc:
         return {"ok": False, "error": str(exc)}
     return _model_out(parsed)
@@ -188,8 +206,7 @@ def generate_model_yaml(spec: ModelSpec):
     document and its verdict (with post-join columns) in one call."""
     text = semantic.spec_to_yaml(spec.model_dump())
     try:
-        parsed = semantic.parse_model_text(text)
-        semantic.resolve_imports(parsed, registry.dimension_bundles)
+        parsed = _resolve(semantic.parse_model_text(text))
     except semantic.ModelError as exc:
         return {"ok": False, "error": str(exc), "yaml": text, "columns": None}
     out = _model_out(parsed)
@@ -204,9 +221,10 @@ def get_model_spec(name: str):
     model = get_model(name)
     try:
         parsed = semantic.parse_model_text(model.origin.read_text())
-    except semantic.ModelError as exc:  # file edited into a bad state on disk
+        spec = semantic.model_to_spec(parsed)
+    except semantic.ModelError as exc:  # bad state on disk, or a multi-fact model
         raise HTTPException(status_code=400, detail=str(exc))
-    return {"name": name, "file": model.origin.name, "spec": semantic.model_to_spec(parsed)}
+    return {"name": name, "file": model.origin.name, "spec": spec}
 
 
 @router.post("/models", status_code=201, dependencies=[Depends(require_role("admin"))])
@@ -302,6 +320,21 @@ def check_measure(body: MeasureCheckIn):
     return {"ok": True, "error": None, "window": is_window}
 
 
+def _single_fact_or_400(name: str) -> semantic.Model:
+    """A measure belongs to one fact table. A multi-fact model only borrows its
+    facts' measures, so authoring one here would write a `measures:` block the
+    parser then rejects — say which model to edit instead."""
+    model = get_model(name)
+    if model.is_composite:
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{name}' is a multi-fact model — its measures belong to the facts it lists ("
+                   f"{', '.join(b.model.name for b in model.fact_bindings)}); add or edit the "
+                   f"measure on one of those",
+        )
+    return model
+
+
 def _validate_measure_body(model: semantic.Model, m: MeasureIn) -> None:
     if m.format not in ("number", "currency", "percent"):
         raise HTTPException(status_code=400, detail=f"unknown format '{m.format}'")
@@ -374,7 +407,7 @@ def add_measure(name: str, m: MeasureIn, user: User = Depends(require_role("auth
     """Append a measure to the model's yaml file (comment-preserving) and
     hot-reload — the 'save to model' path of the measure lab."""
     _require_frame_privilege(user, m)
-    model = get_model(name)
+    model = _single_fact_or_400(name)
     if not _MEASURE_NAME.match(m.name):
         raise HTTPException(status_code=400, detail="measure name must be snake_case (a-z, 0-9, _)")
     if m.name in model.measures or m.name in model.dimensions:
@@ -400,7 +433,7 @@ def update_measure(name: str, measure_name: str, m: MeasureIn,
                    user: User = Depends(require_role("author"))):
     """Rewrite an existing measure's yaml block in place and hot-reload."""
     _require_frame_privilege(user, m)
-    model = get_model(name)
+    model = _single_fact_or_400(name)
     if measure_name not in model.measures:
         raise HTTPException(status_code=404, detail=f"unknown measure '{measure_name}' on model '{name}'")
     if m.name != measure_name:
@@ -424,7 +457,7 @@ def update_measure(name: str, measure_name: str, m: MeasureIn,
 @router.delete("/models/{name}/measures/{measure_name}", status_code=204)
 def delete_measure(name: str, measure_name: str,
                    user: User = Depends(require_role("author"))):
-    model = get_model(name)
+    model = _single_fact_or_400(name)
     if measure_name not in model.measures:
         raise HTTPException(status_code=404, detail=f"unknown measure '{measure_name}' on model '{name}'")
     new_text = semantic.remove_measure_yaml(model.origin.read_text(), measure_name)

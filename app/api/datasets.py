@@ -50,7 +50,9 @@ def list_datasets():
             {"name": m.name, "label": m.label, "format": m.source.format, "path": m.source.path,
              "joins": [{"name": j.name, "path": j.source.path, "format": j.source.format} for j in m.joins],
              **per_model[m.name]}
-            for m in registry.models.values()
+            # a multi-fact model reads no objects of its own — its facts are
+            # listed here in their own right
+            for m in registry.models.values() if not m.is_composite
         ],
     }
 

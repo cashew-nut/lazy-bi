@@ -81,7 +81,12 @@ export async function run() {
     const result = await api("/api/query", { method: "POST", body: buildQuery() });
     if (token !== state.queryToken) return; // stale response
     state.result = result;
-    setMeta(`${result.row_count} rows · <span class="ms">${result.elapsed_ms}ms</span> · lazy scan <span class="path">${state.model.path}</span>`);
+    // a multi-fact model scans no path of its own — it runs one scan per fact
+    // and merges the results, so name the facts instead
+    const via = state.model.kind === "composite"
+      ? `${state.model.facts.length} facts <span class="path">${state.model.facts.map((f) => f.model).join(" + ")}</span>`
+      : `lazy scan <span class="path">${state.model.path}</span>`;
+    setMeta(`${result.row_count} rows · <span class="ms">${result.elapsed_ms}ms</span> · ${via}`);
     renderBuilderViz();
   } catch (err) {
     if (token !== state.queryToken) return;
