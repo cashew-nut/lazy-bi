@@ -18,6 +18,7 @@ TEST_ENDPOINT = "http://127.0.0.1:9700"
 _tmpdir = tempfile.mkdtemp(prefix="cash_intel_test_")
 os.environ["CI_S3_ENDPOINT"] = TEST_ENDPOINT          # also disables the embedded emulator
 os.environ["CI_DB_PATH"] = str(Path(_tmpdir) / "test.db")
+os.environ["CI_LOCAL_DATA_DIR"] = str(Path(_tmpdir) / "local_data")
 
 PASSWORDS = {
     "viewer": "viewer-pass-123",

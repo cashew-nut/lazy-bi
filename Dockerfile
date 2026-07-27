@@ -12,8 +12,10 @@ COPY app/ app/
 COPY models/ models/
 COPY pipelines/ pipelines/
 
-# state lives outside the image: sqlite db (+ optional big-file cache)
+# state lives outside the image: sqlite db + uploaded-dataset cache, both in
+# the /data volume so they survive a container restart/recreate
 ENV CI_DB_PATH=/data/cash_intel.db \
+    CI_LOCAL_DATA_DIR=/data/local_data \
     CI_MODELS_DIR=/srv/models \
     CI_PIPELINES_DIR=/srv/pipelines \
     PYTHONUNBUFFERED=1

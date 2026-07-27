@@ -9,6 +9,7 @@ semantic.per_model_stats and semantic.group_objects for the grouping itself."""
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import PurePosixPath
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -85,7 +86,13 @@ async def upload_local_dataset(name: str = Form(...), file: UploadFile = File(..
     GET /datasets ready to build a model on from the Modelling workspace's
     source picker. Nothing about this touches the git-tracked codebase: the
     bytes land in the bucket (the emulator or a real external bucket), never
-    in a committed directory."""
+    in a committed directory.
+
+    Also cached under config.LOCAL_DATA_DIR (gitignored, local disk) so the
+    upload survives a restart even against the embedded emulator, which is
+    in-memory and reseeded from scratch on every start (app/seed.py's
+    _upload_local_data re-uploads this cache then) — otherwise the file
+    would quietly vanish the moment the process restarted."""
     if not _SAFE_NAME.match(name):
         raise HTTPException(status_code=400, detail="name must be alphanumeric (a-z, 0-9, _, -)")
     filename = PurePosixPath(file.filename or "").name
@@ -99,6 +106,10 @@ async def upload_local_dataset(name: str = Form(...), file: UploadFile = File(..
     body = await file.read()
     s3.client().put_object(Bucket=config.BUCKET, Key=key, Body=body)
 
+    cache_path = config.LOCAL_DATA_DIR / name / filename
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_bytes(body)
+
     fmt = _UPLOAD_FORMATS[ext]
     path = f"s3://{config.BUCKET}/{key}"
     try:
@@ -111,7 +122,8 @@ async def upload_local_dataset(name: str = Form(...), file: UploadFile = File(..
 
 @router.delete("/datasets/local/{name}", status_code=204, dependencies=[Depends(require_role("author"))])
 def delete_local_dataset(name: str):
-    """Remove every object uploaded under local/<name>/ — the counterpart to
+    """Remove every object uploaded under local/<name>/ (and its disk cache
+    — see upload_local_dataset above) — the counterpart to
     upload_local_dataset above. 404s if the name doesn't exist so a typo
     isn't silently a no-op."""
     client = s3.client()
@@ -124,3 +136,4 @@ def delete_local_dataset(name: str):
     if not keys:
         raise HTTPException(status_code=404, detail=f"no local dataset named '{name}'")
     client.delete_objects(Bucket=config.BUCKET, Delete={"Objects": [{"Key": k} for k in keys]})
+    shutil.rmtree(config.LOCAL_DATA_DIR / name, ignore_errors=True)

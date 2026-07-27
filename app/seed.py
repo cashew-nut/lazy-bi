@@ -306,6 +306,7 @@ def seed_bucket() -> bool:
 
     _upload_local_cache(client)
     _upload_raw_data(client)
+    _upload_local_data(client)
     return True
 
 
@@ -336,6 +337,26 @@ def _upload_raw_data(client) -> None:
             if path.suffix not in (".csv", ".parquet"):
                 continue
             client.upload_file(str(path), config.BUCKET, f"{dataset_dir.name}/{path.name}")
+
+
+def _upload_local_data(client) -> None:
+    """config.LOCAL_DATA_DIR (gitignored, outside the repo's tracked
+    directories) caches every file a user has uploaded through the app
+    (POST /api/datasets/local, app/api/datasets.py) — the durable copy,
+    since the embedded emulator's bucket is in-memory and this function only
+    ever runs against a freshly-created (empty) one. Uploaded exactly like
+    _upload_raw_data above, just under local/<name>/ instead of <name>/, to
+    land on the same key each upload already used."""
+    root = config.LOCAL_DATA_DIR
+    if not root.is_dir():
+        return
+    for dataset_dir in sorted(root.iterdir()):
+        if not dataset_dir.is_dir():
+            continue
+        for path in sorted(dataset_dir.iterdir()):
+            if path.suffix not in (".csv", ".parquet"):
+                continue
+            client.upload_file(str(path), config.BUCKET, f"local/{dataset_dir.name}/{path.name}")
 
 
 def seed_bootstrap_admin() -> bool:

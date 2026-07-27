@@ -4,3 +4,4 @@ __pycache__/
 .pytest_cache/
 cash_intel.db
 data_cache/
+local_data/

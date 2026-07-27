@@ -793,13 +793,30 @@ in `cash_intel.db` (`app/localmodelstore.py`, same gitignored SQLite file as
 visuals/dashboards/pipeline runs), never as a file under `models/`. It reports
 `"locked": false`, is freely renamable/editable/deletable through the API,
 and survives a restart (it's a real row in a real database) without ever
-becoming something `git status` notices. Build one over your own data by
-uploading a `.csv`/`.parquet` file first — `POST /api/datasets/local` (author
-role; multipart `name` + `file`) drops it into the bucket under
-`local/<name>/<filename>`, unmodeled, where it shows up in `GET /api/datasets`
-exactly like a `raw_data/` file — then open the Modelling workspace's source
-picker and build a model on it from scratch. `DELETE /api/datasets/local/{name}`
-removes every object under that prefix again.
+becoming something `git status` notices.
+
+Build one over your own data with the Modelling landing page's **UPLOAD A
+DATASET** control (or the same control inside a model form's source picker)
+— not tied to building any particular model, so you can stage several files
+before deciding what to do with any of them. `POST /api/datasets/local`
+(author role; multipart `name` + `file`, `.csv`/`.parquet` only) drops it into
+the bucket under `local/<name>/<filename>`, unmodeled, where it shows up in
+`GET /api/datasets` exactly like a `raw_data/` file — then open the Modelling
+workspace's source picker and build a model on it from scratch. `DELETE
+/api/datasets/local/{name}` removes every object under that prefix again.
+
+**Persistence**: an upload is also cached to local disk under
+`config.LOCAL_DATA_DIR` (`local_data/<name>/<filename>` by default —
+gitignored, override with `CI_LOCAL_DATA_DIR`). This matters because the
+default embedded S3 emulator is in-memory — its bucket is entirely rebuilt
+from scratch (`app/seed.py`) on every process start, so anything written only
+to the bucket (an upload included) would otherwise vanish the moment the app
+restarts. `app/seed.py`'s `_upload_local_data` re-uploads everything under
+`local_data/` alongside the generated demo data and `raw_data/`, so an upload
+survives a restart the same way `app/load_taxi.py`'s `data_cache/` does.
+Point `CI_S3_ENDPOINT` at a real bucket (MinIO, real S3 — see `docker-compose
+--profile minio`) and this becomes moot: the bucket itself persists, so the
+disk cache is just a backup copy.
 
 ## API
 

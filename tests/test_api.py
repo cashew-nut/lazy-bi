@@ -584,6 +584,8 @@ def test_local_model_survives_reload(client):
 # ── local dataset upload — app/api/datasets.py ─────────────────────────────
 
 def test_local_dataset_upload_appears_in_picker_and_delete_removes_it(client):
+    from app import config
+
     csv_bytes = b"a,b\n1,2\n3,4\n"
     res = client.post("/api/datasets/local", data={"name": "my_upload"},
                        files={"file": ("probe.csv", csv_bytes, "text/csv")})
@@ -597,12 +599,17 @@ def test_local_dataset_upload_appears_in_picker_and_delete_removes_it(client):
     keys = {o["key"] for ds in datasets for o in ds["objects"]}
     assert "local/my_upload/probe.csv" in keys
 
+    # also cached on disk (outside the ephemeral bucket) so it survives a restart
+    cache_file = config.LOCAL_DATA_DIR / "my_upload" / "probe.csv"
+    assert cache_file.read_bytes() == csv_bytes
+
     assert client.delete("/api/datasets/local/my_upload").status_code == 204
     assert client.delete("/api/datasets/local/my_upload").status_code == 404
 
     datasets_after = client.get("/api/datasets").json()["datasets"]
     keys_after = {o["key"] for ds in datasets_after for o in ds["objects"]}
     assert "local/my_upload/probe.csv" not in keys_after
+    assert not cache_file.exists()
 
 
 def test_local_dataset_upload_rejects_bad_format(client):

@@ -23,6 +23,16 @@ MODELS_DIR = Path(os.environ.get("CI_MODELS_DIR", PROJECT_ROOT / "models"))
 DIMENSIONS_DIR = Path(os.environ.get("CI_DIMENSIONS_DIR", PROJECT_ROOT / "dimensions"))
 DB_PATH = Path(os.environ.get("CI_DB_PATH", PROJECT_ROOT / "cash_intel.db"))
 
+# Disk cache for files uploaded through the app (POST /api/datasets/local,
+# app/api/datasets.py) — gitignored, unlike models/dimensions/pipelines
+# above. The embedded S3 emulator is in-memory and starts empty on every
+# process restart (app/seed.py reseeds the whole demo bucket from scratch
+# each time); an upload written only to that bucket would vanish with it.
+# Mirrors data_cache/'s role for app/load_taxi.py: the durable copy lives on
+# local disk, and app/seed.py re-uploads it to the fresh emulator on every
+# start.
+LOCAL_DATA_DIR = Path(os.environ.get("CI_LOCAL_DATA_DIR", PROJECT_ROOT / "local_data"))
+
 # Pipelines (specs/014-polars-pipeline-module/) — hosted polars transformation
 # scripts; a run executes in its own subprocess, killed if it outruns its
 # timeout (runs are strictly serialized platform-wide, one at a time).
