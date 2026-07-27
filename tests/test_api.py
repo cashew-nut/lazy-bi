@@ -644,6 +644,32 @@ def test_local_model_survives_reload(client):
         client.delete("/api/models/local_reload_probe")
 
 
+def test_orphaned_local_model_dropped_not_fatal(client):
+    """A local model can go stale on its own — it imports a bundle (or facts
+    a model) that a later codebase change removes, exactly what happened when
+    the demo catalog was pruned and left a stray local model pointing at a
+    deleted bundle. That must not crash the whole app on the next reload —
+    reload_all() drops just the broken model and keeps going. Writes the row
+    directly (bypassing the API's importer-check, which only guards live
+    deletes, not a codebase change out from under an existing local model)."""
+    from app.registry import registry
+
+    bad_yaml = (
+        "name: orphan_probe\n"
+        "source: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
+        "dimension_imports:\n  - bundle: nonexistent_bundle\n    anchor_dataset: x\n    on: y\n"
+        "measures:\n  - name: rows\n    expr: count()\n"
+    )
+    registry.local_model_store.create("orphan_probe", bad_yaml)
+    try:
+        registry.reload_all()  # must not raise
+        assert "orphan_probe" not in registry.models
+        assert "sales" in registry.models  # everything else still loads
+    finally:
+        registry.local_model_store.delete("orphan_probe")
+        registry.reload_all()
+
+
 # ── local dataset upload — app/api/datasets.py ─────────────────────────────
 
 def test_local_dataset_upload_appears_in_picker_and_delete_removes_it(client):

@@ -79,13 +79,29 @@ class Registry:
                 local.locked = False
                 local.origin = None
                 self.models[local.name] = local
-        for model in self.models.values():
-            semantic.resolve_imports(model, self.dimension_bundles)
+        for name, model in list(self.models.items()):
+            try:
+                semantic.resolve_imports(model, self.dimension_bundles)
+            except semantic.ModelError:
+                # a built-in model failing to resolve is a real codebase bug —
+                # fail loudly. A *local* model can go stale on its own (e.g. it
+                # imports a bundle that a local/built-in change since removed)
+                # without anyone touching it, so drop just that one instead of
+                # taking the whole app down; it'll keep failing until whoever
+                # owns it fixes or deletes it.
+                if model.locked:
+                    raise
+                del self.models[name]
         # facts resolve in a second pass: a multi-fact model conforms on its
         # facts' *imported* dimensions too, so every model's imports must
         # already be merged in before any of them is read as a fact
-        for model in self.models.values():
-            semantic.resolve_facts(model, self.models)
+        for name, model in list(self.models.items()):
+            try:
+                semantic.resolve_facts(model, self.models)
+            except semantic.ModelError:
+                if model.locked:
+                    raise
+                del self.models[name]
         self.layers = pipelines_mod.load_layers(config.PIPELINES_DIR)
         self.pipelines = pipelines_mod.load_pipelines(config.PIPELINES_DIR, self.layers)
 
