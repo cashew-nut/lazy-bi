@@ -236,7 +236,8 @@ def get_model_spec(name: str):
         spec = semantic.model_to_spec(parsed)
     except semantic.ModelError as exc:  # bad stored state, or a multi-fact model
         raise HTTPException(status_code=400, detail=str(exc))
-    return {"name": name, "file": model.origin.name if model.locked else None, "spec": spec}
+    return {"name": name, "file": model.origin.name if model.locked else None,
+            "locked": model.locked, "spec": spec}
 
 
 @router.post("/models", status_code=201, dependencies=[Depends(require_role("admin"))])

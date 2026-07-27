@@ -7,6 +7,7 @@
    started from a common model) vs common dimension model. */
 "use strict";
 
+import { isAdmin } from "./auth.js";
 import { $, api, el, fmtBytes } from "./lib.js";
 import { uploadRow } from "./formkit.js";
 import { setModelSeed } from "./modelform.js";
@@ -178,6 +179,24 @@ export function setModelsFilter(text) { modelsFilter = text.trim().toLowerCase()
 export function setBundlesFilter(text) { bundlesFilter = text.trim().toLowerCase(); renderBundlesList(); }
 export function setPipelinesFilter(text) { pipelinesFilter = text.trim().toLowerCase(); renderPipelinesList(); }
 
+// only a local (unlocked) model is deletable — a built-in one 403s anyway,
+// so admins never see a button that can only fail
+function modelDeleteBtn(m) {
+  const btn = el("button", { class: "mini-btn", title: `delete '${m.label}'` }, "✕");
+  btn.addEventListener("click", async (e) => {
+    e.stopPropagation();   // don't also trigger the row's navigate-to-edit
+    if (!confirm(`Delete model '${m.label}'? Saved visuals pointing at it will stop working.`)) return;
+    try {
+      await api(`/api/models/${m.name}`, { method: "DELETE" });
+    } catch (err) {
+      alert(`Delete failed: ${err.message}`);
+      return;
+    }
+    await loadModelling();
+  });
+  return btn;
+}
+
 function renderModelsList() {
   $("#mk-models-count").textContent = String(lastModels.length);
   const box = $("#mk-models-list");
@@ -200,7 +219,8 @@ function renderModelsList() {
     const row = el("div", { class: "mk-row clickable", title },
       el("span", { class: "nm" }, m.label),
       ...(composite ? [el("span", { class: "mk-tag" }, "multi-fact")] : []),
-      el("span", { class: "mk-meta" }, meta));
+      el("span", { class: "mk-meta" }, meta),
+      ...(!m.locked && isAdmin() ? [modelDeleteBtn(m)] : []));
     row.addEventListener("click", () => navigate(
       composite ? paths.modellingModelYaml(m.name) : paths.modellingModel(m.name)));
     box.append(row);

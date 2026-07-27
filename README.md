@@ -800,7 +800,9 @@ file as visuals/dashboards/pipeline runs), never as a file under `models/` or
 `dimensions/`. It reports `"locked": false`, is freely
 renamable/editable/deletable through the API, and survives a restart (it's a
 real row in a real database) without ever becoming something `git status`
-notices.
+notices. A model's DELETE is a click away in the UI: a **✕** next to it in
+the Models list, or **DELETE MODEL** in its guided form — both hidden for a
+locked (built-in) model, since that request would only ever 403.
 
 Build one over your own data with the Modelling landing page's **UPLOAD A
 DATASET** control (or the same control inside a model form's source picker)
