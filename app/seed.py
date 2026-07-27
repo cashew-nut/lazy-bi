@@ -346,17 +346,19 @@ def _upload_local_data(client) -> None:
     since the embedded emulator's bucket is in-memory and this function only
     ever runs against a freshly-created (empty) one. Uploaded exactly like
     _upload_raw_data above, just under local/<name>/ instead of <name>/, to
-    land on the same key each upload already used."""
+    land on the same key each upload already used — recursively, since a
+    folder upload preserves its own subdirectory structure under <name>/."""
     root = config.LOCAL_DATA_DIR
     if not root.is_dir():
         return
     for dataset_dir in sorted(root.iterdir()):
         if not dataset_dir.is_dir():
             continue
-        for path in sorted(dataset_dir.iterdir()):
-            if path.suffix not in (".csv", ".parquet"):
+        for path in sorted(dataset_dir.rglob("*")):
+            if not path.is_file() or path.suffix not in (".csv", ".parquet"):
                 continue
-            client.upload_file(str(path), config.BUCKET, f"local/{dataset_dir.name}/{path.name}")
+            rel = path.relative_to(dataset_dir).as_posix()
+            client.upload_file(str(path), config.BUCKET, f"local/{dataset_dir.name}/{rel}")
 
 
 def seed_bootstrap_admin() -> bool:

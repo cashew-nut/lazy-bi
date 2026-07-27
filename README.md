@@ -798,12 +798,18 @@ becoming something `git status` notices.
 Build one over your own data with the Modelling landing page's **UPLOAD A
 DATASET** control (or the same control inside a model form's source picker)
 — not tied to building any particular model, so you can stage several files
-before deciding what to do with any of them. `POST /api/datasets/local`
-(author role; multipart `name` + `file`, `.csv`/`.parquet` only) drops it into
-the bucket under `local/<name>/<filename>`, unmodeled, where it shows up in
-`GET /api/datasets` exactly like a `raw_data/` file — then open the Modelling
-workspace's source picker and build a model on it from scratch. `DELETE
-/api/datasets/local/{name}` removes every object under that prefix again.
+before deciding what to do with any of them. Pick several files at once, or
+**OR PICK A FOLDER** to upload a whole directory in one go — a folder's own
+structure survives as-is under `local/<name>/` (two `2024/jan.csv` /
+`2025/jan.csv` files don't collide the way flattening them would). `POST
+/api/datasets/local` (author role; multipart `name` + one or more `files`,
+each named with its path relative to the upload) drops them into the bucket
+under `local/<name>/…`, unmodeled, where they show up in `GET /api/datasets`
+exactly like a `raw_data/` file — a file with an unrecognized extension is
+skipped rather than failing the whole batch (400 only if nothing in it was
+usable) — then open the Modelling workspace's source picker and build a
+model on it from scratch. `DELETE /api/datasets/local/{name}` removes every
+object under that prefix again.
 
 **Persistence**: an upload is also cached to local disk under
 `config.LOCAL_DATA_DIR` (`local_data/<name>/<filename>` by default —

@@ -588,12 +588,15 @@ def test_local_dataset_upload_appears_in_picker_and_delete_removes_it(client):
 
     csv_bytes = b"a,b\n1,2\n3,4\n"
     res = client.post("/api/datasets/local", data={"name": "my_upload"},
-                       files={"file": ("probe.csv", csv_bytes, "text/csv")})
+                       files=[("files", ("probe.csv", csv_bytes, "text/csv"))])
     assert res.status_code == 201
     body = res.json()
     assert body["format"] == "csv"
-    assert body["path"] == "s3://cash-intel/local/my_upload/probe.csv"
+    assert body["path"] == "s3://cash-intel/local/my_upload/*.csv"
     assert {c["name"] for c in body["columns"]} == {"a", "b"}
+    assert body["uploaded"] == [{"key": "local/my_upload/probe.csv",
+                                  "path": "s3://cash-intel/local/my_upload/probe.csv", "format": "csv"}]
+    assert body["skipped"] == []
 
     datasets = client.get("/api/datasets").json()["datasets"]
     keys = {o["key"] for ds in datasets for o in ds["objects"]}
@@ -614,14 +617,74 @@ def test_local_dataset_upload_appears_in_picker_and_delete_removes_it(client):
 
 def test_local_dataset_upload_rejects_bad_format(client):
     res = client.post("/api/datasets/local", data={"name": "bad_upload"},
-                       files={"file": ("probe.txt", b"hello", "text/plain")})
+                       files=[("files", ("probe.txt", b"hello", "text/plain"))])
     assert res.status_code == 400
 
 
 def test_local_dataset_upload_rejects_unsafe_name(client):
     res = client.post("/api/datasets/local", data={"name": "../etc"},
-                       files={"file": ("probe.csv", b"a,b\n1,2\n", "text/csv")})
+                       files=[("files", ("probe.csv", b"a,b\n1,2\n", "text/csv"))])
     assert res.status_code == 400
+
+
+def test_local_dataset_bulk_upload_multiple_files(client):
+    """Several files uploaded under one name land under the same prefix and
+    the representative path globs across all of them (one dataset, several
+    parts — the same shape a multi-year sales glob already uses)."""
+    res = client.post("/api/datasets/local", data={"name": "bulk_upload"}, files=[
+        ("files", ("2024.csv", b"a,b\n1,2\n", "text/csv")),
+        ("files", ("2025.csv", b"a,b\n3,4\n", "text/csv")),
+    ])
+    assert res.status_code == 201
+    body = res.json()
+    assert body["path"] == "s3://cash-intel/local/bulk_upload/*.csv"
+    assert {u["key"] for u in body["uploaded"]} == {
+        "local/bulk_upload/2024.csv", "local/bulk_upload/2025.csv",
+    }
+    assert body["skipped"] == []
+
+    datasets = client.get("/api/datasets").json()["datasets"]
+    keys = {o["key"] for ds in datasets for o in ds["objects"]}
+    assert {"local/bulk_upload/2024.csv", "local/bulk_upload/2025.csv"} <= keys
+
+    client.delete("/api/datasets/local/bulk_upload")
+
+
+def test_local_dataset_folder_upload_preserves_structure_and_skips_bad_files(client):
+    """A folder pick sends each file's path relative to the picked folder
+    (formkit.js's uploadRow strips the folder's own top segment) — nested
+    structure survives under local/<name>/, and a non-csv/parquet file in
+    the mix is skipped rather than failing the whole upload."""
+    res = client.post("/api/datasets/local", data={"name": "folder_upload"}, files=[
+        ("files", ("2024/jan.csv", b"a,b\n1,2\n", "text/csv")),
+        ("files", ("2024/feb.csv", b"a,b\n3,4\n", "text/csv")),
+        ("files", ("README.md", b"not a dataset", "text/markdown")),
+    ])
+    assert res.status_code == 201
+    body = res.json()
+    assert {u["key"] for u in body["uploaded"]} == {
+        "local/folder_upload/2024/jan.csv", "local/folder_upload/2024/feb.csv",
+    }
+    assert body["skipped"] == ["README.md"]
+    # both files sit in the same subdirectory (2024/), so there's still one glob
+    assert body["path"] == "s3://cash-intel/local/folder_upload/2024/*.csv"
+
+    datasets = client.get("/api/datasets").json()["datasets"]
+    keys = {o["key"] for ds in datasets for o in ds["objects"]}
+    assert {"local/folder_upload/2024/jan.csv", "local/folder_upload/2024/feb.csv"} <= keys
+    assert "local/folder_upload/README.md" not in keys
+
+    from app import config
+    assert (config.LOCAL_DATA_DIR / "folder_upload" / "2024" / "jan.csv").exists()
+    client.delete("/api/datasets/local/folder_upload")
+
+
+def test_local_dataset_upload_rejects_unsafe_relpath(client):
+    res = client.post("/api/datasets/local", data={"name": "traversal_upload"}, files=[
+        ("files", ("../../etc/passwd.csv", b"a,b\n1,2\n", "text/csv")),
+    ])
+    assert res.status_code == 400
+    assert "no .csv/.parquet files" in res.json()["detail"]
 
 
 # ── 007-modelling-workspace ──────────────────────────────────
