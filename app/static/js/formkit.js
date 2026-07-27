@@ -152,11 +152,15 @@ export function manualPathRow(current, onapply) {
 const UPLOAD_NAME_RE = /^[A-Za-z0-9_-]+$/;
 
 /* Upload a .csv/.parquet into the bucket under local/<name>/ (POST
-   /api/datasets/local) — a source for a new local model, never a file in
-   the codebase. Invalidates the cached dataset listing so the freshly
-   uploaded file shows up in datasetCards() right away, then hands the
-   caller {path, format} exactly like picking an existing card. */
-export function uploadRow(onuploaded) {
+   /api/datasets/local) — never a file in the codebase, and not tied to any
+   particular model: the same upload backs a fact model's source, a related
+   dataset, or a common model's dataset, so it's just as often used standalone
+   (the Modelling landing page's sidebar, `compact: true`) as it is inside a
+   form's source picker. Invalidates the cached dataset listing so the
+   freshly uploaded file shows up in datasetCards() right away, then hands
+   the caller {path, format} — a form uses that to set its source/relation;
+   a standalone caller can ignore it and just refresh its own view. */
+export function uploadRow(onuploaded, { compact = false, label = "OR UPLOAD YOUR OWN .CSV / .PARQUET" } = {}) {
   const name = el("input", { placeholder: "dataset name (a-z, 0-9, _, -)", spellcheck: "false" });
   const file = el("input", { type: "file", accept: ".csv,.parquet" });
   const btn = el("button", { class: "btn plain" }, "UPLOAD");
@@ -183,8 +187,8 @@ export function uploadRow(onuploaded) {
     }
   });
   return el("div", { class: "mf-manual" },
-    el("div", { class: "field-label" }, "OR UPLOAD YOUR OWN .CSV / .PARQUET"),
-    el("div", { class: "mf-manual-row" }, name, file, btn),
+    el("div", { class: "field-label" }, label),
+    el("div", { class: compact ? "mf-upload-compact" : "mf-manual-row" }, name, file, btn),
     msg);
 }
 

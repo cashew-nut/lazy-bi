@@ -1125,6 +1125,8 @@ button.ghost.mk-new { margin-top: 2px; }
 .mf-manual-row { display: flex; gap: 8px; }
 .mf-manual-row input { flex: 1; }
 .mf-manual-row select { width: 110px; }
+.mf-upload-compact { display: flex; flex-direction: column; gap: 6px; }
+.mf-upload-compact input[type="file"] { max-width: 100%; }
 .mf-picked { margin-top: 10px; font-size: 11px; color: var(--ink-2); word-break: break-all; }
 .mf-picked .ok { color: var(--ok); margin-right: 4px; }
 .mf-colcount { color: var(--ink-3); font-size: 10px; }

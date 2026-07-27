@@ -8,14 +8,27 @@
 "use strict";
 
 import { $, api, el, fmtBytes } from "./lib.js";
+import { uploadRow } from "./formkit.js";
 import { setModelSeed } from "./modelform.js";
 import { navigate, paths } from "./router.js";
 import { hooks, state } from "./state.js";
 
 let lastModels = [], lastBundles = [], lastPipelines = [], lastDatasetStats = {};
 
+// Upload a dataset independent of building any particular model on it — a
+// user may want a file staged for a common model, another for a fact model,
+// or just to poke at with the schema endpoint before deciding. The row
+// itself is stateless (it only needs a fresh dataset listing after a
+// successful upload), so it's built once and left in place across reloads.
+function renderUploadRow() {
+  const host = $("#modelling-upload");
+  if (!host || host.childElementCount) return;
+  host.append(uploadRow(() => loadModelling(), { compact: true, label: "UPLOAD A DATASET" }));
+}
+
 export async function loadModelling() {
   $("#modelling-bucket").textContent = "scanning bucket…";
+  renderUploadRow();
   const [models, bundles, pipelines, datasets] = await Promise.all([
     api("/api/models"), api("/api/dimensions"), api("/api/pipelines"), api("/api/datasets"),
   ]);
