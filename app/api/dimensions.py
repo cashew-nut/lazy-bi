@@ -1,14 +1,14 @@
 """Dimension bundle endpoints: listing and the yaml read/write path — the
 common-dimensional-model equivalent of app/api/models.py, minus anything
-measure-specific (bundles have no measures) and minus the in-app-editor-only
-pieces out of scope for v1 (create/delete/live-validate — see
-specs/006-common-dimensions/spec.md Assumptions)."""
+measure-specific (bundles have no measures). Built-in bundles (dimensions/*.yaml)
+are locked the same way a built-in Model is; a bundle created through this API
+lives in app/localbundlestore.py instead and stays editable."""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from .. import config, engine, semantic
+from .. import engine, semantic
 from ..auth import require_role
 from ..registry import registry
 from .deps import get_bundle
@@ -45,11 +45,20 @@ class BundleSpec(BaseModel):
     datasets: list[BundleDatasetSpec] = []
 
 
+def _forbid_if_locked(bundle: semantic.DimensionBundle) -> None:
+    if bundle.locked:
+        raise HTTPException(
+            status_code=403,
+            detail=f"dimension bundle '{bundle.name}' is part of the built-in demo catalog and can't be edited",
+        )
+
+
 def _to_public(bundle: semantic.DimensionBundle) -> dict:
     return {
         "name": bundle.name,
         "label": bundle.label,
         "description": bundle.description,
+        "locked": bundle.locked,
         "file": bundle.origin.name if bundle.origin else None,
         "datasets": [
             {"name": ds.name, "path": ds.source.path, "format": ds.source.format,
@@ -135,24 +144,27 @@ def get_bundle_spec(name: str):
     edits (mirrors GET /models/{name}/spec)."""
     bundle = get_bundle(name)
     try:
-        parsed = semantic.parse_bundle_text(bundle.origin.read_text())
-    except semantic.ModelError as exc:  # file edited into a bad state on disk
+        parsed = semantic.parse_bundle_text(registry.read_bundle_text(bundle))
+    except semantic.ModelError as exc:  # file/row edited into a bad state
         raise HTTPException(status_code=400, detail=str(exc))
-    return {"name": name, "file": bundle.origin.name, "spec": semantic.bundle_to_spec(parsed)}
+    return {"name": name, "file": bundle.origin.name if bundle.locked else None,
+            "spec": semantic.bundle_to_spec(parsed)}
 
 
 @router.post("/dimensions", status_code=201,
              dependencies=[Depends(require_role("admin"))])
 def create_dimension_bundle(body: YamlIn):
+    """Always creates a local bundle (app/localbundlestore.py) — the app never
+    writes into the committed dimensions/ directory; that catalog only changes
+    via a code change. See _forbid_if_locked for why the built-in bundles
+    can't be edited through this API either."""
     try:
         parsed = semantic.parse_bundle_text(body.yaml)
     except semantic.ModelError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    path = config.DIMENSIONS_DIR / f"{parsed.name}.yaml"
-    if parsed.name in registry.dimension_bundles or path.exists():
+    if parsed.name in registry.dimension_bundles:
         raise HTTPException(status_code=409, detail=f"dimension bundle '{parsed.name}' already exists")
-    config.DIMENSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    path.write_text(body.yaml)
+    registry.local_bundle_store.create(parsed.name, body.yaml)
     _reload_or_400()
     return _to_public(registry.dimension_bundles[parsed.name])
 
@@ -161,6 +173,7 @@ def create_dimension_bundle(body: YamlIn):
                dependencies=[Depends(require_role("admin"))])
 def delete_dimension_bundle(name: str):
     bundle = get_bundle(name)
+    _forbid_if_locked(bundle)
     importers = _importing_models(name)
     if importers:
         raise HTTPException(
@@ -168,28 +181,28 @@ def delete_dimension_bundle(name: str):
             detail=f"cannot delete '{name}': imported by model(s) {', '.join(importers)}. "
                    f"Remove the import(s) first.",
         )
-    bundle.origin.unlink()
+    registry.local_bundle_store.delete(name)
     _reload_or_400()
 
 
 @router.get("/dimensions/{name}/yaml")
 def get_dimension_bundle_yaml(name: str):
     bundle = get_bundle(name)
-    return {"name": name, "file": bundle.origin.name, "yaml": bundle.origin.read_text()}
+    return {"name": name, "file": bundle.origin.name if bundle.locked else None,
+            "yaml": registry.read_bundle_text(bundle)}
 
 
 @router.put("/dimensions/{name}/yaml", dependencies=[Depends(require_role("admin"))])
 def put_dimension_bundle_yaml(name: str, body: YamlIn):
     bundle = get_bundle(name)
+    _forbid_if_locked(bundle)
     try:
         parsed = semantic.parse_bundle_text(body.yaml)
     except semantic.ModelError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     other = registry.dimension_bundles.get(parsed.name)
-    if other and other.origin != bundle.origin:
-        raise HTTPException(
-            status_code=409, detail=f"dimension bundle '{parsed.name}' already exists in {other.origin.name}"
-        )
-    bundle.origin.write_text(body.yaml)
+    if other and other.name != bundle.name:
+        raise HTTPException(status_code=409, detail=f"dimension bundle '{parsed.name}' already exists")
+    registry.local_bundle_store.update(name, body.yaml)
     _reload_or_400()
     return _to_public(registry.dimension_bundles[parsed.name])

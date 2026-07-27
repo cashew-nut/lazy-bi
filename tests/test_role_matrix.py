@@ -85,6 +85,8 @@ MATRIX = {
     ("DELETE", "/api/notebooks/{notebook_id}"): "author",
     ("GET", "/api/composer/context"): "author",
     ("POST", "/api/composer/compose/stream"): "author",
+    ("POST", "/api/datasets/local"): "author",
+    ("DELETE", "/api/datasets/local/{name}"): "author",
 
     ("GET", "/api/users"): "admin",
     ("POST", "/api/users"): "admin",

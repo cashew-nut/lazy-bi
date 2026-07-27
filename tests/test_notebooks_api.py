@@ -1,4 +1,4 @@
-"""Notebooks CRUD + the first-run seeded "Recruitment Overview" sample."""
+"""Notebooks CRUD + the first-run seeded "Sales Overview" sample."""
 
 
 def test_notebooks_roundtrip(author_client):
@@ -24,9 +24,9 @@ def test_notebook_not_found_is_404(client):
     assert client.get("/api/notebooks/999999").status_code == 404
 
 
-def test_seeded_recruitment_notebook_present(client):
+def test_seeded_sales_notebook_present(client):
     notebooks = client.get("/api/notebooks").json()
-    demo = next((n for n in notebooks if n["name"] == "Recruitment Overview"), None)
+    demo = next((n for n in notebooks if n["name"] == "Sales Overview"), None)
     assert demo is not None
 
     fetched = client.get(f"/api/notebooks/{demo['id']}").json()

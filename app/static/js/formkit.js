@@ -4,7 +4,7 @@
    lives here — each form owns its own spec. */
 "use strict";
 
-import { api, el, fmtBytes } from "./lib.js";
+import { api, apiUpload, el, fmtBytes } from "./lib.js";
 
 export const NAME_RE = /^[a-z_][a-z0-9_]*$/;
 
@@ -147,6 +147,84 @@ export function manualPathRow(current, onapply) {
   });
   return el("div", { class: "mf-manual" }, el("div", { class: "field-label" }, "OR TYPE A PATH"),
     el("div", { class: "mf-manual-row" }, path, fmt, load));
+}
+
+const UPLOAD_NAME_RE = /^[A-Za-z0-9_-]+$/;
+
+/* A folder pick's File.webkitRelativePath is "<picked-folder>/sub/leaf.csv"
+   — the picked folder's own name is meaningless (often a temp/export dir),
+   so only what's under it travels to the server as the file's relative
+   path; a plain (non-folder) pick has no webkitRelativePath at all. */
+const relpathOf = (f) => {
+  const parts = (f.webkitRelativePath || "").split("/");
+  return parts.length > 1 ? parts.slice(1).join("/") : f.name;
+};
+
+/* Upload one or more .csv/.parquet files into the bucket under local/<name>/
+   (POST /api/datasets/local) — never a file in the codebase, and not tied to
+   any particular model: the same upload backs a fact model's source, a
+   related dataset, or a common model's dataset, so it's just as often used
+   standalone (the Modelling landing page's sidebar, `compact: true`) as it
+   is inside a form's source picker. Takes either several individually-picked
+   files or a whole folder (its structure preserved under local/<name>/).
+   Invalidates the cached dataset listing so the upload shows up in
+   datasetCards() right away, then hands the caller {path, format} — a form
+   uses that to set its source/relation; a standalone caller can ignore it
+   and just refresh its own view. */
+export function uploadRow(onuploaded, { compact = false, label = "OR UPLOAD YOUR OWN .CSV / .PARQUET" } = {}) {
+  const name = el("input", { placeholder: "dataset name (a-z, 0-9, _, -)", spellcheck: "false" });
+  const filesInput = el("input", { type: "file", accept: ".csv,.parquet", multiple: "" });
+  const folderInput = el("input", {
+    type: "file", webkitdirectory: "", directory: "", multiple: "", style: "display:none",
+  });
+  const pickFolder = el("button", { class: "btn plain", type: "button" }, "OR PICK A FOLDER");
+  const btn = el("button", { class: "btn plain" }, "UPLOAD");
+  const msg = el("div", { class: "mf-note" });
+
+  let selected = [];   // File[] — from whichever input was used last
+  const noteSelection = () => {
+    if (!selected.length) { msg.textContent = ""; return; }
+    msg.textContent = `${selected.length} file${selected.length === 1 ? "" : "s"} selected`;
+  };
+  pickFolder.addEventListener("click", (e) => { e.preventDefault(); folderInput.click(); });
+  filesInput.addEventListener("change", () => {
+    selected = [...filesInput.files];
+    folderInput.value = "";
+    noteSelection();
+  });
+  folderInput.addEventListener("change", () => {
+    selected = [...folderInput.files];
+    filesInput.value = "";
+    noteSelection();
+  });
+
+  btn.addEventListener("click", async () => {
+    const nm = name.value.trim();
+    if (!nm || !UPLOAD_NAME_RE.test(nm)) { msg.textContent = "name must be alphanumeric (a-z, 0-9, _, -)"; return; }
+    if (!selected.length) { msg.textContent = "choose one or more .csv/.parquet files, or a folder"; return; }
+    btn.disabled = true;
+    msg.textContent = "uploading…";
+    try {
+      const fd = new FormData();
+      fd.append("name", nm);
+      for (const f of selected) fd.append("files", f, relpathOf(f));
+      const res = await apiUpload("/api/datasets/local", fd);
+      datasets = null;   // force a refetch so the upload appears in datasetCards()
+      await loadDatasets();
+      const skippedNote = res.skipped.length ? ` (skipped ${res.skipped.length}: ${res.skipped.join(", ")})` : "";
+      msg.textContent = `uploaded ${res.uploaded.length} file${res.uploaded.length === 1 ? "" : "s"}${skippedNote}`;
+      onuploaded({ path: res.path, format: res.format });
+    } catch (e) {
+      msg.textContent = e.message;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  return el("div", { class: "mf-manual" },
+    el("div", { class: "field-label" }, label),
+    el("div", { class: compact ? "mf-upload-compact" : "mf-manual-row" }, name, filesInput, pickFolder, btn),
+    folderInput,
+    msg);
 }
 
 /* default label for a column ticked as a dimension */

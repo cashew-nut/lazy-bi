@@ -7,15 +7,29 @@
    started from a common model) vs common dimension model. */
 "use strict";
 
+import { isAdmin } from "./auth.js";
 import { $, api, el, fmtBytes } from "./lib.js";
+import { uploadRow } from "./formkit.js";
 import { setModelSeed } from "./modelform.js";
 import { navigate, paths } from "./router.js";
 import { hooks, state } from "./state.js";
 
 let lastModels = [], lastBundles = [], lastPipelines = [], lastDatasetStats = {};
 
+// Upload a dataset independent of building any particular model on it — a
+// user may want a file staged for a common model, another for a fact model,
+// or just to poke at with the schema endpoint before deciding. The row
+// itself is stateless (it only needs a fresh dataset listing after a
+// successful upload), so it's built once and left in place across reloads.
+function renderUploadRow() {
+  const host = $("#modelling-upload");
+  if (!host || host.childElementCount) return;
+  host.append(uploadRow(() => loadModelling(), { compact: true, label: "UPLOAD A DATASET" }));
+}
+
 export async function loadModelling() {
   $("#modelling-bucket").textContent = "scanning bucket…";
+  renderUploadRow();
   const [models, bundles, pipelines, datasets] = await Promise.all([
     api("/api/models"), api("/api/dimensions"), api("/api/pipelines"), api("/api/datasets"),
   ]);
@@ -165,6 +179,24 @@ export function setModelsFilter(text) { modelsFilter = text.trim().toLowerCase()
 export function setBundlesFilter(text) { bundlesFilter = text.trim().toLowerCase(); renderBundlesList(); }
 export function setPipelinesFilter(text) { pipelinesFilter = text.trim().toLowerCase(); renderPipelinesList(); }
 
+// only a local (unlocked) model is deletable — a built-in one 403s anyway,
+// so admins never see a button that can only fail
+function modelDeleteBtn(m) {
+  const btn = el("button", { class: "mini-btn", title: `delete '${m.label}'` }, "✕");
+  btn.addEventListener("click", async (e) => {
+    e.stopPropagation();   // don't also trigger the row's navigate-to-edit
+    if (!confirm(`Delete model '${m.label}'? Saved visuals pointing at it will stop working.`)) return;
+    try {
+      await api(`/api/models/${m.name}`, { method: "DELETE" });
+    } catch (err) {
+      alert(`Delete failed: ${err.message}`);
+      return;
+    }
+    await loadModelling();
+  });
+  return btn;
+}
+
 function renderModelsList() {
   $("#mk-models-count").textContent = String(lastModels.length);
   const box = $("#mk-models-list");
@@ -187,7 +219,8 @@ function renderModelsList() {
     const row = el("div", { class: "mk-row clickable", title },
       el("span", { class: "nm" }, m.label),
       ...(composite ? [el("span", { class: "mk-tag" }, "multi-fact")] : []),
-      el("span", { class: "mk-meta" }, meta));
+      el("span", { class: "mk-meta" }, meta),
+      ...(!m.locked && isAdmin() ? [modelDeleteBtn(m)] : []));
     row.addEventListener("click", () => navigate(
       composite ? paths.modellingModelYaml(m.name) : paths.modellingModel(m.name)));
     box.append(row);

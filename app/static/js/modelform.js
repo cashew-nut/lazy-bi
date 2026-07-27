@@ -16,7 +16,7 @@ import { openMemoriesModal } from "./memories.js";
 import {
   autoGrow, colsOf, columnImportPanel, datasetCards, dimFromColumn, loadDatasets,
   manualPathRow, matchRow, NAME_RE, note, pairRow, sectionRail, sourceSchema, spineCreatePanel,
-  spineFields, synonymsInput, textAreaField, textField,
+  spineFields, synonymsInput, textAreaField, textField, uploadRow,
 } from "./formkit.js";
 import { $, api, el } from "./lib.js";
 import { setPanelDescription, setPanelModel } from "./panelchat.js";
@@ -35,6 +35,7 @@ const AGGS = { sum: "sum", mean: "mean", min: "min", max: "max", count_distinct:
 
 const form = {
   editingName: null,   // name of the existing model being edited (null = new)
+  locked: false,       // built-in demo model — DELETE MODEL stays hidden
   section: "overview",
   dirty: false,
   name: "", label: "", description: "",
@@ -120,6 +121,8 @@ export async function openModelForm(name) {
   // unsaved model has none of the three (chat needs a live model to query)
   $("#mf-build").hidden = !name;
   $("#mf-memory").hidden = !name;
+  form.locked = false;
+  $("#mf-delete").hidden = true;   // unknown until the spec fetch below resolves (existing model only)
   setPanelModel(name || null, name);
   setStatus(name ? "loading…" : "");
   render();
@@ -129,13 +132,15 @@ export async function openModelForm(name) {
     // the guided form edits one fact table; a multi-fact model has none of its
     // own, and /spec says so — send it to the yaml editor rather than opening
     // a form with nothing in it
-    let spec;
+    let spec, locked;
     try {
-      ({ spec } = await api(`/api/models/${name}/spec`));
+      ({ spec, locked } = await api(`/api/models/${name}/spec`));
     } catch (err) {
       setStatus("");
       return navigate(paths.modellingModelYaml(name));
     }
+    form.locked = locked;
+    $("#mf-delete").hidden = locked;
     Object.assign(form, {
       name: spec.name, label: spec.label, description: spec.description,
       source: spec.source,
@@ -355,6 +360,14 @@ function renderData(main) {
       render();
     }, form.source));
     main.append(manualPathRow(form.source, async (src) => {
+      form.source = src;
+      form.pickingSource = false;
+      markDirty();
+      await sourceSchema(src.path, src.format);
+      form.importFor = "source";
+      render();
+    }));
+    main.append(uploadRow(async (src) => {
       form.source = src;
       form.pickingSource = false;
       markDirty();
@@ -787,7 +800,7 @@ async function runCheck(m, statusEl) {
 
 // dimensions the model has declared so far, offered as frame_emits candidates
 // (frame_emits names dimension(s) the frame recomputes itself — e.g. a
-// per-entity milestone date — see clinical_ops_recruitment.yaml)
+// per-entity milestone date — see subscriptions.yaml's median_tenure_days)
 function frameEmitsPicker(m, redraw) {
   const wrap = el("div", { class: "mf-subset" });
   if (!form.dimensions.length) {
@@ -1094,6 +1107,20 @@ async function saveModelForm() {
   }
 }
 
+async function deleteModelForm() {
+  if (!form.editingName || form.locked) return;
+  if (!confirm(`Delete model '${form.label || form.editingName}'? Saved visuals pointing at it will stop working.`)) return;
+  try {
+    await api(`/api/models/${form.editingName}`, { method: "DELETE" });
+  } catch (err) {
+    setStatus(`<span class="err">✗ ${err.message}</span>`);
+    return;
+  }
+  form.dirty = false;
+  await refreshModels();
+  navigate(paths.modelling());
+}
+
 // hand the current form state to the raw YAML editor — the escape hatch for
 // anything the form does not surface (spines, geo, exotic expressions)
 async function editAsYaml() {
@@ -1108,6 +1135,7 @@ async function editAsYaml() {
 
 export function attachModelForm() {
   $("#mf-save").addEventListener("click", saveModelForm);
+  $("#mf-delete").addEventListener("click", deleteModelForm);
   $("#mf-yaml").addEventListener("click", editAsYaml);
   $("#mf-build").addEventListener("click", () => {
     if (form.editingName) navigate(paths.studioModel(form.editingName));

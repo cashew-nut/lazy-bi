@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 _MEASURE_NAME = re.compile(r"^[a-z_][a-z0-9_]*$")
 
-from .. import config, engine, measure_dsl, semantic
+from .. import engine, measure_dsl, semantic
 from ..auth import User, require_role
 from ..registry import registry
 from .deps import get_model
@@ -148,6 +148,18 @@ def _parse_or_400(text: str) -> semantic.Model:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+def _forbid_if_locked(model: semantic.Model) -> None:
+    if model.locked:
+        raise HTTPException(
+            status_code=403,
+            detail=f"model '{model.name}' is part of the built-in demo catalog and can't be edited",
+        )
+
+
+def _read_model_text(model: semantic.Model) -> str:
+    return registry.read_model_text(model)
+
+
 def _model_out(parsed: semantic.Model) -> dict:
     """Summary + schema introspection, shared by /validate and /generate —
     each renders/parses differently but reports the same shape."""
@@ -220,20 +232,24 @@ def get_model_spec(name: str):
     the structured spec the guided form edits."""
     model = get_model(name)
     try:
-        parsed = semantic.parse_model_text(model.origin.read_text())
+        parsed = semantic.parse_model_text(_read_model_text(model))
         spec = semantic.model_to_spec(parsed)
-    except semantic.ModelError as exc:  # bad state on disk, or a multi-fact model
+    except semantic.ModelError as exc:  # bad stored state, or a multi-fact model
         raise HTTPException(status_code=400, detail=str(exc))
-    return {"name": name, "file": model.origin.name, "spec": spec}
+    return {"name": name, "file": model.origin.name if model.locked else None,
+            "locked": model.locked, "spec": spec}
 
 
 @router.post("/models", status_code=201, dependencies=[Depends(require_role("admin"))])
 def create_model(body: YamlIn):
+    """Always creates a local model (app/localmodelstore.py) — the app never
+    writes into the committed models/ directory; that catalog only changes
+    via a code change. See _forbid_if_locked for why the built-in catalog
+    can't be edited through this API either."""
     parsed = _parse_or_400(body.yaml)
-    path = config.MODELS_DIR / f"{parsed.name}.yaml"
-    if parsed.name in registry.models or path.exists():
+    if parsed.name in registry.models:
         raise HTTPException(status_code=409, detail=f"model '{parsed.name}' already exists")
-    path.write_text(body.yaml)
+    registry.local_model_store.create(parsed.name, body.yaml)
     _reload_or_400()
     return registry.models[parsed.name].to_public()
 
@@ -241,17 +257,19 @@ def create_model(body: YamlIn):
 @router.get("/models/{name}/yaml")
 def get_model_yaml(name: str):
     model = get_model(name)
-    return {"name": name, "file": model.origin.name, "yaml": model.origin.read_text()}
+    return {"name": name, "file": model.origin.name if model.locked else None,
+            "yaml": _read_model_text(model)}
 
 
 @router.put("/models/{name}/yaml", dependencies=[Depends(require_role("admin"))])
 def put_model_yaml(name: str, body: YamlIn):
     model = get_model(name)
+    _forbid_if_locked(model)
     parsed = _parse_or_400(body.yaml)
     other = registry.models.get(parsed.name)
-    if other and other.origin != model.origin:
-        raise HTTPException(status_code=409, detail=f"model '{parsed.name}' already exists in {other.origin.name}")
-    model.origin.write_text(body.yaml)
+    if other and other.name != model.name:
+        raise HTTPException(status_code=409, detail=f"model '{parsed.name}' already exists")
+    registry.local_model_store.update(name, body.yaml)
     _reload_or_400()
     return registry.models[parsed.name].to_public()
 
@@ -260,7 +278,8 @@ def put_model_yaml(name: str, body: YamlIn):
                dependencies=[Depends(require_role("admin"))])
 def delete_model(name: str):
     model = get_model(name)
-    model.origin.unlink()
+    _forbid_if_locked(model)
+    registry.local_model_store.delete(name)
     _reload_or_400()
 
 
@@ -415,11 +434,11 @@ def add_measure(name: str, m: MeasureIn, user: User = Depends(require_role("auth
     _validate_measure_body(model, m)
 
     entry = _measure_entry(m)
-    new_text = semantic.append_measure_yaml(model.origin.read_text(), entry)
-    parsed = _parse_or_400(new_text)  # belt and braces before touching disk
+    new_text = semantic.append_measure_yaml(_read_model_text(model), entry)
+    parsed = _parse_or_400(new_text)  # belt and braces before persisting
     if m.name not in parsed.measures:
         raise HTTPException(status_code=500, detail="failed to place the measure in the yaml")
-    model.origin.write_text(new_text)
+    registry.write_model_text(model, new_text)
     _reload_or_400()
     registry.store.record_measure_provenance(
         name, m.name, "create", user.display_name, expr=m.expr,
@@ -441,11 +460,11 @@ def update_measure(name: str, measure_name: str, m: MeasureIn,
     _validate_measure_body(model, m)
 
     entry = _measure_entry(m)
-    new_text = semantic.replace_measure_yaml(model.origin.read_text(), measure_name, entry)
-    parsed = _parse_or_400(new_text)  # belt and braces before touching disk
+    new_text = semantic.replace_measure_yaml(_read_model_text(model), measure_name, entry)
+    parsed = _parse_or_400(new_text)  # belt and braces before persisting
     if measure_name not in parsed.measures:
         raise HTTPException(status_code=500, detail="failed to place the measure in the yaml")
-    model.origin.write_text(new_text)
+    registry.write_model_text(model, new_text)
     _reload_or_400()
     registry.store.record_measure_provenance(
         name, m.name, "update", user.display_name, expr=m.expr,
@@ -460,9 +479,9 @@ def delete_measure(name: str, measure_name: str,
     model = _single_fact_or_400(name)
     if measure_name not in model.measures:
         raise HTTPException(status_code=404, detail=f"unknown measure '{measure_name}' on model '{name}'")
-    new_text = semantic.remove_measure_yaml(model.origin.read_text(), measure_name)
-    _parse_or_400(new_text)  # belt and braces before touching disk
-    model.origin.write_text(new_text)
+    new_text = semantic.remove_measure_yaml(_read_model_text(model), measure_name)
+    _parse_or_400(new_text)  # belt and braces before persisting
+    registry.write_model_text(model, new_text)
     _reload_or_400()
     registry.store.record_measure_provenance(
         name, measure_name, "delete", user.display_name, user_id=user.id)

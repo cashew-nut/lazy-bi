@@ -89,11 +89,11 @@ def test_build_catalog_omits_formula_for_framed_measures(models):
     frame and is meaningless without that frame's context (see
     semantic.Measure.frame_source) — it must not leak into the catalog on
     its own."""
-    catalog = nlq.build_catalog(models, ["clinical_ops_recruitment"])
-    recruitment = catalog[0]
-    framed = next(m for m in recruitment.measures if m["name"] == "median_months_to_75pct_randomised")
+    catalog = nlq.build_catalog(models, ["subscriptions"])
+    subs = catalog[0]
+    framed = next(m for m in subs.measures if m["name"] == "median_tenure_days")
     assert "expr" not in framed
-    plain = next(m for m in recruitment.measures if m["name"] == "screened_actual")
+    plain = next(m for m in subs.measures if m["name"] == "active_customers")
     assert "expr" in plain
 
 
@@ -321,51 +321,51 @@ def test_resolve_show_last_query_carries_inline_measures_through(models):
 # case-insensitive correction safety net for eq/in filters against them ────
 
 def test_build_catalog_includes_sample_values_for_categorical_dimensions(models):
-    catalog = nlq.build_catalog(models, ["clinical_ops_recruitment"])
-    recruitment = catalog[0]
-    therapeutic_area = next(d for d in recruitment.dimensions if d["name"] == "therapeutic_area")
-    assert "Cardiology" in therapeutic_area["sample_values"]
+    catalog = nlq.build_catalog(models, ["sales"])
+    sales = catalog[0]
+    category = next(d for d in sales.dimensions if d["name"] == "category")
+    assert "Cyberware" in category["sample_values"]
 
 
 def test_build_catalog_omits_sample_values_for_time_dimensions(models):
-    catalog = nlq.build_catalog(models, ["clinical_ops_recruitment"])
-    recruitment = catalog[0]
-    event_date = next(d for d in recruitment.dimensions if d["name"] == "event_date")
-    assert "sample_values" not in event_date
+    catalog = nlq.build_catalog(models, ["sales"])
+    sales = catalog[0]
+    order_date = next(d for d in sales.dimensions if d["name"] == "order_date")
+    assert "sample_values" not in order_date
 
 
 def test_resolve_corrects_categorical_filter_casing_for_eq(models):
-    """The exact bug reported: 'cardiology trials' filtered as 'eq' against
-    the stored 'Cardiology' must not silently match nothing."""
+    """The exact bug reported: 'cyberware sales' filtered as 'eq' against
+    the stored 'Cyberware' must not silently match nothing."""
     translator = FakeTranslator([
         RawToolCall("propose_query", {
-            "model": "clinical_ops_recruitment", "dimensions": [], "measures": ["randomised_actual"],
-            "filters": [{"field": "therapeutic_area", "op": "eq", "value": "cardiology"}],
+            "model": "sales", "dimensions": [], "measures": ["revenue"],
+            "filters": [{"field": "category", "op": "eq", "value": "cyberware"}],
         }),
     ])
     decision = nlq.resolve(
-        "randomised patients for cardiology trials",
-        nlq.build_catalog(models, ["clinical_ops_recruitment"]), [], models, translator,
-        scope=["clinical_ops_recruitment"],
+        "revenue for cyberware sales",
+        nlq.build_catalog(models, ["sales"]), [], models, translator,
+        scope=["sales"],
     )
     assert isinstance(decision, nlq.ProposeQuery)
-    assert decision.filters[0]["value"] == "Cardiology"
+    assert decision.filters[0]["value"] == "Cyberware"
 
 
 def test_resolve_corrects_categorical_filter_casing_for_in(models):
     translator = FakeTranslator([
         RawToolCall("propose_query", {
-            "model": "clinical_ops_recruitment", "dimensions": [], "measures": ["randomised_actual"],
-            "filters": [{"field": "therapeutic_area", "op": "in", "values": ["cardiology", "ONCOLOGY"]}],
+            "model": "sales", "dimensions": [], "measures": ["revenue"],
+            "filters": [{"field": "category", "op": "in", "values": ["cyberware", "NETRUNNING"]}],
         }),
     ])
     decision = nlq.resolve(
-        "randomised patients for cardiology or oncology trials",
-        nlq.build_catalog(models, ["clinical_ops_recruitment"]), [], models, translator,
-        scope=["clinical_ops_recruitment"],
+        "revenue for cyberware or netrunning sales",
+        nlq.build_catalog(models, ["sales"]), [], models, translator,
+        scope=["sales"],
     )
     assert isinstance(decision, nlq.ProposeQuery)
-    assert decision.filters[0]["values"] == ["Cardiology", "Oncology"]
+    assert decision.filters[0]["values"] == ["Cyberware", "Netrunning"]
 
 
 def test_resolve_leaves_unmatched_categorical_value_untouched(models):
@@ -373,16 +373,16 @@ def test_resolve_leaves_unmatched_categorical_value_untouched(models):
     value passes through unchanged rather than being invented."""
     translator = FakeTranslator([
         RawToolCall("propose_query", {
-            "model": "clinical_ops_recruitment", "dimensions": [], "measures": ["randomised_actual"],
-            "filters": [{"field": "therapeutic_area", "op": "eq", "value": "not_a_real_area"}],
+            "model": "sales", "dimensions": [], "measures": ["revenue"],
+            "filters": [{"field": "category", "op": "eq", "value": "not_a_real_category"}],
         }),
     ])
     decision = nlq.resolve(
-        "bogus", nlq.build_catalog(models, ["clinical_ops_recruitment"]), [], models, translator,
-        scope=["clinical_ops_recruitment"],
+        "bogus", nlq.build_catalog(models, ["sales"]), [], models, translator,
+        scope=["sales"],
     )
     assert isinstance(decision, nlq.ProposeQuery)
-    assert decision.filters[0]["value"] == "not_a_real_area"
+    assert decision.filters[0]["value"] == "not_a_real_category"
 
 
 def test_resolve_rejects_invalid_filter_op(models):

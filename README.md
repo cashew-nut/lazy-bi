@@ -75,9 +75,8 @@ To point at a real bucket or an external emulator (MinIO, LocalStack), set
 `data_cache/`) and it's uploaded unmodeled on startup into the same
 `cash-intel` bucket, flat under `<dataset-name>/<filename>` — pick it up from
 the Modelling workspace's source picker and build a model on it from
-scratch. `raw_data/clinical-ops-synthetic/` ships as an example (20 studies /
-400 sites / 200 milestones / ~3.3k monthly recruitment rows — see its own
-`README.md` for the schema).
+scratch. The repo doesn't ship a `raw_data/` dataset by default; the demo
+catalog above is generated straight into the bucket instead.
 
 **Signing in**: everything requires an account (there is no anonymous mode —
 the demo exercises the same auth path as a real deployment). On first start
@@ -366,11 +365,13 @@ a timeline each entity then lands in the bucket of its own milestone date, and
 buckets only exist where some entity crossed. Dimensions *not* listed in
 `frame_emits` behave as before: carried through the step via `dims`.
 
-See `median_months_to_75pct_randomised` in `models/clinical_ops_recruitment.yaml`
-for a live example (median months for a study's cumulative randomisations to
-cross 75% of its total, bucketed on timelines by each study's crossing month).
-Inline/visual-scoped measures on the query API cannot use `frame`/`frame_emits` —
-that construct is authenticated-model-measure-only (see above).
+See `median_tenure_days` in `models/subscriptions.yaml` for a live example
+(median tenure of ended subscriptions, bucketed on timelines by each one's
+churn month — date arithmetic like `end_date - start_date` is outside the
+safe measure DSL, so it has to be derived in the frame step instead of a
+plain `expr`). Inline/visual-scoped measures on the query API cannot use
+`frame`/`frame_emits` — that construct is authenticated-model-measure-only
+(see above).
 
 ### Time-spine (point-in-time) measures
 
@@ -504,9 +505,8 @@ Two more things:
   Otherwise every measure on the model would silently multiply by the number of
   periods each row spans.
 - A bundle may be imported more than once — once on a key for its reference
-  data, once on a range for its calendar (`models/cycle_times.yaml` does both).
-  `between` is a `dimension_imports` mode only; plain `joins:` still take
-  `left`/`inner`.
+  data, once on a range for its calendar. `between` is a `dimension_imports`
+  mode only; plain `joins:` still take `left`/`inner`.
 
 ### Common dimensional models (shared dimensions)
 
@@ -773,6 +773,66 @@ never partially saved. Provenance is recorded in a separate SQLite table
 (`measure_provenance`, in `cash_intel.db`) alongside the yaml write; the yaml
 file remains the sole executable source of truth, the table is the audit log.
 
+### Locked (built-in) vs. local models
+
+The 7 models under `models/` and both bundles under `dimensions/`
+(`geography.yaml`, `calendar.yaml`) are the built-in demo catalog — curated to
+be the minimal set that exercises every core-engine capability (a lazy read of
+each supported format, a shared dimension bundle, single- and multi-fact
+models, a `frame:` expression, point-in-time range joins) plus one large fact
+table for a performance benchmark. `GET /api/models` and `GET /api/dimensions`
+report each one `"locked": true`. Structural changes — `POST /api/models`/
+`POST /api/dimensions` under an existing name, `PUT /api/models/{m}/yaml`/`PUT
+/api/dimensions/{b}/yaml`, `DELETE /api/models/{m}`/`DELETE
+/api/dimensions/{b}` — 403 on anything locked, even for admin; the catalog
+only changes by editing a file and committing it. On a model the lock is
+structural only: measure-lab edits (create/update/delete a measure) still work
+on a locked model exactly as documented above. A bundle has no such
+non-structural surface, so a locked bundle's yaml can't be touched at all
+through the API — this is what stops a "quick fix" to the shared Calendar or
+Geography bundle from silently detaching it from every model built on it.
+
+Any *new* model or bundle created through the app — `POST /api/models`/`POST
+/api/dimensions`, or either guided form's generate-then-save flow — is
+**local** instead: its yaml lives in `cash_intel.db`
+(`app/localmodelstore.py` / `app/localbundlestore.py`, same gitignored SQLite
+file as visuals/dashboards/pipeline runs), never as a file under `models/` or
+`dimensions/`. It reports `"locked": false`, is freely
+renamable/editable/deletable through the API, and survives a restart (it's a
+real row in a real database) without ever becoming something `git status`
+notices. A model's DELETE is a click away in the UI: a **✕** next to it in
+the Models list, or **DELETE MODEL** in its guided form — both hidden for a
+locked (built-in) model, since that request would only ever 403.
+
+Build one over your own data with the Modelling landing page's **UPLOAD A
+DATASET** control (or the same control inside a model form's source picker)
+— not tied to building any particular model, so you can stage several files
+before deciding what to do with any of them. Pick several files at once, or
+**OR PICK A FOLDER** to upload a whole directory in one go — a folder's own
+structure survives as-is under `local/<name>/` (two `2024/jan.csv` /
+`2025/jan.csv` files don't collide the way flattening them would). `POST
+/api/datasets/local` (author role; multipart `name` + one or more `files`,
+each named with its path relative to the upload) drops them into the bucket
+under `local/<name>/…`, unmodeled, where they show up in `GET /api/datasets`
+exactly like a `raw_data/` file — a file with an unrecognized extension is
+skipped rather than failing the whole batch (400 only if nothing in it was
+usable) — then open the Modelling workspace's source picker and build a
+model on it from scratch. `DELETE /api/datasets/local/{name}` removes every
+object under that prefix again.
+
+**Persistence**: an upload is also cached to local disk under
+`config.LOCAL_DATA_DIR` (`local_data/<name>/<filename>` by default —
+gitignored, override with `CI_LOCAL_DATA_DIR`). This matters because the
+default embedded S3 emulator is in-memory — its bucket is entirely rebuilt
+from scratch (`app/seed.py`) on every process start, so anything written only
+to the bucket (an upload included) would otherwise vanish the moment the app
+restarts. `app/seed.py`'s `_upload_local_data` re-uploads everything under
+`local_data/` alongside the generated demo data and `raw_data/`, so an upload
+survives a restart the same way `app/load_taxi.py`'s `data_cache/` does.
+Point `CI_S3_ENDPOINT` at a real bucket (MinIO, real S3 — see `docker-compose
+--profile minio`) and this becomes moot: the bucket itself persists, so the
+disk cache is just a backup copy.
+
 ## API
 
 Every route requires a signed-in identity — a session cookie from
@@ -794,8 +854,9 @@ route-by-route matrix lives in
 | `GET /api/models/{m}/dimensions/{d}/values` | distinct values (filter pickers) |
 | `GET/PUT /api/models/{m}/yaml` | read / save a model's YAML (save validates + hot-reloads) |
 | `POST /api/models/validate` | parse-check YAML + introspect source columns |
-| `POST /api/models`, `DELETE /api/models/{m}` | create a model file / delete one |
+| `POST /api/models`, `DELETE /api/models/{m}` | create a local model / delete one — 403 on a locked (built-in) model, see "Locked vs. local models" above |
 | `GET /api/datasets` | bucket objects grouped into pickable datasets (source picker) |
+| `POST /api/datasets/local`, `DELETE /api/datasets/local/{name}` | **author**: upload/remove a `.csv`/`.parquet` under `local/{name}/` — a source for a new local model |
 | `POST/PUT/DELETE /api/models/{m}/measures[/{name}]` | create/update/delete a model measure (**author** role; `frame:` payloads **admin** — see "Authoring model measures" above) |
 | `GET /api/models/{m}/measures/{name}/history` | append-only provenance for a saved measure |
 | `POST /api/query` | run a semantic query, returns columns + rows + timing |
@@ -1024,16 +1085,13 @@ by construction (each edge comes from one pipeline's own source/target
 declaration, never a recursive walk) and needs no live bucket scan, so it
 stays fast regardless of graph shape.
 
-### Demo: bronze → silver → gold
-
-`pipelines/silver_orders.yaml` and `pipelines/gold_daily_revenue.yaml` ship
-a working two-stage chain over the seeded sales data — run `silver_orders`
-then `gold_daily_revenue` from Modelling to materialize
-`models/gold_revenue.yaml`'s source and see the lineage section, run
-history, and graph all populate live. (Run history lives in
-`cash_intel.db`, not the repo, so a fresh clone always starts with neither
-pipeline having run yet — that first click is the point: it's the same
-"queued → running → succeeded" flow a real pipeline goes through.)
+The repo doesn't ship a bundled example chain — `pipelines/` starts empty.
+Build one from **MODELLING → PIPELINES** over the seeded sales/marketing/etc.
+data to see materialization, lineage, run history, and the graph populate
+live. (Run history lives in `cash_intel.db`, not the repo, so a fresh clone
+always starts with no pipelines defined and no runs — that first click is
+the point: it's the same "queued → running → succeeded" flow a real
+pipeline goes through.)
 
 ## Sandbox notebooks
 

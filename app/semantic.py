@@ -227,6 +227,11 @@ class DimensionBundle:
     description: str
     datasets: dict[str, Dataset] = field(default_factory=dict)
     origin: Optional[Path] = None
+    # every bundle is loaded from dimensions/*.yaml (there's no local-bundle
+    # store, unlike Model) so this is always true today — it exists so
+    # app/api/dimensions.py can refuse to edit/delete a built-in common model
+    # the same way app/api/models.py refuses to for a locked Model.
+    locked: bool = True
 
     def dataset(self, name: str) -> Dataset:
         try:
@@ -341,7 +346,12 @@ class Model:
     facts: list[FactRef] = field(default_factory=list)
     fact_bindings: list[FactBinding] = field(default_factory=list)  # populated by resolve_facts
     pipeline_lineage: Optional[LineageSection] = None  # tolerantly parsed; see _parse_lineage_section
-    origin: Optional[Path] = None  # yaml file the model was loaded from
+    origin: Optional[Path] = None  # yaml file the model was loaded from; None for a local model
+    # True for every model loaded from the committed models/ directory — the
+    # built-in demo catalog, uneditable through the app regardless of role
+    # (see app/api/models.py). False for a model loaded from LocalModelStore
+    # (app/localmodelstore.py), which the registry sets after parsing it.
+    locked: bool = True
 
     @property
     def is_composite(self) -> bool:
@@ -368,6 +378,7 @@ class Model:
             "label": self.label,
             "description": self.description,
             "kind": "composite" if self.is_composite else "fact",
+            "locked": self.locked,
             "path": self.source.path if self.source else None,
             "format": self.source.format if self.source else None,
             "file": self.origin.name if self.origin else None,

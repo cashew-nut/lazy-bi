@@ -439,6 +439,7 @@ def test_dimension_bundles_list(client):
     bundles = client.get("/api/dimensions").json()
     geo = next(b for b in bundles if b["name"] == "geography")
     assert geo["file"] == "geography.yaml"
+    assert geo["locked"] is True
     assert {d["name"] for d in geo["datasets"]} == {"regions", "territories"}
 
 
@@ -447,19 +448,51 @@ def test_dimension_bundle_yaml_roundtrip(client):
     assert got["file"] == "geography.yaml"
     assert "territories" in got["yaml"]
 
-    # round-trip an unchanged save; a real edit is covered by parsing tests
-    put = client.put("/api/dimensions/geography/yaml", json={"yaml": got["yaml"]})
-    assert put.status_code == 200
-    assert put.json()["name"] == "geography"
 
-    # models that import this bundle must re-resolve after the reload the PUT triggers
+def test_locked_dimension_bundles_reject_structural_changes(client):
+    """calendar/geography are the built-in common models the demo catalog's
+    other locked models are wired against — editable through the app, they
+    can drift out from under whatever imports them (which is exactly what
+    happened: a live edit silently detached the shipped Calendar bundle from
+    the models built on it). Structural edits are refused the same way a
+    locked Model's are, even for an admin; the catalog only changes via a
+    code change."""
+    yaml_text = client.get("/api/dimensions/geography/yaml").json()["yaml"]
+    assert client.put("/api/dimensions/geography/yaml", json={"yaml": yaml_text}).status_code == 403
+    assert client.delete("/api/dimensions/geography").status_code == 403
+    # still present and still resolving after the refused edits
+    assert client.get("/api/dimensions/geography/yaml").status_code == 200
     sales = next(m for m in client.get("/api/models").json() if m["name"] == "sales")
     assert any(d["name"] == "territory_name" for d in sales["dimensions"])
 
 
+def test_local_dimension_bundle_created_via_api_is_unlocked_and_editable(client):
+    from app import config
+
+    yaml = ("name: local_bundle_probe\ndatasets:\n"
+            "  - name: regions\n    source: {format: csv, path: s3://cash-intel/ref/regions.csv}\n"
+            "    dimensions: [{name: region}]\n")
+    created = client.post("/api/dimensions", json={"yaml": yaml})
+    assert created.status_code == 201
+    assert created.json()["locked"] is False
+    try:
+        assert not (config.DIMENSIONS_DIR / "local_bundle_probe.yaml").exists()
+        bundle = next(b for b in client.get("/api/dimensions").json() if b["name"] == "local_bundle_probe")
+        assert bundle["locked"] is False
+        assert bundle["file"] is None
+
+        # unlocked — structural edits succeed here, unlike on a built-in bundle
+        good = yaml + "\n# a comment\n"
+        assert client.put("/api/dimensions/local_bundle_probe/yaml", json={"yaml": good}).status_code == 200
+        assert "a comment" in client.get("/api/dimensions/local_bundle_probe/yaml").json()["yaml"]
+    finally:
+        assert client.delete("/api/dimensions/local_bundle_probe").status_code == 204
+    assert client.get("/api/dimensions/local_bundle_probe/yaml").status_code == 404
+
+
 def test_dimension_bundle_reload(client):
     assert client.post("/api/dimensions/reload").json()["loaded"] == [
-        "calendar", "clinical_ops", "clinops_common_dimensions", "geography",
+        "calendar", "geography",
     ]
 
 
@@ -488,20 +521,50 @@ def test_dimension_bundle_create_and_delete(client):
     created = client.post("/api/dimensions", json={"yaml": yaml})
     assert created.status_code == 201
     assert created.json()["name"] == "throwaway_geo"
+    assert created.json()["locked"] is False
     assert client.post("/api/dimensions", json={"yaml": yaml}).status_code == 409  # duplicate
     assert client.delete("/api/dimensions/throwaway_geo").status_code == 204
     assert client.get("/api/dimensions/throwaway_geo/yaml").status_code == 404
 
 
 def test_delete_imported_bundle_refused(client):
-    # geography is imported by sales + logistics — deleting it must be refused,
-    # naming the importers, rather than breaking every importer on reload
-    res = client.delete("/api/dimensions/geography")
-    assert res.status_code == 409
-    detail = res.json()["detail"]
-    assert "sales" in detail and "logistics" in detail
-    # still present and still resolving after the refused delete
-    assert client.get("/api/dimensions/geography/yaml").status_code == 200
+    # a bundle imported by a model must be refused (naming the importer)
+    # rather than breaking that model on reload — checked against a fresh,
+    # unlocked bundle since a *locked* bundle is refused for that reason
+    # first (see test_locked_dimension_bundles_reject_structural_changes)
+    bundle_yaml = ("name: throwaway_geo2\ndatasets:\n"
+                   "  - name: regions\n    source: {format: csv, path: s3://cash-intel/ref/regions.csv}\n"
+                   "    dimensions: [{name: region}]\n")
+    assert client.post("/api/dimensions", json={"yaml": bundle_yaml}).status_code == 201
+    model_yaml = ("name: t_bundle_importer\n"
+                  "source: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
+                  "dimension_imports:\n"
+                  "  - bundle: throwaway_geo2\n"
+                  "    anchor_dataset: regions\n"
+                  "    on: region\n"
+                  "measures:\n  - name: rows\n    expr: count()\n")
+    assert client.post("/api/models", json={"yaml": model_yaml}).status_code == 201
+    try:
+        res = client.delete("/api/dimensions/throwaway_geo2")
+        assert res.status_code == 409
+        assert "t_bundle_importer" in res.json()["detail"]
+        # still present and still resolving after the refused delete
+        assert client.get("/api/dimensions/throwaway_geo2/yaml").status_code == 200
+    finally:
+        client.delete("/api/models/t_bundle_importer")
+    assert client.delete("/api/dimensions/throwaway_geo2").status_code == 204
+
+
+def test_local_dimension_bundle_survives_reload(client):
+    yaml = ("name: bundle_reload_probe\ndatasets:\n"
+            "  - name: regions\n    source: {format: csv, path: s3://cash-intel/ref/regions.csv}\n"
+            "    dimensions: [{name: region}]\n")
+    assert client.post("/api/dimensions", json={"yaml": yaml}).status_code == 201
+    try:
+        assert "bundle_reload_probe" in client.post("/api/dimensions/reload").json()["loaded"]
+        assert any(b["name"] == "bundle_reload_probe" for b in client.get("/api/dimensions").json())
+    finally:
+        client.delete("/api/dimensions/bundle_reload_probe")
 
 
 def test_editor_validate(client):
@@ -521,6 +584,196 @@ def test_editor_create_and_delete_model(client, tmp_path):
     assert client.post("/api/models", json={"yaml": yaml_text}).status_code == 409
     assert client.delete("/api/models/temp_probe").status_code == 204
     assert "temp_probe" not in client.get("/api/health").json()["models"]
+
+
+# ── locked (built-in) vs local models — app/localmodelstore.py ─────────────
+
+def test_locked_models_reject_structural_changes(client):
+    """The 7 built-in demo models can't be replaced or deleted through the
+    app, even by an admin — the catalog itself only changes via a code
+    change. Measure-lab edits on a locked model are still allowed (tested
+    separately below) — the lock is structural only."""
+    yaml_text = client.get("/api/models/logistics/yaml").json()["yaml"]
+    assert client.put("/api/models/logistics/yaml", json={"yaml": yaml_text}).status_code == 403
+    assert client.delete("/api/models/logistics").status_code == 403
+
+
+def test_locked_model_still_accepts_measure_lab_edits(client):
+    created = client.post("/api/models/logistics/measures",
+                           json={"name": "temp_measure", "expr": "count()"})
+    assert created.status_code == 201
+    try:
+        updated = client.put("/api/models/logistics/measures/temp_measure",
+                              json={"name": "temp_measure", "expr": "count()", "label": "Temp"})
+        assert updated.status_code == 200
+    finally:
+        assert client.delete("/api/models/logistics/measures/temp_measure").status_code == 204
+
+
+def test_local_model_created_via_api_is_unlocked_and_not_a_file(client):
+    from app import config
+
+    yaml_text = ("name: local_probe\nsource: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
+                 "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: count()\n")
+    created = client.post("/api/models", json={"yaml": yaml_text})
+    assert created.status_code == 201
+    assert created.json()["locked"] is False
+    try:
+        assert not (config.MODELS_DIR / "local_probe.yaml").exists()
+        model = next(m for m in client.get("/api/models").json() if m["name"] == "local_probe")
+        assert model["locked"] is False
+        assert model["file"] is None
+
+        # unlocked — structural edits succeed here, unlike on a built-in model
+        good = yaml_text + "\n# a comment\n"
+        assert client.put("/api/models/local_probe/yaml", json={"yaml": good}).status_code == 200
+        assert "a comment" in client.get("/api/models/local_probe/yaml").json()["yaml"]
+    finally:
+        assert client.delete("/api/models/local_probe").status_code == 204
+    assert "local_probe" not in client.get("/api/health").json()["models"]
+
+
+def test_local_model_survives_reload(client):
+    yaml_text = ("name: local_reload_probe\nsource: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
+                 "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: count()\n")
+    assert client.post("/api/models", json={"yaml": yaml_text}).status_code == 201
+    try:
+        assert "local_reload_probe" in client.post("/api/models/reload").json()["loaded"]
+        assert "local_reload_probe" in client.get("/api/health").json()["models"]
+    finally:
+        client.delete("/api/models/local_reload_probe")
+
+
+def test_orphaned_local_model_dropped_not_fatal(client):
+    """A local model can go stale on its own — it imports a bundle (or facts
+    a model) that a later codebase change removes, exactly what happened when
+    the demo catalog was pruned and left a stray local model pointing at a
+    deleted bundle. That must not crash the whole app on the next reload —
+    reload_all() drops just the broken model and keeps going. Writes the row
+    directly (bypassing the API's importer-check, which only guards live
+    deletes, not a codebase change out from under an existing local model)."""
+    from app.registry import registry
+
+    bad_yaml = (
+        "name: orphan_probe\n"
+        "source: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
+        "dimension_imports:\n  - bundle: nonexistent_bundle\n    anchor_dataset: x\n    on: y\n"
+        "measures:\n  - name: rows\n    expr: count()\n"
+    )
+    registry.local_model_store.create("orphan_probe", bad_yaml)
+    try:
+        registry.reload_all()  # must not raise
+        assert "orphan_probe" not in registry.models
+        assert "sales" in registry.models  # everything else still loads
+    finally:
+        registry.local_model_store.delete("orphan_probe")
+        registry.reload_all()
+
+
+# ── local dataset upload — app/api/datasets.py ─────────────────────────────
+
+def test_local_dataset_upload_appears_in_picker_and_delete_removes_it(client):
+    from app import config
+
+    csv_bytes = b"a,b\n1,2\n3,4\n"
+    res = client.post("/api/datasets/local", data={"name": "my_upload"},
+                       files=[("files", ("probe.csv", csv_bytes, "text/csv"))])
+    assert res.status_code == 201
+    body = res.json()
+    assert body["format"] == "csv"
+    assert body["path"] == "s3://cash-intel/local/my_upload/*.csv"
+    assert {c["name"] for c in body["columns"]} == {"a", "b"}
+    assert body["uploaded"] == [{"key": "local/my_upload/probe.csv",
+                                  "path": "s3://cash-intel/local/my_upload/probe.csv", "format": "csv"}]
+    assert body["skipped"] == []
+
+    datasets = client.get("/api/datasets").json()["datasets"]
+    keys = {o["key"] for ds in datasets for o in ds["objects"]}
+    assert "local/my_upload/probe.csv" in keys
+
+    # also cached on disk (outside the ephemeral bucket) so it survives a restart
+    cache_file = config.LOCAL_DATA_DIR / "my_upload" / "probe.csv"
+    assert cache_file.read_bytes() == csv_bytes
+
+    assert client.delete("/api/datasets/local/my_upload").status_code == 204
+    assert client.delete("/api/datasets/local/my_upload").status_code == 404
+
+    datasets_after = client.get("/api/datasets").json()["datasets"]
+    keys_after = {o["key"] for ds in datasets_after for o in ds["objects"]}
+    assert "local/my_upload/probe.csv" not in keys_after
+    assert not cache_file.exists()
+
+
+def test_local_dataset_upload_rejects_bad_format(client):
+    res = client.post("/api/datasets/local", data={"name": "bad_upload"},
+                       files=[("files", ("probe.txt", b"hello", "text/plain"))])
+    assert res.status_code == 400
+
+
+def test_local_dataset_upload_rejects_unsafe_name(client):
+    res = client.post("/api/datasets/local", data={"name": "../etc"},
+                       files=[("files", ("probe.csv", b"a,b\n1,2\n", "text/csv"))])
+    assert res.status_code == 400
+
+
+def test_local_dataset_bulk_upload_multiple_files(client):
+    """Several files uploaded under one name land under the same prefix and
+    the representative path globs across all of them (one dataset, several
+    parts — the same shape a multi-year sales glob already uses)."""
+    res = client.post("/api/datasets/local", data={"name": "bulk_upload"}, files=[
+        ("files", ("2024.csv", b"a,b\n1,2\n", "text/csv")),
+        ("files", ("2025.csv", b"a,b\n3,4\n", "text/csv")),
+    ])
+    assert res.status_code == 201
+    body = res.json()
+    assert body["path"] == "s3://cash-intel/local/bulk_upload/*.csv"
+    assert {u["key"] for u in body["uploaded"]} == {
+        "local/bulk_upload/2024.csv", "local/bulk_upload/2025.csv",
+    }
+    assert body["skipped"] == []
+
+    datasets = client.get("/api/datasets").json()["datasets"]
+    keys = {o["key"] for ds in datasets for o in ds["objects"]}
+    assert {"local/bulk_upload/2024.csv", "local/bulk_upload/2025.csv"} <= keys
+
+    client.delete("/api/datasets/local/bulk_upload")
+
+
+def test_local_dataset_folder_upload_preserves_structure_and_skips_bad_files(client):
+    """A folder pick sends each file's path relative to the picked folder
+    (formkit.js's uploadRow strips the folder's own top segment) — nested
+    structure survives under local/<name>/, and a non-csv/parquet file in
+    the mix is skipped rather than failing the whole upload."""
+    res = client.post("/api/datasets/local", data={"name": "folder_upload"}, files=[
+        ("files", ("2024/jan.csv", b"a,b\n1,2\n", "text/csv")),
+        ("files", ("2024/feb.csv", b"a,b\n3,4\n", "text/csv")),
+        ("files", ("README.md", b"not a dataset", "text/markdown")),
+    ])
+    assert res.status_code == 201
+    body = res.json()
+    assert {u["key"] for u in body["uploaded"]} == {
+        "local/folder_upload/2024/jan.csv", "local/folder_upload/2024/feb.csv",
+    }
+    assert body["skipped"] == ["README.md"]
+    # both files sit in the same subdirectory (2024/), so there's still one glob
+    assert body["path"] == "s3://cash-intel/local/folder_upload/2024/*.csv"
+
+    datasets = client.get("/api/datasets").json()["datasets"]
+    keys = {o["key"] for ds in datasets for o in ds["objects"]}
+    assert {"local/folder_upload/2024/jan.csv", "local/folder_upload/2024/feb.csv"} <= keys
+    assert "local/folder_upload/README.md" not in keys
+
+    from app import config
+    assert (config.LOCAL_DATA_DIR / "folder_upload" / "2024" / "jan.csv").exists()
+    client.delete("/api/datasets/local/folder_upload")
+
+
+def test_local_dataset_upload_rejects_unsafe_relpath(client):
+    res = client.post("/api/datasets/local", data={"name": "traversal_upload"}, files=[
+        ("files", ("../../etc/passwd.csv", b"a,b\n1,2\n", "text/csv")),
+    ])
+    assert res.status_code == 400
+    assert "no .csv/.parquet files" in res.json()["detail"]
 
 
 # ── 007-modelling-workspace ──────────────────────────────────

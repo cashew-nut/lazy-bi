@@ -83,14 +83,14 @@ def test_measure_provenance_scoped_per_model_measure_pair(store):
 
 def test_measure_history_newest_first_with_frame_fields(store):
     store.record_measure_provenance(
-        "clinical_ops_recruitment", "months_to_75", "create", "dana",
-        expr="median(months_to_75)", frame="frame = lf", frame_emits=["event_date"],
+        "subscriptions", "median_tenure_days", "create", "dana",
+        expr="median(tenure_days)", frame="frame = lf", frame_emits=["churn_month"],
     )
     store.record_measure_provenance(
-        "clinical_ops_recruitment", "months_to_75", "update", "dana",
-        expr="median(months_to_75)", frame="frame = lf.filter(x)", frame_emits=["event_date"],
+        "subscriptions", "median_tenure_days", "update", "dana",
+        expr="median(tenure_days)", frame="frame = lf.filter(x)", frame_emits=["churn_month"],
     )
-    history = store.measure_history("clinical_ops_recruitment", "months_to_75")
+    history = store.measure_history("subscriptions", "median_tenure_days")
     assert [h["version"] for h in history] == [2, 1]
-    assert history[0]["frame_emits"] == ["event_date"]
+    assert history[0]["frame_emits"] == ["churn_month"]
     assert history[0]["action"] == "update"

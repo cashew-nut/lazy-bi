@@ -152,7 +152,7 @@ def delete_pipeline(name: str, user: User = Depends(require_role("admin"))):
                     for f in model.pipeline_lineage.fields
                 ],
             }
-            model.origin.write_text(semantic.replace_lineage_yaml(model.origin.read_text(), section))
+            registry.write_model_text(model, semantic.replace_lineage_yaml(registry.read_model_text(model), section))
             _reload_or_400()
     registry.auth_store.record_audit("pipeline.delete", user.display_name, actor_user_id=user.id, target=name)
 
