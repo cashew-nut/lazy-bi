@@ -4,7 +4,7 @@
    lives here — each form owns its own spec. */
 "use strict";
 
-import { api, el, fmtBytes } from "./lib.js";
+import { api, apiUpload, el, fmtBytes } from "./lib.js";
 
 export const NAME_RE = /^[a-z_][a-z0-9_]*$/;
 
@@ -147,6 +147,45 @@ export function manualPathRow(current, onapply) {
   });
   return el("div", { class: "mf-manual" }, el("div", { class: "field-label" }, "OR TYPE A PATH"),
     el("div", { class: "mf-manual-row" }, path, fmt, load));
+}
+
+const UPLOAD_NAME_RE = /^[A-Za-z0-9_-]+$/;
+
+/* Upload a .csv/.parquet into the bucket under local/<name>/ (POST
+   /api/datasets/local) — a source for a new local model, never a file in
+   the codebase. Invalidates the cached dataset listing so the freshly
+   uploaded file shows up in datasetCards() right away, then hands the
+   caller {path, format} exactly like picking an existing card. */
+export function uploadRow(onuploaded) {
+  const name = el("input", { placeholder: "dataset name (a-z, 0-9, _, -)", spellcheck: "false" });
+  const file = el("input", { type: "file", accept: ".csv,.parquet" });
+  const btn = el("button", { class: "btn plain" }, "UPLOAD");
+  const msg = el("div", { class: "mf-note" });
+  btn.addEventListener("click", async () => {
+    const nm = name.value.trim();
+    if (!nm || !UPLOAD_NAME_RE.test(nm)) { msg.textContent = "name must be alphanumeric (a-z, 0-9, _, -)"; return; }
+    if (!file.files[0]) { msg.textContent = "choose a .csv or .parquet file"; return; }
+    btn.disabled = true;
+    msg.textContent = "uploading…";
+    try {
+      const fd = new FormData();
+      fd.append("name", nm);
+      fd.append("file", file.files[0]);
+      const res = await apiUpload("/api/datasets/local", fd);
+      datasets = null;   // force a refetch so the new file appears in datasetCards()
+      await loadDatasets();
+      msg.textContent = "";
+      onuploaded({ path: res.path, format: res.format });
+    } catch (e) {
+      msg.textContent = e.message;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  return el("div", { class: "mf-manual" },
+    el("div", { class: "field-label" }, "OR UPLOAD YOUR OWN .CSV / .PARQUET"),
+    el("div", { class: "mf-manual-row" }, name, file, btn),
+    msg);
 }
 
 /* default label for a column ticked as a dimension */

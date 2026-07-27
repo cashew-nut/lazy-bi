@@ -40,6 +40,21 @@ export async function api(path, opts = {}) {
   return data;
 }
 
+// Multipart upload (dataset files) — same CSRF header and 401/error handling
+// as api() above, but the body is a FormData the browser must set its own
+// Content-Type (with boundary) for, so it's never forced to application/json.
+export async function apiUpload(path, formData) {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "X-Requested-With": "fetch" },
+    body: formData,
+  });
+  if (res.status === 401) window.dispatchEvent(new Event("auth-required"));
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.detail || res.statusText);
+  return data;
+}
+
 // ── number/date formatting ───────────────────────────────────
 
 export function abbrev(v) {

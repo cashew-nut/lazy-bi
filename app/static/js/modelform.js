@@ -16,7 +16,7 @@ import { openMemoriesModal } from "./memories.js";
 import {
   autoGrow, colsOf, columnImportPanel, datasetCards, dimFromColumn, loadDatasets,
   manualPathRow, matchRow, NAME_RE, note, pairRow, sectionRail, sourceSchema, spineCreatePanel,
-  spineFields, synonymsInput, textAreaField, textField,
+  spineFields, synonymsInput, textAreaField, textField, uploadRow,
 } from "./formkit.js";
 import { $, api, el } from "./lib.js";
 import { setPanelDescription, setPanelModel } from "./panelchat.js";
@@ -355,6 +355,14 @@ function renderData(main) {
       render();
     }, form.source));
     main.append(manualPathRow(form.source, async (src) => {
+      form.source = src;
+      form.pickingSource = false;
+      markDirty();
+      await sourceSchema(src.path, src.format);
+      form.importFor = "source";
+      render();
+    }));
+    main.append(uploadRow(async (src) => {
       form.source = src;
       form.pickingSource = false;
       markDirty();
