@@ -439,6 +439,7 @@ def test_dimension_bundles_list(client):
     bundles = client.get("/api/dimensions").json()
     geo = next(b for b in bundles if b["name"] == "geography")
     assert geo["file"] == "geography.yaml"
+    assert geo["locked"] is True
     assert {d["name"] for d in geo["datasets"]} == {"regions", "territories"}
 
 
@@ -447,14 +448,46 @@ def test_dimension_bundle_yaml_roundtrip(client):
     assert got["file"] == "geography.yaml"
     assert "territories" in got["yaml"]
 
-    # round-trip an unchanged save; a real edit is covered by parsing tests
-    put = client.put("/api/dimensions/geography/yaml", json={"yaml": got["yaml"]})
-    assert put.status_code == 200
-    assert put.json()["name"] == "geography"
 
-    # models that import this bundle must re-resolve after the reload the PUT triggers
+def test_locked_dimension_bundles_reject_structural_changes(client):
+    """calendar/geography are the built-in common models the demo catalog's
+    other locked models are wired against — editable through the app, they
+    can drift out from under whatever imports them (which is exactly what
+    happened: a live edit silently detached the shipped Calendar bundle from
+    the models built on it). Structural edits are refused the same way a
+    locked Model's are, even for an admin; the catalog only changes via a
+    code change."""
+    yaml_text = client.get("/api/dimensions/geography/yaml").json()["yaml"]
+    assert client.put("/api/dimensions/geography/yaml", json={"yaml": yaml_text}).status_code == 403
+    assert client.delete("/api/dimensions/geography").status_code == 403
+    # still present and still resolving after the refused edits
+    assert client.get("/api/dimensions/geography/yaml").status_code == 200
     sales = next(m for m in client.get("/api/models").json() if m["name"] == "sales")
     assert any(d["name"] == "territory_name" for d in sales["dimensions"])
+
+
+def test_local_dimension_bundle_created_via_api_is_unlocked_and_editable(client):
+    from app import config
+
+    yaml = ("name: local_bundle_probe\ndatasets:\n"
+            "  - name: regions\n    source: {format: csv, path: s3://cash-intel/ref/regions.csv}\n"
+            "    dimensions: [{name: region}]\n")
+    created = client.post("/api/dimensions", json={"yaml": yaml})
+    assert created.status_code == 201
+    assert created.json()["locked"] is False
+    try:
+        assert not (config.DIMENSIONS_DIR / "local_bundle_probe.yaml").exists()
+        bundle = next(b for b in client.get("/api/dimensions").json() if b["name"] == "local_bundle_probe")
+        assert bundle["locked"] is False
+        assert bundle["file"] is None
+
+        # unlocked — structural edits succeed here, unlike on a built-in bundle
+        good = yaml + "\n# a comment\n"
+        assert client.put("/api/dimensions/local_bundle_probe/yaml", json={"yaml": good}).status_code == 200
+        assert "a comment" in client.get("/api/dimensions/local_bundle_probe/yaml").json()["yaml"]
+    finally:
+        assert client.delete("/api/dimensions/local_bundle_probe").status_code == 204
+    assert client.get("/api/dimensions/local_bundle_probe/yaml").status_code == 404
 
 
 def test_dimension_bundle_reload(client):
@@ -488,20 +521,50 @@ def test_dimension_bundle_create_and_delete(client):
     created = client.post("/api/dimensions", json={"yaml": yaml})
     assert created.status_code == 201
     assert created.json()["name"] == "throwaway_geo"
+    assert created.json()["locked"] is False
     assert client.post("/api/dimensions", json={"yaml": yaml}).status_code == 409  # duplicate
     assert client.delete("/api/dimensions/throwaway_geo").status_code == 204
     assert client.get("/api/dimensions/throwaway_geo/yaml").status_code == 404
 
 
 def test_delete_imported_bundle_refused(client):
-    # geography is imported by sales + logistics — deleting it must be refused,
-    # naming the importers, rather than breaking every importer on reload
-    res = client.delete("/api/dimensions/geography")
-    assert res.status_code == 409
-    detail = res.json()["detail"]
-    assert "sales" in detail and "logistics" in detail
-    # still present and still resolving after the refused delete
-    assert client.get("/api/dimensions/geography/yaml").status_code == 200
+    # a bundle imported by a model must be refused (naming the importer)
+    # rather than breaking that model on reload — checked against a fresh,
+    # unlocked bundle since a *locked* bundle is refused for that reason
+    # first (see test_locked_dimension_bundles_reject_structural_changes)
+    bundle_yaml = ("name: throwaway_geo2\ndatasets:\n"
+                   "  - name: regions\n    source: {format: csv, path: s3://cash-intel/ref/regions.csv}\n"
+                   "    dimensions: [{name: region}]\n")
+    assert client.post("/api/dimensions", json={"yaml": bundle_yaml}).status_code == 201
+    model_yaml = ("name: t_bundle_importer\n"
+                  "source: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
+                  "dimension_imports:\n"
+                  "  - bundle: throwaway_geo2\n"
+                  "    anchor_dataset: regions\n"
+                  "    on: region\n"
+                  "measures:\n  - name: rows\n    expr: count()\n")
+    assert client.post("/api/models", json={"yaml": model_yaml}).status_code == 201
+    try:
+        res = client.delete("/api/dimensions/throwaway_geo2")
+        assert res.status_code == 409
+        assert "t_bundle_importer" in res.json()["detail"]
+        # still present and still resolving after the refused delete
+        assert client.get("/api/dimensions/throwaway_geo2/yaml").status_code == 200
+    finally:
+        client.delete("/api/models/t_bundle_importer")
+    assert client.delete("/api/dimensions/throwaway_geo2").status_code == 204
+
+
+def test_local_dimension_bundle_survives_reload(client):
+    yaml = ("name: bundle_reload_probe\ndatasets:\n"
+            "  - name: regions\n    source: {format: csv, path: s3://cash-intel/ref/regions.csv}\n"
+            "    dimensions: [{name: region}]\n")
+    assert client.post("/api/dimensions", json={"yaml": yaml}).status_code == 201
+    try:
+        assert "bundle_reload_probe" in client.post("/api/dimensions/reload").json()["loaded"]
+        assert any(b["name"] == "bundle_reload_probe" for b in client.get("/api/dimensions").json())
+    finally:
+        client.delete("/api/dimensions/bundle_reload_probe")
 
 
 def test_editor_validate(client):

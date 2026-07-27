@@ -227,6 +227,11 @@ class DimensionBundle:
     description: str
     datasets: dict[str, Dataset] = field(default_factory=dict)
     origin: Optional[Path] = None
+    # every bundle is loaded from dimensions/*.yaml (there's no local-bundle
+    # store, unlike Model) so this is always true today — it exists so
+    # app/api/dimensions.py can refuse to edit/delete a built-in common model
+    # the same way app/api/models.py refuses to for a locked Model.
+    locked: bool = True
 
     def dataset(self, name: str) -> Dataset:
         try:

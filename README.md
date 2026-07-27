@@ -775,25 +775,32 @@ file remains the sole executable source of truth, the table is the audit log.
 
 ### Locked (built-in) vs. local models
 
-The 7 models under `models/` (plus `dimensions/geography.yaml` and
-`dimensions/calendar.yaml`) are the built-in demo catalog — curated to be the
-minimal set that exercises every core-engine capability (a lazy read of each
-supported format, a shared dimension bundle, single- and multi-fact models, a
-`frame:` expression, point-in-time range joins) plus one large fact table for
-a performance benchmark. `GET /api/models` reports each one `"locked": true`.
-Structural changes — `POST /api/models` under an existing name, `PUT
-/api/models/{m}/yaml`, `DELETE /api/models/{m}` — 403 on a locked model even
-for admin; the catalog only changes by editing a file and committing it. The
-lock is structural only: measure-lab edits (create/update/delete a measure)
-still work on a locked model exactly as documented above.
+The 7 models under `models/` and both bundles under `dimensions/`
+(`geography.yaml`, `calendar.yaml`) are the built-in demo catalog — curated to
+be the minimal set that exercises every core-engine capability (a lazy read of
+each supported format, a shared dimension bundle, single- and multi-fact
+models, a `frame:` expression, point-in-time range joins) plus one large fact
+table for a performance benchmark. `GET /api/models` and `GET /api/dimensions`
+report each one `"locked": true`. Structural changes — `POST /api/models`/
+`POST /api/dimensions` under an existing name, `PUT /api/models/{m}/yaml`/`PUT
+/api/dimensions/{b}/yaml`, `DELETE /api/models/{m}`/`DELETE
+/api/dimensions/{b}` — 403 on anything locked, even for admin; the catalog
+only changes by editing a file and committing it. On a model the lock is
+structural only: measure-lab edits (create/update/delete a measure) still work
+on a locked model exactly as documented above. A bundle has no such
+non-structural surface, so a locked bundle's yaml can't be touched at all
+through the API — this is what stops a "quick fix" to the shared Calendar or
+Geography bundle from silently detaching it from every model built on it.
 
-Any *new* model created through the app — `POST /api/models`, or the guided
-form's generate-then-save flow — is a **local** model instead: its yaml lives
-in `cash_intel.db` (`app/localmodelstore.py`, same gitignored SQLite file as
-visuals/dashboards/pipeline runs), never as a file under `models/`. It reports
-`"locked": false`, is freely renamable/editable/deletable through the API,
-and survives a restart (it's a real row in a real database) without ever
-becoming something `git status` notices.
+Any *new* model or bundle created through the app — `POST /api/models`/`POST
+/api/dimensions`, or either guided form's generate-then-save flow — is
+**local** instead: its yaml lives in `cash_intel.db`
+(`app/localmodelstore.py` / `app/localbundlestore.py`, same gitignored SQLite
+file as visuals/dashboards/pipeline runs), never as a file under `models/` or
+`dimensions/`. It reports `"locked": false`, is freely
+renamable/editable/deletable through the API, and survives a restart (it's a
+real row in a real database) without ever becoming something `git status`
+notices.
 
 Build one over your own data with the Modelling landing page's **UPLOAD A
 DATASET** control (or the same control inside a model form's source picker)

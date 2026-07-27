@@ -9,6 +9,7 @@ from typing import Optional
 from . import config, pipelines as pipelines_mod, semantic
 from .authstore import AuthStore
 from .conversationstore import ConversationStore
+from .localbundlestore import LocalBundleStore
 from .localmodelstore import LocalModelStore
 from .memorystore import MemoryStore
 from .pipelinestore import PipelineStore
@@ -29,6 +30,7 @@ class Registry:
         self.pipeline_store: Optional[PipelineStore] = None
         self.sandbox_store: Optional[SandboxStore] = None
         self.local_model_store: Optional[LocalModelStore] = None
+        self.local_bundle_store: Optional[LocalBundleStore] = None
 
     def init(self) -> None:
         self.store = VisualStore(config.DB_PATH)
@@ -42,6 +44,7 @@ class Registry:
         self.pipeline_store = PipelineStore(config.DB_PATH)
         self.sandbox_store = SandboxStore(config.DB_PATH)
         self.local_model_store = LocalModelStore(config.DB_PATH)
+        self.local_bundle_store = LocalBundleStore(config.DB_PATH)
         self.reload_all()
 
     def reload_all(self) -> None:
@@ -53,6 +56,17 @@ class Registry:
         load after models since target->model matching (lineage) needs
         models loaded."""
         self.dimension_bundles = semantic.load_dimension_bundles(config.DIMENSIONS_DIR)
+        if self.local_bundle_store is not None:
+            for row in self.local_bundle_store.list():
+                try:
+                    local = semantic.parse_bundle_text(row["yaml"])
+                except semantic.ModelError:
+                    continue  # a hand-corrupted row shouldn't sink the whole reload
+                if local.name in self.dimension_bundles:
+                    continue  # a name the built-in catalog (or an earlier local row) already owns wins
+                local.locked = False
+                local.origin = None
+                self.dimension_bundles[local.name] = local
         self.models = semantic.load_models(config.MODELS_DIR)
         if self.local_model_store is not None:
             for row in self.local_model_store.list():
@@ -93,6 +107,12 @@ class Registry:
             model.origin.write_text(text)
         else:
             self.local_model_store.update(model.name, text)
+
+    def read_bundle_text(self, bundle: semantic.DimensionBundle) -> str:
+        if bundle.locked:
+            return bundle.origin.read_text()
+        row = self.local_bundle_store.get(bundle.name)
+        return row["yaml"] if row else ""
 
 
 registry = Registry()
