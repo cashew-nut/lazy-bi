@@ -33,7 +33,11 @@ def test_spec_to_yaml_collapses_matching_keys_to_on():
     text = semantic.spec_to_yaml(spec)
     # sales joins products on the shared 'product' column -> terse `on:` form
     assert "on: product" in text
-    assert "left_on" not in text
+    assert "on: region" in text          # ...and so does its geography import
+    # ...while its calendar import, whose keys differ (order_date -> date),
+    # keeps the explicit pair rather than being collapsed to a wrong `on:`
+    assert "left_on: order_date" in text
+    assert "right_on: date" in text
 
 
 def test_spec_to_yaml_emits_differing_relationship_columns():
@@ -176,7 +180,9 @@ def test_form_save_flow_creates_model_with_interval_import(client):
     gen = client.post("/api/models/generate", json=spec).json()
     assert gen["ok"] is True
     # the form's column list is the post-join scan, so it sees the calendar side
-    assert "quarter" in [c["name"] for c in gen["columns"]]
+    # — under the bundle's dimension names, which is how a dimension declared on
+    # this model would have to address them
+    assert "calendar_quarter" in [c["name"] for c in gen["columns"]]
     created = client.post("/api/models", json={"yaml": gen["yaml"]})
     assert created.status_code == 201
     try:

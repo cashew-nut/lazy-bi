@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import fnmatch
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -280,33 +280,30 @@ class ImportBinding:
 
 @dataclass
 class FactRef:
-    """One fact table inside a multi-fact model: a reference to another Model,
-    plus how that model's dimensions line up with the shared ones.
+    """One fact table inside a multi-fact model: a reference to another Model.
 
     Facts are never joined to each other — that is the whole point. Each is
     queried on its own and the results are merged on the dimensions they have
     in common, so three unrelated fact tables can share one axis without any
     of the fan-out a fact-to-fact join would cause.
 
-    `map` renames a fact's own dimension onto a shared name, for when two facts
-    mean the same thing by different words (an events table's `order_date` and
-    a calendar-joined table's `calendar_date` are both "date"). Dimensions the
-    facts already agree on by name — anything from the same imported bundle,
-    typically — need no entry.
+    A reference is all there is to declare. Two facts conform on a dimension
+    when they call it by the same name, which is what importing the same
+    dimension bundle gets you — how a fact reaches a shared dimension is a
+    property of that fact, declared once on the fact model.
     """
     model: str
-    alias: str = ""                                     # namespaces this fact's measures
-    map: dict[str, str] = field(default_factory=dict)   # shared name -> this fact's dimension
+    alias: str = ""   # namespaces this fact's measures
 
 
 @dataclass
 class FactBinding:
     """Resolved, engine-facing form of a FactRef — computed by resolve_facts()
-    at load/hot-reload time, the multi-fact counterpart of ImportBinding."""
-    fact: FactRef
+    at load/hot-reload time, the multi-fact counterpart of ImportBinding. A
+    FactRef is only a name and an alias, so resolving one is just looking the
+    Model up; there is nothing else to carry over."""
     alias: str
     model: "Model"
-    dimension_map: dict[str, str]   # shared dimension name -> this fact's dimension name
 
 
 @dataclass
@@ -384,7 +381,6 @@ class Model:
             "file": self.origin.name if self.origin else None,
             "facts": [
                 {"alias": b.alias, "model": b.model.name, "label": b.model.label,
-                 "map": dict(b.fact.map),
                  "measures": [f"{b.alias}{MEASURE_SEP}{m}" for m in b.model.measures]}
                 for b in self.fact_bindings
             ],
@@ -547,13 +543,14 @@ def _parse_fact(raw: object, owner: str) -> FactRef:
             f"{owner}: fact alias '{alias}' must be lowercase letters, digits and "
             f"underscores — it prefixes that fact's measures"
         )
-    mapping = raw.get("map") or {}
-    if not isinstance(mapping, dict):
+    if "map" in raw:
         raise ModelError(
-            f"{owner}: fact '{alias}': 'map' must be a mapping of shared-name: this-fact's-dimension"
+            f"{owner}: fact '{alias}': 'map' is no longer supported — facts conform on the "
+            f"dimensions they already call by the same name. Declare the relation on the fact "
+            f"model itself (a 'dimension_imports' entry against a shared bundle, e.g. the "
+            f"calendar) so every model that reads '{raw['model']}' gets it, not just this one"
         )
-    return FactRef(model=raw["model"], alias=str(alias),
-                   map={str(k): str(v) for k, v in mapping.items()})
+    return FactRef(model=raw["model"], alias=str(alias))
 
 
 # keys a multi-fact model may not declare: everything it exposes is borrowed
@@ -1374,7 +1371,13 @@ def resolve_imports(model: Model, bundles: dict[str, DimensionBundle]) -> Model:
                     f"{claimed[dim_name]} and {owner_tag} — subset one of the imports"
                 )
             claimed[dim_name] = owner_tag
-            model.dimensions[dim_name] = bundle.datasets[ds_name].dimensions[dim_name]
+            # engine._scan_bundle hands the bundle over with each dimension
+            # already aliased to its dimension name, so from here the importing
+            # model addresses it by that name and never by the bundle's raw
+            # column — which is free to collide with one of the model's own.
+            model.dimensions[dim_name] = replace(
+                bundle.datasets[ds_name].dimensions[dim_name], column=dim_name,
+            )
 
         model.import_bindings.append(ImportBinding(
             import_spec=imp, bundle=bundle,
@@ -1394,13 +1397,63 @@ def resolve_imports(model: Model, bundles: dict[str, DimensionBundle]) -> Model:
 # shape. Joining the facts instead would multiply every measure by the other
 # tables' row counts.
 #
-# The corollary is that a multi-fact model can only be grouped by a dimension
-# *every* one of its facts offers: the intersection, not the union. A dimension
-# only one fact knows about has no meaning for the others' rows, so there is no
-# honest value to put on the row where they meet. Facts agree on a name either
-# because they import it from the same dimension bundle, or because a `map:`
-# entry says two differently-named dimensions are the same thing.
+# The corollary is that facts can only be grouped by a dimension *every* one of
+# them offers: the intersection, not the union. A dimension only one fact knows
+# about has no meaning for the others' rows, so there is no honest value to put
+# on the row where they meet. Facts agree on a name because they declare or
+# import one — importing the same dimension bundle into two fact models is what
+# conforms them, and it is declared on the fact, once, rather than restated in
+# every analysis that reads it.
+#
+# That intersection is taken over the facts a *query* actually reads, not over
+# every fact the model lists (see shared_dimensions and engine._run_composite).
+# A model listing sales, marketing and subscriptions still offers `channel` to a
+# query that only measures the first two, because subscriptions contributes no
+# rows to it. model.dimensions holds the all-facts intersection: the catalog
+# that is safe whatever you ask for, which is what the builder opens on.
 # ---------------------------------------------------------------------------
+
+def shared_dimensions(bindings: list["FactBinding"]) -> dict[str, Dimension]:
+    """The dimensions every one of `bindings` offers, under the names they all
+    use, in the first fact's declaration order.
+
+    Each is a fresh Dimension: `column` is never read (the engine delegates to
+    each fact, which knows its own), and a spine or a geo pair stays behind
+    with the fact that declares it. Types are checked in _check_shared_types at
+    load time, so any binding can supply the template."""
+    conformed = set(bindings[0].model.dimensions)
+    for binding in bindings[1:]:
+        conformed &= set(binding.model.dimensions)
+    out: dict[str, Dimension] = {}
+    for name in bindings[0].model.dimensions:
+        if name not in conformed:
+            continue
+        template = bindings[0].model.dimensions[name]
+        out[name] = Dimension(
+            name=name, column=name, type=template.type, label=template.label,
+            description=template.description, synonyms=list(template.synonyms),
+        )
+    return out
+
+
+def _check_shared_types(model: Model) -> None:
+    """Every dimension name two or more facts offer has to mean the same kind
+    of thing on both, or it can't be grouped across them. Checked over *pairs*
+    rather than over the all-facts intersection, since a query reading a subset
+    of the facts conforms on that subset's intersection."""
+    types: dict[str, dict[str, str]] = {}   # dimension -> type -> fact alias
+    for binding in model.fact_bindings:
+        for name, dim in binding.model.dimensions.items():
+            seen = types.setdefault(name, {})
+            if dim.type not in seen and seen:
+                other_type, other_alias = next(iter(seen.items()))
+                raise ModelError(
+                    f"model '{model.name}': shared dimension '{name}' is {other_type} on "
+                    f"'{other_alias}' and {dim.type} on '{binding.alias}' — the facts have to "
+                    f"agree on its type before it can be grouped across them"
+                )
+            seen.setdefault(dim.type, binding.alias)
+
 
 def resolve_facts(model: Model, models: dict[str, Model]) -> Model:
     """Attach a multi-fact model's FactBindings and build its borrowed catalog:
@@ -1423,58 +1476,10 @@ def resolve_facts(model: Model, models: dict[str, Model]) -> Model:
                 f"model '{model.name}': fact '{fr.alias}' references '{fr.model}', which is itself "
                 f"a multi-fact model — list its facts here directly instead"
             )
-        dimension_map: dict[str, str] = {}
-        for shared, own in fr.map.items():
-            if own not in target.dimensions:
-                raise ModelError(
-                    f"model '{model.name}': fact '{fr.alias}' maps '{shared}' to '{own}', which "
-                    f"model '{fr.model}' does not declare"
-                )
-            if shared in target.dimensions:
-                raise ModelError(
-                    f"model '{model.name}': fact '{fr.alias}' maps '{shared}' to '{own}', but "
-                    f"'{fr.model}' already has a dimension of its own called '{shared}' — "
-                    f"pick a different shared name"
-                )
-            dimension_map[shared] = own
-        for own in target.dimensions:
-            dimension_map.setdefault(own, own)
-        model.fact_bindings.append(FactBinding(
-            fact=fr, alias=fr.alias, model=target, dimension_map=dimension_map,
-        ))
+        model.fact_bindings.append(FactBinding(alias=fr.alias, model=target))
 
-    conformed = set(model.fact_bindings[0].dimension_map)
-    for binding in model.fact_bindings[1:]:
-        conformed &= set(binding.dimension_map)
-
-    model.dimensions = {}
-    first = model.fact_bindings[0]
-    for shared in first.dimension_map:  # first fact's declaration order
-        if shared not in conformed:
-            continue
-        types = {b.model.dimensions[b.dimension_map[shared]].type for b in model.fact_bindings}
-        if len(types) > 1:
-            raise ModelError(
-                f"model '{model.name}': shared dimension '{shared}' is "
-                f"{' in one fact and '.join(sorted(types))} in another — the facts have to agree "
-                f"on its type before it can be grouped across them"
-            )
-        template = first.model.dimensions[first.dimension_map[shared]]
-        # a mapped dimension takes its label from the shared name, not from
-        # whichever fact happened to be listed first — the facts each call it
-        # something different, which is why it was mapped at all, and borrowing
-        # one of those names ("Month") mislabels the axis at any other grain.
-        # An unmapped one is already the same everywhere, so keep its label.
-        mapped = first.dimension_map[shared] != shared
-        # a fresh Dimension under the shared name: `column` is never read (the
-        # engine delegates to each fact, which knows its own column), and a
-        # spine stays behind with the fact that declares it
-        model.dimensions[shared] = Dimension(
-            name=shared, column=shared, type=template.type,
-            label=shared.replace("_", " ").title() if mapped else template.label,
-            description="" if mapped else template.description,
-            synonyms=[] if mapped else list(template.synonyms),
-        )
+    _check_shared_types(model)
+    model.dimensions = shared_dimensions(model.fact_bindings)
 
     model.measures = {}
     for binding in model.fact_bindings:

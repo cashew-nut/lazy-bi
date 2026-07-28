@@ -26,6 +26,16 @@ dimension_imports:
   - bundle: geography
     anchor_dataset: regions
     on: region
+  # the calendar bundle on the order date. Orders are already dated, so this
+  # buys nothing for a sales-only report beyond the calendar's own attributes
+  # (quarter labels, month-end flags) — its real job is conformance: it is what
+  # lets `calendar_date` mean the same thing here as it does on any other model
+  # that imports the same bundle, so the two can be read on one axis. See
+  # models/commercial_overview.yaml.
+  - bundle: calendar
+    anchor_dataset: days
+    left_on: order_date
+    right_on: date
 
 dimensions:
   - name: order_date

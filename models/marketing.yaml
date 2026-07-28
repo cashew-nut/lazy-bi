@@ -6,6 +6,17 @@ source:
   format: parquet
   path: s3://cash-intel/marketing/*.parquet
 
+# this table is already monthly, and every `month` value is a month start, so
+# it meets the calendar's day rows exactly once. Importing the bundle is what
+# conforms it with the other models that import it — `calendar_date` here and
+# `calendar_date` on sales are the same axis, which is what lets
+# models/commercial_overview.yaml put spend and revenue on one chart.
+dimension_imports:
+  - bundle: calendar
+    anchor_dataset: days
+    left_on: month
+    right_on: date
+
 dimensions:
   - name: month
     label: Month

@@ -36,15 +36,14 @@ source:
 #     on: region
 
 # To read several fact models on one axis instead, replace source/dimensions/
-# measures below with a facts: list. They are never joined to each other —
-# each is queried on its own and the results merge on the dimensions they all
-# share, so no measure inflates. A map: entry gives two differently-named
-# dimensions one shared name; anything they already agree on needs no entry.
+# measures below with a facts: list — nothing else. They are never joined to
+# each other: each is queried on its own and the results merge on the
+# dimensions they all share, so no measure inflates. Facts conform on the
+# dimensions they already call by the same name, which is what importing the
+# same bundle into each of them gets you.
 # facts:
 #   - model: marketing
-#     map: {date: month}
 #   - model: sales
-#     map: {date: order_date}
 
 dimensions:
   - name: some_column
@@ -173,7 +172,7 @@ const SCHEMAS = {
     // models instead of a file, and borrows their measures
     top: ["name", "label", "description", "source", "facts", "joins", "dimension_imports", "dimensions", "measures"],
     source: ["format", "path"],
-    facts: ["model", "alias", "map"],
+    facts: ["model", "alias"],
     joins: ["name", "on", "left_on", "right_on", "how"],
     dimension_imports: ["bundle", "anchor_dataset", "on", "left_on", "right_on", "how", "match", "datasets"],
     dimensions: ["name", "column", "label", "type", "grain", "description", "spine", "geo", "synonyms"],

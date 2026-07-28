@@ -67,18 +67,27 @@ def test_an_alias_must_be_an_identifier_since_it_prefixes_measures():
         _parse("name: bad\nfacts:\n  - model: sales\n    alias: 'Sales Orders'\n")
 
 
-def test_map_must_be_a_mapping():
-    with pytest.raises(ModelError, match="'map' must be a mapping"):
-        _parse("name: bad\nfacts:\n  - model: sales\n    map: [date]\n")
+def test_map_is_no_longer_accepted_and_says_what_to_do_instead():
+    """Conformance is a property of the fact, declared once on the fact model.
+    A stale `map:` is an error rather than a silently ignored key."""
+    with pytest.raises(ModelError, match="'map' is no longer supported"):
+        _parse("name: bad\nfacts:\n  - model: sales\n    map: {date: order_date}\n")
 
 
 # ── resolving the shared catalog ──────────────────────────────────
 
 def test_shared_dimensions_are_the_intersection_not_the_union(models):
+    """model.dimensions is the all-facts intersection: what stays groupable
+    whichever measures you end up asking for."""
     overview = models["commercial_overview"]
-    assert list(overview.dimensions) == ["date", "region"]
+    # all three facts import the calendar bundle, so they conform on its
+    # dimensions with nothing declared on the multi-fact model at all
+    assert "calendar_date" in overview.dimensions
+    assert "calendar_quarter" in overview.dimensions
+    assert "region" in overview.dimensions
     # channel is on sales and marketing but not subscriptions, so it is not
-    # offered: there would be no honest subscriptions number for a channel row
+    # offered up front — a query reading only those two still gets it, see
+    # test_the_catalog_is_the_intersection_of_the_facts_a_query_reads
     assert "channel" in models["sales"].dimensions
     assert "channel" in models["marketing"].dimensions
     assert "channel" not in overview.dimensions
@@ -112,30 +121,35 @@ def test_a_fact_cannot_itself_be_a_multi_fact_model(models):
         _resolved("name: bad\nfacts:\n  - model: commercial_overview\n", models)
 
 
-def test_mapping_to_a_dimension_the_fact_does_not_have_is_an_error(models):
-    with pytest.raises(ModelError, match="which model 'sales' does not declare"):
-        _resolved("name: bad\nfacts:\n  - model: sales\n    map:\n      date: nope\n", models)
-
-
-def test_mapping_onto_a_name_the_fact_already_uses_is_an_error(models):
-    with pytest.raises(ModelError, match="already has a dimension of its own called 'channel'"):
-        _resolved("name: bad\nfacts:\n  - model: sales\n    map:\n      channel: order_date\n", models)
+def _fact_with(name: str, dim: str, dim_type: str) -> semantic.Model:
+    """A throwaway single-source model offering one dimension of a given type
+    — enough to exercise conformance checks without a real dataset."""
+    model = semantic.Model(name=name, label=name, description="",
+                           source=semantic.Source(format="parquet", path=f"s3://b/{name}.parquet"))
+    model.dimensions = {dim: semantic.Dimension(name=dim, column=dim, label=dim, type=dim_type)}
+    return model
 
 
 def test_facts_that_disagree_on_a_dimensions_type_are_rejected(models):
-    # one fact calls a time dimension "when", the other a categorical one —
-    # the shared name can't be grouped consistently, so say so at load time
+    # one fact calls "when" a time dimension, the other a categorical one — the
+    # shared name can't be grouped consistently, so say so at load time
+    others = {**models,
+              "clock": _fact_with("clock", "when", "time"),
+              "label": _fact_with("label", "when", "string")}
     with pytest.raises(ModelError, match="shared dimension 'when' is"):
-        _resolved("""
-name: bad
-facts:
-  - model: marketing
-    map:
-      when: month
-  - model: sales
-    map:
-      when: channel
-""", models)
+        _resolved("name: bad\nfacts:\n  - model: clock\n  - model: label\n", others)
+
+
+def test_a_type_clash_is_caught_even_outside_the_all_facts_intersection(models):
+    """Two facts disagreeing on a type is a load-time error even when a third
+    fact keeps the name out of model.dimensions — a query reading just those
+    two would otherwise conform on it at run time."""
+    others = {**models,
+              "clock": _fact_with("clock", "when", "time"),
+              "label": _fact_with("label", "when", "string"),
+              "neither": _fact_with("neither", "other", "string")}
+    with pytest.raises(ModelError, match="shared dimension 'when' is"):
+        _resolved("name: bad\nfacts:\n  - model: clock\n  - model: label\n  - model: neither\n", others)
 
 
 def test_facts_conform_on_bundle_dimensions_without_any_map(models):
@@ -149,7 +163,7 @@ def test_facts_conform_on_bundle_dimensions_without_any_map(models):
 # ── querying ──────────────────────────────────────────────────────
 
 def _by_date(result: dict, measure: str) -> dict:
-    return {row["date"]: row[measure] for row in result["rows"]}
+    return {row["calendar_date"]: row[measure] for row in result["rows"]}
 
 
 def test_each_facts_measure_matches_what_that_fact_returns_alone(models):
@@ -157,7 +171,7 @@ def test_each_facts_measure_matches_what_that_fact_returns_alone(models):
     change any of their numbers."""
     overview = models["commercial_overview"]
     together = engine.run_query(overview, {
-        "dimensions": [{"name": "date", "grain": "1mo"}],
+        "dimensions": [{"name": "calendar_date", "grain": "1mo"}],
         "measures": ["marketing.spend", "sales.revenue", "subs.active_customers"],
         "limit": 500,
     })
@@ -184,11 +198,11 @@ def test_the_merged_axis_is_the_union_of_the_facts_buckets(models):
     rather than a zero nobody measured."""
     overview = models["commercial_overview"]
     result = engine.run_query(overview, {
-        "dimensions": [{"name": "date", "grain": "1mo"}],
+        "dimensions": [{"name": "calendar_date", "grain": "1mo"}],
         "measures": ["marketing.spend", "subs.active_customers"],
         "limit": 500,
     })
-    dates = [row["date"] for row in result["rows"]]
+    dates = [row["calendar_date"] for row in result["rows"]]
     assert dates == sorted(dates)              # time ascending by default
     assert len(dates) == len(set(dates))       # one row per bucket, not a cross product
     assert any(row["marketing.spend"] is not None for row in result["rows"])
@@ -199,12 +213,12 @@ def test_measures_do_not_inflate_when_a_second_fact_joins_the_query(models):
     """A fact-to-fact join would multiply each side by the other's row count.
     Asking for one measure or three has to give the same numbers."""
     overview = models["commercial_overview"]
-    query = {"dimensions": [{"name": "date", "grain": "1q"}, "region"], "limit": 500}
+    query = {"dimensions": [{"name": "calendar_date", "grain": "1q"}, "region"], "limit": 500}
     one = engine.run_query(overview, {**query, "measures": ["sales.revenue"]})
     three = engine.run_query(overview, {
         **query, "measures": ["sales.revenue", "marketing.spend", "subs.active_customers"]})
 
-    keyed = lambda r, m: {(row["date"], row["region"]): row[m] for row in r["rows"]}
+    keyed = lambda r, m: {(row["calendar_date"], row["region"]): row[m] for row in r["rows"]}
     solo, joint = keyed(one, "sales.revenue"), keyed(three, "sales.revenue")
     assert solo  # the query returns something to compare in the first place
     for key, value in solo.items():
@@ -224,17 +238,76 @@ def test_a_filter_on_a_shared_dimension_reaches_every_fact(models):
     assert result["rows"][0]["marketing.spend"] > 0
 
 
-def test_grouping_by_a_dimension_only_one_fact_has_is_refused(models):
-    with pytest.raises(engine.QueryError, match="not a shared dimension"):
+def test_grouping_by_a_dimension_a_read_fact_lacks_is_refused(models):
+    with pytest.raises(engine.QueryError, match="'channel' is not shared by the facts"):
         engine.run_query(models["commercial_overview"], {
-            "dimensions": ["channel"], "measures": ["sales.revenue"]})
+            "dimensions": ["channel"], "measures": ["sales.revenue", "subs.mrr"]})
 
 
-def test_filtering_on_a_dimension_only_one_fact_has_is_refused(models):
-    with pytest.raises(engine.QueryError, match="a filter has to mean the same thing"):
+def test_the_refusal_names_the_fact_that_lacks_the_dimension(models):
+    """Which measure to drop is the actionable half of the message."""
+    with pytest.raises(engine.QueryError, match="'subs' doesn't offer it"):
         engine.run_query(models["commercial_overview"], {
-            "dimensions": ["region"], "measures": ["sales.revenue"],
+            "dimensions": ["channel"], "measures": ["sales.revenue", "subs.mrr"]})
+
+
+def test_filtering_on_a_dimension_a_read_fact_lacks_is_refused(models):
+    with pytest.raises(engine.QueryError, match="'plan' is not shared by the facts"):
+        engine.run_query(models["commercial_overview"], {
+            "dimensions": ["region"], "measures": ["sales.revenue", "marketing.spend"],
             "filters": [{"field": "plan", "op": "eq", "value": "pro"}]})
+
+
+# ── the catalog follows the query, not the model ──────────────────
+
+def test_the_catalog_is_the_intersection_of_the_facts_a_query_reads(models):
+    """`channel` is on sales and marketing but not subscriptions. A query that
+    measures only the first two never reads a subscriptions row, so there is
+    nothing dishonest about a channel axis — and no reason to make the user
+    declare a second multi-fact model for the pair."""
+    overview = models["commercial_overview"]
+    assert "channel" not in overview.dimensions          # not offered up front
+    result = engine.run_query(overview, {
+        "dimensions": ["channel"],
+        "measures": ["sales.revenue", "marketing.spend"], "limit": 100})
+    assert result["rows"]
+    for row in result["rows"]:
+        assert row["channel"] is not None
+    assert [c["name"] for c in result["columns"]] == ["channel", "sales.revenue", "marketing.spend"]
+
+
+def test_a_per_query_dimension_still_matches_what_each_fact_returns_alone(models):
+    """The subset catalog must not change any numbers either — the merge is
+    the same one, over fewer facts."""
+    overview = models["commercial_overview"]
+    together = engine.run_query(overview, {
+        "dimensions": ["channel"],
+        "measures": ["sales.revenue", "marketing.spend"], "limit": 100})
+    merged = {row["channel"]: row for row in together["rows"]}
+    for alias, fact, own in (("sales", "sales", "revenue"), ("marketing", "marketing", "spend")):
+        solo = engine.run_query(models[fact], {
+            "dimensions": ["channel"], "measures": [own], "limit": 100})
+        for row in solo["rows"]:
+            assert merged[row["channel"]][f"{alias}.{own}"] == pytest.approx(row[own])
+
+
+def test_adding_a_third_facts_measure_withdraws_the_dimension(models):
+    """The same axis that was fine for two facts is refused once a fact that
+    can't answer for it is on the query."""
+    overview = models["commercial_overview"]
+    query = {"dimensions": ["channel"], "limit": 100}
+    engine.run_query(overview, {**query, "measures": ["sales.revenue", "marketing.spend"]})
+    with pytest.raises(engine.QueryError, match="not shared by the facts this query reads"):
+        engine.run_query(overview, {
+            **query, "measures": ["sales.revenue", "marketing.spend", "subs.mrr"]})
+
+
+def test_one_fact_alone_offers_everything_that_fact_offers(models):
+    """A single-fact query on a multi-fact model conforms with itself, so it
+    can be grouped by anything that fact has — `category` is sales-only."""
+    result = engine.run_query(models["commercial_overview"], {
+        "dimensions": ["category"], "measures": ["sales.revenue"], "limit": 10})
+    assert result["rows"] and result["rows"][0]["category"] is not None
 
 
 def test_an_unknown_qualified_measure_is_refused(models):
@@ -260,25 +333,29 @@ def test_only_the_facts_a_query_asks_for_are_read(models):
     scan of a table nothing on the chart came from."""
     overview = models["commercial_overview"]
     result = engine.run_query(overview, {
-        "dimensions": [{"name": "date", "grain": "1mo"}], "measures": ["sales.revenue"]})
-    assert set(result["rows"][0]) == {"date", "sales.revenue"}
-    assert [c["name"] for c in result["columns"]] == ["date", "sales.revenue"]
+        "dimensions": [{"name": "calendar_date", "grain": "1mo"}], "measures": ["sales.revenue"]})
+    assert set(result["rows"][0]) == {"calendar_date", "sales.revenue"}
+    assert [c["name"] for c in result["columns"]] == ["calendar_date", "sales.revenue"]
 
 
 def test_columns_carry_the_shared_label_and_the_owning_fact(models):
     result = engine.run_query(models["commercial_overview"], {
-        "dimensions": [{"name": "date", "grain": "1y"}], "measures": ["subs.mrr"]})
+        "dimensions": [{"name": "calendar_date", "grain": "1y"}], "measures": ["subs.mrr"]})
     date_col, measure_col = result["columns"]
-    # a mapped dimension is labelled from the shared name — borrowing the first
-    # fact's label ("Month", from marketing) would mislabel the axis at 1y
-    assert date_col == {"name": "date", "label": "Date", "kind": "dimension", "type": "time"}
+    # the axis is a real dimension with a real label, owned by the bundle the
+    # facts conform through — not a name invented by this model
+    assert date_col == {"name": "calendar_date", "label": "Calendar Date",
+                        "kind": "dimension", "type": "time"}
     assert measure_col["fact"] == "subs"
     assert measure_col["format"] == "currency"
 
 
-def test_an_unmapped_shared_dimension_keeps_the_facts_label(models):
+def test_a_shared_dimension_keeps_the_facts_label_and_synonyms(models):
     overview = models["commercial_overview"]
     assert overview.dimensions["region"].label == models["sales"].dimensions["region"].label
+    calendar = models["subscriptions"].dimensions["calendar_date"]
+    assert overview.dimensions["calendar_date"].label == calendar.label
+    assert overview.dimensions["calendar_date"].synonyms == calendar.synonyms
 
 
 def test_sort_and_limit_apply_after_the_merge(models):
