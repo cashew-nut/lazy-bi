@@ -203,6 +203,7 @@ def put_dimension_bundle_yaml(name: str, body: YamlIn):
     other = registry.dimension_bundles.get(parsed.name)
     if other and other.name != bundle.name:
         raise HTTPException(status_code=409, detail=f"dimension bundle '{parsed.name}' already exists")
-    registry.local_bundle_store.update(name, body.yaml)
+    registry.local_bundle_store.update(
+        name, body.yaml, new_name=parsed.name if parsed.name != name else None)
     _reload_or_400()
     return _to_public(registry.dimension_bundles[parsed.name])

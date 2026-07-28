@@ -110,6 +110,18 @@ def create_app() -> FastAPI:
     app.add_middleware(AuthMiddleware)
     app.include_router(api_router, prefix="/api")
 
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(request, exc: Exception):
+        # Without this, an uncaught exception falls through to Starlette's
+        # default handler, which returns a plain-text "Internal Server
+        # Error" body — api()/apiUpload() in lib.js always call res.json()
+        # on the response, so that plain-text body surfaces to the user as
+        # an opaque "Unexpected token 'I'... is not valid JSON" instead of
+        # the actual error. Still re-raised after the response is built
+        # (Starlette's ServerErrorMiddleware does this itself), so it's
+        # logged same as before.
+        return JSONResponse({"detail": f"internal error: {exc}"}, status_code=500)
+
     @app.get("/", include_in_schema=False)
     def index():
         return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"})

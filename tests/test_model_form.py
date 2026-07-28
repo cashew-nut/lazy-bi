@@ -517,6 +517,30 @@ def test_bundle_form_save_flow_creates_importable_bundle(client):
         assert client.delete("/api/dimensions/catalog").status_code == 204
 
 
+def test_renamed_local_bundle_delete_and_recreate_under_old_name(client):
+    """Regression: same key-drift bug as the model store (see
+    test_api.py::test_renamed_local_model_delete_and_recreate_under_old_name)
+    — LocalBundleStore rows are keyed by the name a bundle was created under,
+    and put_dimension_bundle_yaml only rewrote the row's yaml, not its key,
+    on a rename. That stranded the row under its old key, so deleting the
+    renamed bundle silently deleted nothing and re-creating under the
+    vacated old name hit an unhandled UNIQUE constraint failure."""
+    y1 = "name: bundle_probe_a\ndatasets:\n  - name: ds1\n    source: {format: csv, path: s3://cash-intel/ref/products.csv}\n"
+    assert client.post("/api/dimensions", json={"yaml": y1}).status_code == 201
+
+    y2 = y1.replace("name: bundle_probe_a", "name: bundle_probe_b")
+    assert client.put("/api/dimensions/bundle_probe_a/yaml", json={"yaml": y2}).status_code == 200
+    assert "bundle_probe_b" in client.get("/api/dimensions/bundle_probe_b/yaml").json()["yaml"]
+
+    assert client.delete("/api/dimensions/bundle_probe_b").status_code == 204
+    assert "bundle_probe_b" not in [b["name"] for b in client.get("/api/dimensions").json()]
+
+    try:
+        assert client.post("/api/dimensions", json={"yaml": y1}).status_code == 201
+    finally:
+        client.delete("/api/dimensions/bundle_probe_a")
+
+
 def test_bundleform_view_present(client):
     html = client.get("/").text
     assert 'id="bundleform-view"' in html

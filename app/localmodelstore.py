@@ -48,21 +48,33 @@ class LocalModelStore:
         return dict(row) if row else None
 
     def create(self, name: str, yaml_text: str) -> dict:
+        """Insert a new row — or reclaim a stale one at the same key. A row
+        can already occupy `name` despite no live model being registered
+        under it: a rename (see update() below) that predates this method
+        existing left its old key behind as a ghost. The caller (create_model)
+        has already confirmed nothing live owns `name`, so overwriting here
+        is reclaiming an orphan, not clobbering real data."""
         now = self._now()
         with self._conn() as conn:
             conn.execute(
-                "INSERT INTO local_models (name, yaml, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                "INSERT INTO local_models (name, yaml, created_at, updated_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(name) DO UPDATE SET yaml = excluded.yaml, updated_at = excluded.updated_at",
                 (name, yaml_text, now, now),
             )
         return self.get(name)
 
-    def update(self, name: str, yaml_text: str) -> Optional[dict]:
+    def update(self, name: str, yaml_text: str, new_name: Optional[str] = None) -> Optional[dict]:
+        """Rewrite a row's yaml in place. Pass `new_name` when the model's own
+        `name:` just changed so the row's key (its lookup identity for every
+        later get/update/delete) moves with it — otherwise the row is
+        stranded under its old key forever, invisible to future operations
+        issued against the model's new name."""
         with self._conn() as conn:
             cur = conn.execute(
-                "UPDATE local_models SET yaml = ?, updated_at = ? WHERE name = ?",
-                (yaml_text, self._now(), name),
+                "UPDATE local_models SET name = ?, yaml = ?, updated_at = ? WHERE name = ?",
+                (new_name or name, yaml_text, self._now(), name),
             )
-        return self.get(name) if cur.rowcount else None
+        return self.get(new_name or name) if cur.rowcount else None
 
     def delete(self, name: str) -> bool:
         with self._conn() as conn:
