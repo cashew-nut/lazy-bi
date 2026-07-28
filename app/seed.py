@@ -439,17 +439,6 @@ def seed_notebook_demo() -> bool:
         "Margin %", _SALES_MODEL,
         _dq(_SALES_MODEL, [], ["margin_pct"], chartType="stat"),
     )
-    # two fact tables on one axis, read from inside the sales model: orders
-    # come from the order lines, shipments from the courier table, and the two
-    # are merged on the calendar both models import rather than joined
-    # (models/sales.yaml `facts:`). Two counts rather than revenue against
-    # shipping cost, which differ by two orders of magnitude and would draw the
-    # second series flat against the axis. Monthly — day grain is noise.
-    v_orders_vs_shipments = store.create(
-        "Orders vs Shipments", _SALES_MODEL,
-        _dq(_SALES_MODEL, [{"name": "calendar_date", "grain": "1mo"}],
-            ["orders", "ship.shipments"], chartType="line"),
-    )
     rank_by_revenue = {"by": "revenue", "desc": True}
     v_by_region = store.create(
         "Revenue by Region", _SALES_MODEL,
@@ -496,11 +485,6 @@ def seed_notebook_demo() -> bool:
         <p>Revenue is sum(unit_price * quantity); profit nets out unit_cost the same way. Both are plain measures over the same order lines, so "revenue vs profit" is two sums, not two different tables.</p>
       </div>
     </details>
-    <aside class="nb-explainer" data-tone="method" data-title="Two tables, one axis">
-      <p>The chart below is not two counts over one table. <b>Orders</b> comes from the order lines; <b>ship.shipments</b> comes from the courier shipments — a different file, in a different format, with no key relating it to an order. The sales model lists logistics under <code>facts:</code>, so each table is queried on its own and the two results are merged on the calendar they both import. Joining them would have paired every order with every shipment in its month and inflated both numbers.</p>
-      <p>Which is what makes the divergence readable: order volume climbs through 2024 while shipment volume stays flat. Two independent tables, one axis, neither distorting the other.</p>
-    </aside>
-    <div class="nb-visual" data-visual-id="{v_orders_vs_shipments["id"]}"></div>
   </div>
 
   <div class="nb-tab-panel" data-tab="category" hidden>

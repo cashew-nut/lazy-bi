@@ -13,13 +13,6 @@ dimension_imports:
   - bundle: geography
     anchor_dataset: regions
     on: region
-  # and the calendar on the ship date, which is what conforms this model's
-  # timeline with sales' — both call it `calendar_date`, so sales can read
-  # shipping cost beside revenue on one axis (see the `facts:` block there)
-  - bundle: calendar
-    anchor_dataset: days
-    left_on: ship_date
-    right_on: date
 
 dimensions:
   - name: ship_date

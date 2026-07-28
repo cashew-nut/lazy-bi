@@ -207,20 +207,15 @@ function renderModelsList() {
   for (const m of models) {
     const st = lastDatasetStats[m.name] || { files: 0, bytes: 0 };
     // a multi-fact model has no source of its own: it reads no bucket objects,
-    // so it describes itself by its facts instead, and goes straight to the
-    // yaml editor since the guided form edits a fact table it hasn't got. One
-    // that has both opens in the form like any other — the form round-trips
-    // `facts:` (its "Borrowed" section).
+    // and the guided form (which edits one fact table) can't open it — so it
+    // describes itself by its facts and goes straight to the yaml editor
     const composite = m.kind === "composite";
-    const borrows = m.facts.length > 0;
     const title = composite
       ? `multi-fact · ${m.facts.map((f) => f.model).join(" + ")}`
-      : `${m.path}\n${st.files} file${st.files === 1 ? "" : "s"} · ${fmtBytes(st.bytes)}`
-        + (borrows ? `\n+ ${m.facts.map((f) => f.model).join(", ")}` : "");
+      : `${m.path}\n${st.files} file${st.files === 1 ? "" : "s"} · ${fmtBytes(st.bytes)}`;
     const meta = composite
       ? `${m.facts.length} facts · ${m.dimensions.length} shared dims · ${m.measures.length} measures`
-      : `${m.dimensions.length} dims · ${m.measures.length} measures`
-        + (borrows ? ` · + ${m.facts.length} fact${m.facts.length === 1 ? "" : "s"}` : "");
+      : `${m.dimensions.length} dims · ${m.measures.length} measures`;
     const row = el("div", { class: "mk-row clickable", title },
       el("span", { class: "nm" }, m.label),
       ...(composite ? [el("span", { class: "mk-tag" }, "multi-fact")] : []),
