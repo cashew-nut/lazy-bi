@@ -301,15 +301,9 @@ class FactBinding:
     """Resolved, engine-facing form of a FactRef — computed by resolve_facts()
     at load/hot-reload time, the multi-fact counterpart of ImportBinding. A
     FactRef is only a name and an alias, so resolving one is just looking the
-    Model up; there is nothing else to carry over.
-
-    A model that has a `source:` *and* lists facts gets one of these for itself
-    too, with host=True: its own measures keep their bare names while the facts
-    it borrows are prefixed, so the model goes on reading exactly as it did
-    before the facts were added to it."""
+    Model up; there is nothing else to carry over."""
     alias: str
     model: "Model"
-    host: bool = False
 
 
 @dataclass
@@ -338,15 +332,14 @@ class Model:
     name: str
     label: str
     description: str
-    source: Optional[Source] = None   # None on a standalone multi-fact model
+    source: Optional[Source] = None   # None on a multi-fact model — see `facts`
     joins: list[Join] = field(default_factory=list)
     dimensions: dict[str, Dimension] = field(default_factory=dict)
     measures: dict[str, Measure] = field(default_factory=dict)
     imports: list[Import] = field(default_factory=list)
     import_bindings: list[ImportBinding] = field(default_factory=list)  # populated by resolve_imports
-    # other fact models to read alongside this one, never joined to it. With a
-    # `source:` as well, this model is one of the facts and keeps its own
-    # catalog; without one, it is nothing but the list (see resolve_facts).
+    # a model declares either `source` (one fact table) or `facts` (several,
+    # unrelated to each other, merged on the dimensions they share) — never both
     facts: list[FactRef] = field(default_factory=list)
     fact_bindings: list[FactBinding] = field(default_factory=list)  # populated by resolve_facts
     pipeline_lineage: Optional[LineageSection] = None  # tolerantly parsed; see _parse_lineage_section
@@ -359,16 +352,10 @@ class Model:
 
     @property
     def is_composite(self) -> bool:
-        """True for a *standalone* multi-fact model: one with no source of its
-        own, whose whole catalog is borrowed from the facts it lists. It scans
-        no objects and has nothing for the guided form to edit.
-
-        A model with both a `source:` and `facts:` is not this — it is an
-        ordinary fact model that can also read its neighbours' measures, so it
-        scans, introspects and edits like any other. Use `model.facts` for
-        "does this read more than one table", which is what routes a query to
-        engine._run_composite."""
-        return bool(self.facts) and self.source is None
+        """True for a multi-fact model: its dimensions and measures are
+        borrowed from its facts, and engine.run_query answers it by querying
+        each fact separately and merging (see engine._run_composite)."""
+        return bool(self.facts)
 
     def dimension(self, name: str) -> Dimension:
         try:
@@ -392,12 +379,10 @@ class Model:
             "path": self.source.path if self.source else None,
             "format": self.source.format if self.source else None,
             "file": self.origin.name if self.origin else None,
-            # the host binding is this model itself — its measures are reported
-            # under their own names in "measures" below, not as a borrowed fact
             "facts": [
                 {"alias": b.alias, "model": b.model.name, "label": b.model.label,
                  "measures": [f"{b.alias}{MEASURE_SEP}{m}" for m in b.model.measures]}
-                for b in self.fact_bindings if not b.host
+                for b in self.fact_bindings
             ],
             "joins": [{"name": j.name, "path": j.source.path, "format": j.source.format} for j in self.joins],
             "imports": [
@@ -568,44 +553,21 @@ def _parse_fact(raw: object, owner: str) -> FactRef:
     return FactRef(model=raw["model"], alias=str(alias))
 
 
-# keys a *standalone* multi-fact model may not declare: with no source there is
-# nothing for them to describe, so a local one would silently be ignored. A
-# model that declares a `source:` alongside its facts is an ordinary fact model
-# and keeps all of them.
-_FACT_MODEL_FORBIDDEN = ("joins", "dimensions", "measures", "dimension_imports")
-
-
-def _parse_facts(raw: dict, model: Model, origin: Path) -> None:
-    """Attach and validate the `facts:` list shared by both shapes — a
-    standalone multi-fact model and a fact model reading its neighbours."""
-    model.facts = [_parse_fact(f, origin.name) for f in raw["facts"]]
-    seen: set[str] = set()
-    for fr in model.facts:
-        if fr.alias in seen:
-            raise ModelError(
-                f"{origin.name}: model '{model.name}': duplicate fact alias '{fr.alias}' — "
-                f"give one of them an 'alias'"
-            )
-        if fr.model == model.name:
-            raise ModelError(
-                f"{origin.name}: model '{model.name}' lists itself under 'facts' — a model with "
-                f"a 'source' already reads its own measures under their own names"
-            )
-        seen.add(fr.alias)
+# keys a multi-fact model may not declare: everything it exposes is borrowed
+# from its facts, so a local one would silently be ignored
+_FACT_MODEL_FORBIDDEN = ("source", "joins", "dimensions", "measures", "dimension_imports")
 
 
 def _parse_composite(raw: dict, origin: Path) -> Model:
-    """Parse a standalone multi-fact model: several unrelated fact models
-    conformed on the dimensions they share, and nothing of its own.
-    resolve_facts() fills in its dimensions/measures."""
+    """Parse a multi-fact model: several unrelated fact models conformed on the
+    dimensions they share. resolve_facts() fills in its dimensions/measures."""
     name = raw["name"]
     for key in _FACT_MODEL_FORBIDDEN:
         if raw.get(key):
             raise ModelError(
-                f"{origin.name}: multi-fact model '{name}' declares '{key}' but no 'source' — "
-                f"with no fact table of its own there is nothing for it to describe. Its "
-                f"dimensions and measures come from the models it lists under 'facts'; add a "
-                f"'source' if you meant this to be a fact model that also reads its neighbours"
+                f"{origin.name}: multi-fact model '{name}' declares '{key}' — a model has either "
+                f"'source' (one fact table) or 'facts' (several); a multi-fact model's dimensions "
+                f"and measures come from the models it lists under 'facts'"
             )
     model = Model(
         name=name,
@@ -613,15 +575,21 @@ def _parse_composite(raw: dict, origin: Path) -> Model:
         description=raw.get("description", ""),
         source=None,
     )
-    _parse_facts(raw, model, origin)
+    model.facts = [_parse_fact(f, origin.name) for f in raw["facts"]]
+    seen: set[str] = set()
+    for fr in model.facts:
+        if fr.alias in seen:
+            raise ModelError(
+                f"{origin.name}: multi-fact model '{name}': duplicate fact alias '{fr.alias}' — "
+                f"give one of them an 'alias'"
+            )
+        seen.add(fr.alias)
     model.pipeline_lineage = _parse_lineage_section(raw.get("pipeline_lineage"))
     return model
 
 
 def _parse_model(raw: dict, origin: Path) -> Model:
-    # `facts:` with no `source:` is a model that is nothing but the list;
-    # with one, it is an ordinary fact model that also reads its neighbours
-    if raw.get("facts") and not raw.get("source"):
+    if raw.get("facts"):
         try:
             return _parse_composite(raw, origin)
         except KeyError as exc:
@@ -663,8 +631,6 @@ def _parse_model(raw: dict, origin: Path) -> Model:
             model.imports.append(_parse_import(imp, origin.name))
     except KeyError as exc:
         raise ModelError(f"{origin.name}: missing required key {exc}") from exc
-    if raw.get("facts"):
-        _parse_facts(raw, model, origin)
     model.pipeline_lineage = _parse_lineage_section(raw.get("pipeline_lineage"))
     return model
 
@@ -975,15 +941,12 @@ def _dimension_to_spec(d: Dimension) -> dict:
 def model_to_spec(model: Model) -> dict:
     """Form-facing dict for a parsed-but-unresolved Model (native dimensions
     only — imported dimensions live in the bundle, not this file)."""
-    # a model with no source has no fact table for the form to edit — its whole
-    # catalog is borrowed, so there would be nothing on any of its panels
-    if model.source is None:
+    if model.is_composite:
         raise ModelError(
-            f"model '{model.name}' is a multi-fact model with no fact table of its own — the "
-            f"guided form edits one; edit its 'facts' list in the yaml editor instead"
+            f"model '{model.name}' is a multi-fact model — the guided form edits a single "
+            f"fact table; edit its 'facts' list in the yaml editor instead"
         )
     return {
-        "facts": [{"model": f.model, "alias": f.alias} for f in model.facts],
         "name": model.name,
         "label": model.label,
         "description": model.description,
@@ -1107,17 +1070,6 @@ def spec_to_yaml(spec: dict) -> str:
         imports.append(entry)
     if imports:
         doc["dimension_imports"] = imports
-
-    # other fact models read alongside this one, never joined to it. An alias
-    # equal to the fact's own name is what the parser defaults to, so omit it.
-    facts = []
-    for f in spec.get("facts") or []:
-        entry = {"model": f["model"]}
-        if f.get("alias") and f["alias"] != f["model"]:
-            entry["alias"] = f["alias"]
-        facts.append(entry)
-    if facts:
-        doc["facts"] = facts
 
     doc["dimensions"] = _spec_dimension_entries(spec.get("dimensions") or [])
 
@@ -1504,20 +1456,14 @@ def _check_shared_types(model: Model) -> None:
 
 
 def resolve_facts(model: Model, models: dict[str, Model]) -> Model:
-    """Attach a model's FactBindings and add every listed fact's measures under
-    an `alias.measure` name. No-op for a model that lists no facts. Call after
+    """Attach a multi-fact model's FactBindings and build its borrowed catalog:
+    the dimensions all its facts share, and every fact's measures under an
+    `alias.measure` name. No-op for a single-source model. Call after
     resolve_imports() has run over every model, since a fact's imported
-    dimensions count towards what it can conform on.
-
-    A model with a `source:` of its own is bound first, as the host: it keeps
-    its own dimensions and its own unprefixed measures, and only gains the
-    borrowed ones. A standalone multi-fact model has no host, so its catalog is
-    entirely borrowed — its dimensions are the ones every fact shares."""
+    dimensions count towards what it can conform on."""
     if not model.facts:
         return model
     model.fact_bindings = []
-    if model.source is not None:
-        model.fact_bindings.append(FactBinding(alias=model.name, model=model, host=True))
 
     for fr in model.facts:
         target = models.get(fr.model)
@@ -1527,31 +1473,17 @@ def resolve_facts(model: Model, models: dict[str, Model]) -> Model:
             )
         if target.is_composite:
             raise ModelError(
-                f"model '{model.name}': fact '{fr.alias}' references '{fr.model}', which has no "
-                f"fact table of its own — list the fact models it reads here directly instead"
+                f"model '{model.name}': fact '{fr.alias}' references '{fr.model}', which is itself "
+                f"a multi-fact model — list its facts here directly instead"
             )
         model.fact_bindings.append(FactBinding(alias=fr.alias, model=target))
 
     _check_shared_types(model)
-    # a host keeps its own catalog: everything it could be grouped by before
-    # stays groupable, and adding a borrowed measure to a query narrows it at
-    # query time (see engine._run_composite) rather than up front
-    if not any(b.host for b in model.fact_bindings):
-        model.dimensions = shared_dimensions(model.fact_bindings)
-        model.measures = {}
+    model.dimensions = shared_dimensions(model.fact_bindings)
 
+    model.measures = {}
     for binding in model.fact_bindings:
-        if binding.host:
-            continue   # its measures are already on the model, under their own names
         for meas in binding.model.measures.values():
-            # a fact contributes its own fact table, so only its own measures.
-            # Anything it borrows in turn is already prefixed, and reaching
-            # through would ask its scan for a column from someone else's — if
-            # you want that table, list it here too. (Filtered on the name
-            # rather than on the target's bindings so the result can't depend
-            # on which model resolve_facts happened to reach first.)
-            if MEASURE_SEP in meas.name:
-                continue
             qualified = f"{binding.alias}{MEASURE_SEP}{meas.name}"
             model.measures[qualified] = Measure(
                 name=qualified, label=f"{meas.label} · {binding.model.label}",
@@ -1563,14 +1495,8 @@ def resolve_facts(model: Model, models: dict[str, Model]) -> Model:
 
 
 def split_measure(model: Model, name: str) -> tuple[FactBinding, str]:
-    """Resolve one of a model's measure names to the fact that owns it and the
-    measure's own name there. A bare name belongs to the host — the model's own
-    fact table — and an `alias.measure` one to a fact it lists."""
-    if MEASURE_SEP not in name:
-        host = next((b for b in model.fact_bindings if b.host), None)
-        if host is None or name not in model.measures:
-            raise ModelError(f"unknown measure '{name}' in model '{model.name}'")
-        return host, name
+    """Resolve a multi-fact model's `alias.measure` name to the fact that owns
+    it and the measure's own name on that fact."""
     alias, _, own = name.partition(MEASURE_SEP)
     binding = next((b for b in model.fact_bindings if b.alias == alias), None)
     if binding is None or own not in binding.model.measures:

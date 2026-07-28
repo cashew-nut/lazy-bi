@@ -690,68 +690,18 @@ Other things worth knowing:
 - Sorting and the row limit apply *after* the merge, so a limit can't drop a
   bucket another fact still has rows for.
 - Facts don't nest — list the fact models directly.
-- A model with `facts:` and no `source:` declares nothing else: no joins,
-  dimensions, measures or imports of its own. Those belong to the facts, and a
-  load-time error says so rather than silently ignoring them.
+- A multi-fact model declares nothing else: no source, joins, dimensions,
+  measures or imports of its own. Those belong to the facts, and a load-time
+  error says so rather than silently ignoring them.
 - Two facts that disagree on a dimension's *type* — one calling `when` a time
   dimension, the other a category — is a load-time error, checked over every
   pair rather than only over the all-facts intersection.
 
-#### Or add facts to a fact model you already have
-
-`facts:` is not only for a model that has nothing else. Give an ordinary fact
-model a `facts:` list and it keeps everything it had, gaining its neighbours'
-measures:
-
-```yaml
-# models/sales.yaml
-source:
-  format: parquet
-  path: s3://cash-intel/sales/*.parquet
-# ...its own dimensions, measures, joins and imports, unchanged...
-facts:
-  - model: logistics
-    alias: ship
-```
-
-Sales now measures `revenue` *and* `ship.cost`. **The host's own measures keep
-their bare names** — only borrowed facts are prefixed — so every saved visual,
-dashboard and query against the model goes on working untouched. The two
-conform on what both import: `region` from `geography`, `calendar_date` from
-`calendar`. The demo notebook's *Orders vs Shipments* chart is this query.
-
-Which of the two shapes to use is a question about the reading, not about
-capability; they resolve through the same code:
-
-- **A standalone list** (`models/commercial_overview.yaml`) when the
-  combination is the subject — a named, described thing to pick in the builder
-  and point Chat at, belonging to no one fact.
-- **Facts on a fact model** (`models/sales.yaml`) when one table is the subject
-  and the others are context — you are reading Sales and want shipment volume
-  beside it.
-
-Both ship in the demo catalog, so neither has to be authored to be seen.
-
-Because the catalog follows the query, a host loses nothing by listing facts:
-group by `category` and it is sales as it ever was, add `mkt.spend` to the same
-query and the axis narrows to what both facts have. A query that borrows
-nothing is handed straight to the single-table path, so it keeps what the merge
-can't do — inline measures, spine dimensions, a geo dimension's coordinates.
-Mixing an inline measure with a borrowed one is refused: an expression has to
-be scoped to one fact table.
-
 **In the app**: *+ CREATE MULTI-FACT MODEL* in the Modelling workspace's create
-chooser builds the standalone shape. It has no fact table of its own to pick a
-source for, so it edits as YAML rather than through the guided form; the list
-marks it `multi-fact` and shows its facts.
-
-Adding facts to a fact model is a control in the guided form — **Borrowed →
-Fact models**, alongside the common-dimension imports, since both are about
-what this model borrows from elsewhere. Pick a model to read and give its
-measures a prefix; there is nothing to relate, because facts are never joined.
-The form round-trips `facts:` like any other block, so a model that has one
-stays editable and an unrelated edit won't drop it. Everywhere else both shapes
-behave like any other model — Studio, dashboards, cross-filtering, Chat.
+chooser. It has no single source to pick, so it edits as YAML rather than
+through the guided form; the list marks it `multi-fact` and shows its facts.
+Everywhere else it behaves like any other model — Studio, dashboards,
+cross-filtering, Chat.
 
 ### Performance (13M-row fact table)
 

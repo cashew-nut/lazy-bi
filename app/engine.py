@@ -560,13 +560,12 @@ def run_query(model: Model, query: dict) -> dict:
     A `how: between` dimension import answers the same kind of question from a
     real date table instead — see scan() and _join_interval.
 
-    A model that lists `facts:` reads more than one table: the same query is
-    answered by running one of these per fact it names a measure from, and
-    merging the results on the dimensions those facts share — see
-    _run_composite.
+    A multi-fact model has no source of its own: the same query is answered by
+    running one of these per fact and merging the results on the dimensions
+    they share — see _run_composite.
     """
     started = time.perf_counter()
-    runner = _run_composite if model.facts else _run_single
+    runner = _run_composite if model.is_composite else _run_single
     df, columns = runner(model, query)
     elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
     # write_json serializes dates/decimals to JSON-safe values for us
@@ -962,25 +961,19 @@ def _composite_dimensions(
 
 
 def _run_composite(model: Model, query: dict) -> tuple[pl.DataFrame, list[dict]]:
-    """Answer a query against a model that lists facts: one _run_single per
-    fact that contributes a measure, merged on the shared dimensions."""
-    host = next((b for b in model.fact_bindings if b.host), None)
-    if query.get("inline_measures") and host is None:
+    """Answer a query against a multi-fact model: one _run_single per fact that
+    contributes a measure, merged on the shared dimensions."""
+    if query.get("inline_measures"):
         raise QueryError(
             f"multi-fact model '{model.name}' doesn't take inline measures — an expression has "
             f"to be scoped to one fact table, so add it to the fact model it belongs to"
         )
     measure_names = list(query.get("measures") or [])
-    if not measure_names and not query.get("inline_measures"):
+    if not measure_names:
         raise QueryError("query needs at least one measure")
 
-    # an inline measure is an expression over the host's own scan, not a name
-    # on any fact's catalog — _run_single resolves it, so leave it alone here
-    inline = {m.get("name") for m in (query.get("inline_measures") or [])}
     wanted: dict[str, list[str]] = {}   # fact alias -> that fact's own measure names
     for name in measure_names:
-        if name in inline:
-            continue
         try:
             binding, own = semantic.split_measure(model, name)
         except ModelError as exc:
@@ -990,20 +983,6 @@ def _run_composite(model: Model, query: dict) -> tuple[pl.DataFrame, list[dict]]
     # only the facts this query names a measure from are read, so only those
     # have to conform: a dimension the others lack never reaches a result row
     bindings = [b for b in model.fact_bindings if wanted.get(b.alias)]
-
-    # a query that borrows nothing is just a query against this model's own
-    # fact table — hand it straight over rather than through the merge, so a
-    # host keeps everything _run_single can do that the merge can't: inline
-    # measures, spine dimensions, a geo dimension's coordinate columns
-    if not any(not b.host for b in bindings):
-        return _run_single(model, query)
-    if query.get("inline_measures"):
-        raise QueryError(
-            f"'{model.name}' can't mix inline measures with measures borrowed from another fact "
-            f"— an expression has to be scoped to one fact table, so add it to the model it "
-            f"belongs to"
-        )
-
     shared = semantic.shared_dimensions(bindings)
 
     dim_entries = _composite_dimensions(query, bindings, shared)
@@ -1027,12 +1006,7 @@ def _run_composite(model: Model, query: dict) -> tuple[pl.DataFrame, list[dict]]
             "parameters": query.get("parameters"),
             "parameter_values": query.get("parameter_values"),
         })
-        # the host's measures are addressed by their own names, so only a
-        # borrowed fact's get the alias prefix back
-        qualified = {
-            m: m if binding.host else f"{binding.alias}{semantic.MEASURE_SEP}{m}"
-            for m in own_measures
-        }
+        qualified = {m: f"{binding.alias}{semantic.MEASURE_SEP}{m}" for m in own_measures}
         part = part.rename(qualified).select([*dim_names, *qualified.values()])
         part = _align_join_key(part, dim_names)
         if out is None:
@@ -1064,10 +1038,7 @@ def _run_composite(model: Model, query: dict) -> tuple[pl.DataFrame, list[dict]]
         for name in dim_names
     ] + [
         {"name": m, "label": model.measure(m).label, "kind": "measure",
-         "format": model.measure(m).format,
-         # which fact drew it, for a chart that colours or groups by source —
-         # the host's own measures carry no prefix, so name this model
-         "fact": m.partition(semantic.MEASURE_SEP)[0] if semantic.MEASURE_SEP in m else model.name}
+         "format": model.measure(m).format, "fact": m.partition(semantic.MEASURE_SEP)[0]}
         for m in measure_names
     ]
     return out, columns

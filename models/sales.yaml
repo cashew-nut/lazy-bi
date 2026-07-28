@@ -37,29 +37,6 @@ dimension_imports:
     left_on: order_date
     right_on: date
 
-# Reading another fact table from inside a fact model — the second of the two
-# multi-fact shapes (models/commercial_overview.yaml is the first: a model that
-# is nothing but a list). Here sales is still the subject and logistics is
-# context, so the facts hang off this model rather than off a third one.
-#
-# Nothing below changes. This model keeps its own dimensions and its own
-# measures under their own names; only the borrowed ones are prefixed, so
-# `revenue` is still `revenue` and shipping cost arrives as `ship.cost`. The
-# two are never joined — each is queried on its own and the results merge on
-# the dimensions both declare — so revenue is not multiplied by the number of
-# shipments in a region, which is exactly what a join would have done.
-#
-# They conform on the common models both import: `region` (and its territory
-# rollup) from `geography`, and `calendar_date` from `calendar`. That is the
-# whole shared catalog, and it is enough for the question worth asking — is
-# cost-to-serve tracking revenue, by region and over time.
-#
-# What they don't share stays available here: group by `category` or `segment`
-# as ever, and the axis only narrows once a `ship.` measure joins the query.
-facts:
-  - model: logistics
-    alias: ship
-
 dimensions:
   - name: order_date
     column: order_date
