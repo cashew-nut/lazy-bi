@@ -713,6 +713,8 @@ body[data-mode="home"] .layout > aside, body[data-mode="modelling"] .layout > as
 .home-row.portal:hover .ic, .home-row.portal:focus-visible .ic { color: var(--ok); }
 .home-row.chat:hover, .home-row.chat:focus-visible { box-shadow: inset 3px 0 0 var(--warn); }
 .home-row.chat:hover .ic, .home-row.chat:focus-visible .ic { color: var(--warn); }
+.home-row.sandbox:hover, .home-row.sandbox:focus-visible { box-shadow: inset 3px 0 0 var(--bad); }
+.home-row.sandbox:hover .ic, .home-row.sandbox:focus-visible .ic { color: var(--bad); }
 
 .home-admin { margin-top: 32px; }
 .home-admin-label { font-size: 10px; letter-spacing: 2.5px; color: var(--pink); text-transform: uppercase; margin-bottom: 8px; }
