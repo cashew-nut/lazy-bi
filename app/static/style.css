@@ -1159,6 +1159,9 @@ button.ghost.mk-new { margin-top: 2px; }
 .mf-anchor-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
 .mf-anchor-row select { width: auto; }
 .mf-anchor-row .rm { margin-left: auto; flex: none; }
+/* a fact's measure prefix is one short identifier — sit it inline with the
+   label and the worked example, like the selects above, not full-bleed */
+.mf-anchor-row input.mf-alias { width: 180px; flex: none; }
 /* second and later relations to the same bundle stack in one card */
 .mf-anchor-row.mf-rel-sep { border-top: 1px solid var(--line); padding-top: 14px; margin-top: 16px; }
 .mf-subset { display: flex; align-items: center; gap: 6px; margin-top: 10px; flex-wrap: wrap; }

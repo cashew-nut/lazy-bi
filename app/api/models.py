@@ -91,6 +91,14 @@ class ImportSpec(BaseModel):
     match: str = "overlap"    # `how: between` only — see semantic.MATCH_MODES
 
 
+class FactSpec(BaseModel):
+    """One other fact model read alongside this one. Nothing to relate: facts
+    are never joined, and which dimensions they share is decided by what both
+    models call things (see semantic.resolve_facts)."""
+    model: str
+    alias: str = ""
+
+
 class ModelSpec(BaseModel):
     """Structured form of a model — what the guided modelling form edits.
     POST /models/generate renders it to YAML; GET /models/{name}/spec is the
@@ -101,6 +109,7 @@ class ModelSpec(BaseModel):
     source: SourceSpec
     joins: list[JoinSpec] = []
     dimension_imports: list[ImportSpec] = []
+    facts: list[FactSpec] = []
     dimensions: list[DimensionSpec] = []
     measures: list[MeasureSpec] = []
 
@@ -169,16 +178,17 @@ def _model_out(parsed: semantic.Model) -> dict:
                   "kind": "composite" if parsed.is_composite else "fact",
                   "dimensions": len(parsed.dimensions), "measures": len(parsed.measures)},
     }
-    if parsed.is_composite:
-        # no source of its own to introspect; what the editor wants to see is
-        # which dimensions actually survived the conform
-        out["columns"] = None
+    if parsed.facts:
+        # which facts resolved, and what they conform on — the editor's feedback
+        # on a `facts:` list, whether or not the model also has a source
         out["facts"] = [
             {"alias": b.alias, "model": b.model.name,
              "measures": len(b.model.measures)}
-            for b in parsed.fact_bindings
+            for b in parsed.fact_bindings if not b.host
         ]
-        out["shared_dimensions"] = list(parsed.dimensions)
+        out["shared_dimensions"] = list(semantic.shared_dimensions(parsed.fact_bindings))
+    if parsed.is_composite:
+        out["columns"] = None   # no source of its own to introspect
         return out
     try:
         schema = engine.scan(parsed).collect_schema()

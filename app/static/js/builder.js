@@ -82,10 +82,13 @@ export async function run() {
     if (token !== state.queryToken) return; // stale response
     state.result = result;
     // a multi-fact model scans no path of its own — it runs one scan per fact
-    // and merges the results, so name the facts instead
+    // and merges the results, so name the facts instead. A model that has both
+    // scans its own path and names what it can borrow alongside it.
+    const facts = state.model.facts || [];
     const via = state.model.kind === "composite"
-      ? `${state.model.facts.length} facts <span class="path">${state.model.facts.map((f) => f.model).join(" + ")}</span>`
-      : `lazy scan <span class="path">${state.model.path}</span>`;
+      ? `${facts.length} facts <span class="path">${facts.map((f) => f.model).join(" + ")}</span>`
+      : `lazy scan <span class="path">${state.model.path}</span>`
+        + (facts.length ? ` + <span class="path">${facts.map((f) => f.model).join(", ")}</span>` : "");
     setMeta(`${result.row_count} rows · <span class="ms">${result.elapsed_ms}ms</span> · ${via}`);
     renderBuilderViz();
   } catch (err) {

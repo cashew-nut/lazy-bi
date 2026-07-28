@@ -562,7 +562,20 @@ as its own entry: a disconnected calendar table anchors itself, see
 behave exactly like native ones everywhere
 (builder, filters, dashboards, cross-filtering by name); a same-named
 dimension declared natively on the fact model always wins over an imported
-one. See `dimensions/geography.yaml`, imported by both `models/sales.yaml`
+one. The bundle arrives with every dimension already under its *dimension*
+name rather than the bundle's own column name, so a bundle is free to have a
+`month` column of its own even when the importing model does too.
+
+**A `how: left` import is only joined into queries that read one of its
+dimensions.** It can only add columns, so a query using none of them gets the
+same answer without paying for it — which is what lets a model import a
+calendar purely to [conform with its
+neighbours](#multi-fact-models-several-fact-tables-on-one-axis) without
+slowing down every query that has nothing to do with dates. `how: inner` also
+*filters* the model's rows, so it is always applied. (The corollary, shared
+with [`how: between`](#calendar-tables-how-between): a measure expression can
+reference dimensions, and one referencing an imported dimension needs that
+dimension in the query too.) See `dimensions/geography.yaml`, imported by both `models/sales.yaml`
 and `models/logistics.yaml`, for a working example — editing the bundle
 updates both models with no changes to either model file.
 
@@ -593,19 +606,18 @@ name: commercial_overview
 label: Commercial Overview
 facts:
   - model: marketing
-    map: { date: month }
   - model: sales
-    map: { date: order_date }
   - model: subscriptions
     alias: subs
-    map: { date: calendar_date }
 ```
 
 ```
-date       marketing.spend  sales.revenue  subs.active_customers
-2025-01-01       241,880.55    3,918,204.10                  1,204
-2025-02-01       238,014.02    3,655,901.44                  1,231
+calendar_date  marketing.spend  sales.revenue  subs.active_customers
+2025-01-01          241,880.55    3,918,204.10                  1,204
+2025-02-01          238,014.02    3,655,901.44                  1,231
 ```
+
+That list is the whole file — a multi-fact model declares nothing else.
 
 **The facts are never joined to each other.** Each is queried on its own at the
 grain the query asked for, and the per-fact *results* are merged on the
@@ -615,31 +627,54 @@ both sides. Running them separately and merging the aggregates leaves every
 measure at the grain of its own table, so asking for one measure or five
 returns identical numbers for each.
 
-How each fact reaches its date is its own business, and the model above uses
-three different mechanisms without caring:
+**Conformance is declared on the fact, not here.** Two facts share a dimension
+when they call it by the same name, and importing the same
+[dimension bundle](#common-dimensional-models-shared-dimensions) into two fact
+models is what makes them do that. All three models above import `calendar`, so
+all three already call the axis `calendar_date` — the multi-fact model gets it
+for free and has nothing to say about it. Same for `region`: `sales` imports it
+from the `geography` bundle, the other two declare it natively.
 
-| fact | dimension | how it gets there |
+The point of putting it on the fact is that it's true of the fact regardless of
+who reads it. Declaring "sales' date axis is `order_date`" once means *every*
+model that ever conforms against sales gets it, and the fact model is where a
+reviewer sees it.
+
+How each fact then reaches that shared axis is its own business, and the three
+above use three different mechanisms without caring:
+
+| fact | import | how it gets there |
 | --- | --- | --- |
-| `sales` | `order_date` | an event date, one row per order |
-| `marketing` | `month` | already monthly |
-| `subs` | `calendar_date` | an [interval import](#calendar-tables-how-between) — a subscription counts in every period it was open for |
+| `sales` | `left_on: order_date` | an event date, one row per order |
+| `marketing` | `left_on: month` | already monthly, lands on each month start |
+| `subs` | [`how: between`](#calendar-tables-how-between) | an interval join — a subscription counts in every period it was open for |
 
 A spine dimension works here too. Whatever a fact does to answer "group me by
 time", it does before the merge.
 
-**`map:` conforms the names.** Three tables that all mean "date" call it three
-things; a `map:` entry says which of a fact's dimensions answers to a shared
-name. Dimensions the facts already agree on need no entry — `region` above is
-imported from the `geography` bundle by one fact and declared natively by the
-other two, and they all already call it `region`. That is the other half of
-what a dimension bundle is for.
-
 **Only dimensions every fact offers are groupable** — the intersection, not the
-union. `commercial_overview` exposes exactly `date` and `region`. `channel` is
-on sales and marketing but not subscriptions, so it isn't offered: there is no
-honest subscriptions number to put on a row labelled "net ads". Slicing by
-channel is a question for the sales or marketing model. Grouping or filtering
-by a non-shared dimension is a query error naming what *is* available.
+union. `channel` is on sales and marketing but not subscriptions: there is no
+honest subscriptions number to put on a row labelled "net ads".
+
+**That intersection follows the query, not the model.** Only the facts a query
+names a measure from are read, so only those have to conform. Asking for
+`sales.revenue` and `marketing.spend` *can* be grouped by `channel`, because
+subscriptions contributes no row to that result:
+
+```jsonc
+{"dimensions": ["channel"], "measures": ["sales.revenue", "marketing.spend"]}   // fine
+{"dimensions": ["channel"], "measures": ["sales.revenue", "subs.mrr"]}          // refused
+```
+
+So one multi-fact model covers every combination of its facts, rather than
+needing one per pair. A query naming a single fact's measures conforms with
+itself and can be grouped by anything that fact has. Grouping or filtering by a
+dimension one of the *read* facts lacks is a query error that names the fact
+responsible — the actionable part being which measure to drop.
+
+`model.dimensions` — what the builder opens on, and what `/api/models` reports
+— stays the all-facts intersection: the catalog that is safe whatever you go on
+to ask for.
 
 **Measures are prefixed by fact** (`sales.revenue`, `marketing.spend`) because
 two facts can easily both have a measure called `orders`. `alias:` renames the
@@ -655,15 +690,68 @@ Other things worth knowing:
 - Sorting and the row limit apply *after* the merge, so a limit can't drop a
   bucket another fact still has rows for.
 - Facts don't nest — list the fact models directly.
-- A multi-fact model declares nothing else: no source, joins, dimensions,
-  measures or imports of its own. Those belong to the facts, and a load-time
-  error says so rather than silently ignoring them.
+- A model with `facts:` and no `source:` declares nothing else: no joins,
+  dimensions, measures or imports of its own. Those belong to the facts, and a
+  load-time error says so rather than silently ignoring them.
+- Two facts that disagree on a dimension's *type* — one calling `when` a time
+  dimension, the other a category — is a load-time error, checked over every
+  pair rather than only over the all-facts intersection.
+
+#### Or add facts to a fact model you already have
+
+`facts:` is not only for a model that has nothing else. Give an ordinary fact
+model a `facts:` list and it keeps everything it had, gaining its neighbours'
+measures:
+
+```yaml
+# models/sales.yaml
+source:
+  format: parquet
+  path: s3://cash-intel/sales/*.parquet
+# ...its own dimensions, measures, joins and imports, unchanged...
+facts:
+  - model: logistics
+    alias: ship
+```
+
+Sales now measures `revenue` *and* `ship.cost`. **The host's own measures keep
+their bare names** — only borrowed facts are prefixed — so every saved visual,
+dashboard and query against the model goes on working untouched. The two
+conform on what both import: `region` from `geography`, `calendar_date` from
+`calendar`. The demo notebook's *Orders vs Shipments* chart is this query.
+
+Which of the two shapes to use is a question about the reading, not about
+capability; they resolve through the same code:
+
+- **A standalone list** (`models/commercial_overview.yaml`) when the
+  combination is the subject — a named, described thing to pick in the builder
+  and point Chat at, belonging to no one fact.
+- **Facts on a fact model** (`models/sales.yaml`) when one table is the subject
+  and the others are context — you are reading Sales and want shipment volume
+  beside it.
+
+Both ship in the demo catalog, so neither has to be authored to be seen.
+
+Because the catalog follows the query, a host loses nothing by listing facts:
+group by `category` and it is sales as it ever was, add `mkt.spend` to the same
+query and the axis narrows to what both facts have. A query that borrows
+nothing is handed straight to the single-table path, so it keeps what the merge
+can't do — inline measures, spine dimensions, a geo dimension's coordinates.
+Mixing an inline measure with a borrowed one is refused: an expression has to
+be scoped to one fact table.
 
 **In the app**: *+ CREATE MULTI-FACT MODEL* in the Modelling workspace's create
-chooser. It has no single source to pick, so it edits as YAML rather than
-through the guided form; the list marks it `multi-fact` and shows its facts.
-Everywhere else it behaves like any other model — Studio, dashboards,
-cross-filtering, Chat.
+chooser builds the standalone shape. It has no fact table of its own to pick a
+source for, so it edits as YAML rather than through the guided form; the list
+marks it `multi-fact` and shows its facts.
+
+Adding facts to a fact model is a control in the guided form — **Borrowed →
+Fact models**, alongside the common-dimension imports, since both are about
+what this model borrows from elsewhere. Pick a model to read and give its
+measures a prefix; there is nothing to relate, because facts are never joined.
+The form round-trips `facts:` like any other block, so a model that has one
+stays editable and an unrelated edit won't drop it. Everywhere else both shapes
+behave like any other model — Studio, dashboards, cross-filtering, Chat.
 
 ### Performance (13M-row fact table)
 

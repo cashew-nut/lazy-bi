@@ -1,6 +1,8 @@
 /* Guided model form: the default way to create/edit a fact model. A single
-   sectioned editor (Overview / Data / Common models / Dimensions / Measures /
-   YAML) with free navigation — no gated wizard steps. The form holds a
+   sectioned editor (Overview / Data / Borrowed / Dimensions / Measures /
+   YAML) with free navigation — no gated wizard steps. "Borrowed" covers both
+   ways a model reads something it doesn't own: dimensions from a common model,
+   and measures from another fact model (`facts:`). The form holds a
    structured spec that the server renders to YAML (POST /api/models/generate);
    generation runs continuously (debounced) so validation status and SAVE are
    always live. Raw YAML editing stays one click away (editor.js) — the form
@@ -26,7 +28,7 @@ import { hooks, showView, state } from "./state.js";
 const SECTIONS = [
   { id: "overview", label: "OVERVIEW" },
   { id: "data", label: "DATA" },
-  { id: "commons", label: "COMMON MODELS" },
+  { id: "commons", label: "BORROWED" },   // common models (dimensions) + fact models (measures)
   { id: "dimensions", label: "DIMENSIONS" },
   { id: "measures", label: "MEASURES" },
   { id: "yaml", label: "YAML" },
@@ -45,6 +47,7 @@ const form = {
   //  interval:{start,end,point}, match}
   // `how: "between"` uses `interval`/`match` instead of `pairs` — see importControls
   imports: [],
+  facts: [],           // {model, alias} — other fact models read alongside this one
   dimensions: [],      // spec dimension dicts (column/type/label/spine/geo/synonyms preserved)
   measures: [],        // {name, label, expr, format, description, synonyms, frame?, frame_emits?}
   // transient UI state (never part of the spec)
@@ -86,6 +89,7 @@ function toSpec() {
       match: i.match || "overlap",
       ...(i.how === "between" ? intervalOf(i.interval) : pairsOf(i.pairs)),
     })),
+    facts: form.facts.filter((f) => f.model).map((f) => ({ model: f.model, alias: f.alias || f.model })),
     dimensions: form.dimensions,
     measures: form.measures
       .filter((m) => m.name.trim() && m.expr.trim())
@@ -107,7 +111,7 @@ export async function openModelForm(name) {
   if (!confirmLeaveModelForm()) return;
   Object.assign(form, {
     editingName: name, section: "overview", dirty: false,
-    name: "", label: "", description: "", source: null, relations: [], imports: [],
+    name: "", label: "", description: "", source: null, relations: [], imports: [], facts: [],
     dimensions: [],
     measures: [{ name: "rows", label: "Row Count", expr: "count()", format: "number", description: "", synonyms: [] }],
     pickingSource: false, importFor: null, addingSpine: false,
@@ -127,6 +131,8 @@ export async function openModelForm(name) {
   setStatus(name ? "loading…" : "");
   render();
   if (!state.bundles.length) state.bundles = await api("/api/dimensions").catch(() => []);
+  // every other fact model, as candidates for the `facts:` list
+  state.factModels = await api("/api/models").catch(() => []);
   await loadDatasets();
   if (name) {
     // the guided form edits one fact table; a multi-fact model has none of its
@@ -146,6 +152,7 @@ export async function openModelForm(name) {
       source: spec.source,
       relations: spec.joins.map((j) => ({ ...j, pairs: toPairs(j) })),
       imports: spec.dimension_imports.map(importFromSpec),
+      facts: (spec.facts || []).map((f) => ({ ...f })),
       dimensions: spec.dimensions, measures: spec.measures,
     });
     setPanelModel(name, form.label || name);
@@ -224,6 +231,14 @@ function sectionProblem(id) {
         return `import '${i.bundle}': relate at least one column pair`;
       }
     }
+    for (const f of form.facts) {
+      if (!NAME_RE.test(f.alias || "")) {
+        return `fact '${f.model}': the measure prefix must be snake_case (a-z, 0-9, _)`;
+      }
+      if (form.facts.filter((o) => (o.alias || "") === f.alias).length > 1) {
+        return `two facts both prefix their measures '${f.alias}' — give one a different prefix`;
+      }
+    }
   }
   if (id === "measures") {
     for (const m of form.measures) {
@@ -247,7 +262,7 @@ function sectionStatus(id) {
   if (sectionProblem(id)) return "err";
   if (id === "overview") return form.name ? "done" : "";
   if (id === "data") return form.source ? "done" : "";
-  if (id === "commons") return form.imports.length ? "done" : "";
+  if (id === "commons") return form.imports.length || form.facts.length ? "done" : "";
   if (id === "dimensions") return form.dimensions.length ? "done" : "";
   if (id === "measures") return form.measures.some((m) => m.name.trim() && m.expr.trim()) ? "done" : "";
   return "";
@@ -464,6 +479,55 @@ function appendColumnImport(box, target, cols) {
 
 // ── section: COMMON MODELS (dimension_imports) ──
 
+/* Other fact models this one reads alongside its own table. They are never
+   joined to it — each is queried on its own and the results merge on the
+   dimensions they share — so all this needs is a name and the alias that
+   prefixes the borrowed measures. Which dimensions end up shared is decided by
+   what both models call things, not here: see resolve_facts in app/semantic.py. */
+function renderFacts(main) {
+  main.append(el("div", { class: "sec-title" }, "Fact models"));
+  main.append(note("read another fact model's measures alongside this one's — for a chart that puts spend "
+    + "next to revenue. They are never joined: each is queried on its own and the results merge on the "
+    + "dimensions both call by the same name (import the same common model into both to conform them). "
+    + "This model's own measures keep their names; a borrowed one is prefixed with its alias."));
+  // a fact can't itself read facts, and a model can't list itself
+  const candidates = (state.factModels || []).filter(
+    (m) => m.kind === "fact" && !m.facts.length && m.name !== form.name.trim());
+  if (!candidates.length) {
+    main.append(note("no other fact models to read from yet"));
+    return;
+  }
+  for (const m of candidates) {
+    const picked = form.facts.find((f) => f.model === m.name);
+    const card = el("div", { class: "mf-card" + (picked ? " on" : "") });
+    const toggle = el("button", { class: "btn " + (picked ? "plain" : "") }, picked ? "REMOVE" : "READ");
+    toggle.addEventListener("click", () => {
+      form.facts = picked
+        ? form.facts.filter((f) => f.model !== m.name)
+        : [...form.facts, { model: m.name, alias: m.name }];
+      markDirty();
+      render();
+    });
+    card.append(el("div", { class: "mf-card-head" },
+      el("span", { class: "nm" }, m.label),
+      el("span", { class: "mf-colcount" }, `${m.measures.length} measures`), toggle));
+    if (picked) {
+      const prefix = el("input", { type: "text", class: "mf-alias", value: picked.alias, placeholder: m.name });
+      prefix.addEventListener("input", () => {
+        picked.alias = prefix.value.trim();
+        markDirty();
+        $(`#mf-fact-eg-${m.name}`).textContent = `${picked.alias || m.name}.${m.measures[0]?.name || "measure"}`;
+      });
+      card.append(el("div", { class: "mf-anchor-row" },
+        el("span", { class: "field-label" }, "MEASURE PREFIX"), prefix,
+        el("span", { class: "mf-colcount" }, "reads on this model as ",
+          el("code", { id: `mf-fact-eg-${m.name}` },
+            `${picked.alias || m.name}.${m.measures[0]?.name || "measure"}`))));
+    }
+    main.append(card);
+  }
+}
+
 function renderImports(main) {
   main.append(el("div", { class: "sec-title" }, "Common models"));
   main.append(note("import shared dimensions declared once in a common dimension model. Anchor the import on "
@@ -472,6 +536,7 @@ function renderImports(main) {
     + "read-only here — they're managed in the common model, so every importer stays consistent."));
   if (!state.bundles.length) {
     main.append(note("none yet — create a common dimension model from the Modelling workspace first"));
+    renderFacts(main);
     return;
   }
   for (const b of state.bundles) {
@@ -495,6 +560,7 @@ function renderImports(main) {
     imps.forEach((imp, idx) => card.append(...importControls(b, imp, idx > 0)));
     main.append(card);
   }
+  renderFacts(main);
 }
 
 // default relation guess for a freshly-imported bundle: its anchor's first

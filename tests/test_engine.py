@@ -328,9 +328,40 @@ def test_interval_import_skipped_when_no_calendar_dimension_used(models):
     plain = run(models, "subscriptions", dimensions=["plan"], measures=["signups"])
     assert sum(row["signups"] for row in plain["rows"]) == 9000  # one row per customer
     subs = models["subscriptions"]
-    assert "quarter" not in engine.scan(subs, {"plan": None}).collect_schema()
-    assert "quarter" in engine.scan(subs, {"calendar_quarter": None}).collect_schema()
-    assert "quarter" in engine.scan(subs).collect_schema()  # None = introspection
+    # the bundle arrives with its dimensions under their dimension names, never
+    # its own raw column names — see engine._scan_bundle
+    assert "calendar_quarter" not in engine.scan(subs, {"plan": None}).collect_schema()
+    assert "calendar_quarter" in engine.scan(subs, {"calendar_quarter": None}).collect_schema()
+    assert "calendar_quarter" in engine.scan(subs).collect_schema()  # None = introspection
+    assert "quarter" not in engine.scan(subs).collect_schema()
+
+
+def test_matching_columns_import_skipped_when_none_of_its_dimensions_are_used(models):
+    """A `how: left` import can only add columns, so a query reading none of
+    them must not pay for the join — sales imports the calendar purely to
+    conform with its neighbours, and most sales queries never touch it."""
+    sales = models["sales"]
+    plain = engine.scan(sales, {"category": None}).collect_schema()
+    assert "calendar_quarter" not in plain
+    assert "territory" not in plain               # geography is `left` too
+    assert "category" in plain                    # ...the model's own is untouched
+    # ...but anything that reads one keeps it, whether grouped by or filtered on
+    assert "calendar_quarter" in engine.scan(sales, {"calendar_quarter": None}).collect_schema()
+    assert "territory" in engine.scan(sales, {"territory": None}).collect_schema()
+    assert "calendar_quarter" in engine.scan(sales).collect_schema()  # None = introspection
+
+
+def test_skipping_an_import_does_not_change_a_measure(models):
+    """The skip is only sound because a left join to a dimension table adds
+    columns and nothing else — the numbers have to be identical either way."""
+    without = run(models, "sales", dimensions=["category"], measures=["revenue"])
+    with_join = run(models, "sales", dimensions=["category", "calendar_quarter"],
+                    measures=["revenue"], limit=1000)
+    rolled: dict = {}
+    for row in with_join["rows"]:
+        rolled[row["category"]] = rolled.get(row["category"], 0) + row["revenue"]
+    for row in without["rows"]:
+        assert rolled[row["category"]] == pytest.approx(row["revenue"])
 
 
 def test_interval_import_values_read_off_the_calendar_itself(models):

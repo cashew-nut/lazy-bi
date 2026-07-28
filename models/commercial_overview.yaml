@@ -12,40 +12,35 @@
 # grain and merging the per-fact *results* on the dimensions they share. Each
 # measure keeps the grain of its own table.
 #
-# `map:` is how three tables that all mean "date" agree on one name. Note that
-# each fact reaches its date differently, and none of that matters here:
+# That list is the whole file. There is nothing here about how the three agree
+# on a date, because agreeing on a date is not this model's business: each fact
+# imports the `calendar` bundle, so each already calls the axis
+# `calendar_date`. Note how differently they reach it, and how little that
+# matters from here:
 #
-#   sales        order_date     — an event date, one row per order
-#   marketing    month          — already monthly
-#   subs         calendar_date  — an interval join (`how: between`) against the
-#                                 calendar bundle, so a subscription counts in
-#                                 every period it was open for, not just the
-#                                 one it started in
+#   sales        on: order_date   — an event date, one row per order
+#   marketing    on: month        — already monthly, lands on each month start
+#   subs         how: between     — an interval join, so a subscription counts
+#                                   in every period it was open for, not just
+#                                   the one it started in
 #
-# `region` needs no entry: sales imports it from the geography bundle and the
-# other two declare it natively, so all three already call it the same thing.
+# `region` is shared the same way: sales imports it from the geography bundle,
+# the other two declare it natively, and all three call it `region`.
 #
-# Those two are the whole shared catalog — the intersection, not the union.
-# `channel` is on sales and marketing but not subscriptions, so it isn't
-# offered: there is no honest number to put in a subscriptions column on a row
-# labelled "net ads". To slice by channel, use the sales or marketing model.
+# The catalog is the intersection of the facts a *query* reads, not of all
+# three. Ask for spend and revenue and you can group by `channel`, which both
+# of those have; add a subscriptions measure to the same query and `channel` is
+# refused, because there is no honest number to put in a subscriptions column
+# on a row labelled "net ads".
 #
 # Measures are prefixed by fact alias (`sales.revenue`, `marketing.spend`)
 # because two facts can easily both have a measure called `orders`.
 name: commercial_overview
 label: Commercial Overview
-description: Marketing spend, sales revenue and active subscriptions on one timeline — three unrelated fact tables conformed on date and region.
+description: Marketing spend, sales revenue and active subscriptions on one timeline — three unrelated fact tables conformed on the shared calendar and region.
 
 facts:
   - model: marketing
-    alias: marketing
-    map:
-      date: month
   - model: sales
-    alias: sales
-    map:
-      date: order_date
   - model: subscriptions
     alias: subs
-    map:
-      date: calendar_date
