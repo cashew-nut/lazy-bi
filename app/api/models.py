@@ -279,7 +279,8 @@ def put_model_yaml(name: str, body: YamlIn):
     other = registry.models.get(parsed.name)
     if other and other.name != model.name:
         raise HTTPException(status_code=409, detail=f"model '{parsed.name}' already exists")
-    registry.local_model_store.update(name, body.yaml)
+    registry.local_model_store.update(
+        name, body.yaml, new_name=parsed.name if parsed.name != name else None)
     _reload_or_400()
     return registry.models[parsed.name].to_public()
 

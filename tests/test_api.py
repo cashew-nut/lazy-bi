@@ -644,6 +644,64 @@ def test_local_model_survives_reload(client):
         client.delete("/api/models/local_reload_probe")
 
 
+def test_renamed_local_model_delete_and_recreate_under_old_name(client):
+    """Regression: LocalModelStore keyed a row by the name a model was
+    created under, and put_model_yaml only rewrote the row's yaml, never its
+    key, whenever a save changed the model's own `name:`. A rename therefore
+    stranded the row under its old key forever — invisible to
+    get/update/delete issued against the model's new (now current) name — so
+    deleting a renamed model silently deleted nothing, and creating a new
+    model under the vacated old name later hit a raw, unhandled
+    `sqlite3.IntegrityError: UNIQUE constraint failed`, surfaced to the user
+    as a non-JSON 500 ("Unexpected token 'I', "Internal S"... is not valid
+    JSON") instead of any usable error."""
+    y1 = ("name: rename_probe_a\nsource: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
+          "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: count()\n")
+    assert client.post("/api/models", json={"yaml": y1}).status_code == 201
+
+    y2 = y1.replace("name: rename_probe_a", "name: rename_probe_b")
+    assert client.put("/api/models/rename_probe_a/yaml", json={"yaml": y2}).status_code == 200
+    # the renamed model must still be readable under its new name — the same
+    # key drift silently emptied read_model_text() before this fix
+    assert "rename_probe_b" in client.get("/api/models/rename_probe_b/yaml").json()["yaml"]
+
+    assert client.delete("/api/models/rename_probe_b").status_code == 204
+    assert "rename_probe_b" not in client.get("/api/health").json()["models"]
+
+    try:
+        # recreating under the vacated old name used to 500 on a ghost row
+        assert client.post("/api/models", json={"yaml": y1}).status_code == 201
+    finally:
+        client.delete("/api/models/rename_probe_a")
+
+
+def test_unhandled_exception_returns_json_not_plaintext(client, monkeypatch):
+    """Regression: an uncaught exception anywhere in a route used to fall
+    through to Starlette's default handler, which returns a plain-text
+    "Internal Server Error" body. app.static/js/lib.js's api() always calls
+    response.json() regardless of status, so that plain-text body crashed
+    with a confusing "Unexpected token 'I', "Internal S"... is not valid
+    JSON" instead of surfacing whatever actually went wrong. The app-wide
+    handler in app/main.py now guarantees a JSON body on any 500."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+    from app.registry import registry
+
+    monkeypatch.setattr(
+        registry.local_model_store, "create",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("kaboom")))
+    y = ("name: unhandled_exc_probe\nsource: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
+         "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: count()\n")
+    # raise_server_exceptions=False mirrors what a real client (the browser)
+    # receives over the wire — the default test client re-raises instead of
+    # handing back the response, which would hide the bug under test.
+    c = TestClient(app, raise_server_exceptions=False, cookies=client.cookies, headers=client.headers)
+    res = c.post("/api/models", json={"yaml": y})
+    assert res.status_code == 500
+    assert "kaboom" in res.json()["detail"]  # must parse as JSON at all
+
+
 def test_orphaned_local_model_dropped_not_fatal(client):
     """A local model can go stale on its own — it imports a bundle (or facts
     a model) that a later codebase change removes, exactly what happened when
