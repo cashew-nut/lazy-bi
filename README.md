@@ -710,22 +710,27 @@ source:
   path: s3://cash-intel/sales/*.parquet
 # ...its own dimensions, measures, joins and imports, unchanged...
 facts:
-  - model: marketing
-    alias: mkt
+  - model: logistics
+    alias: ship
 ```
 
-Sales now measures `revenue` *and* `mkt.spend`. **The host's own measures keep
+Sales now measures `revenue` *and* `ship.cost`. **The host's own measures keep
 their bare names** — only borrowed facts are prefixed — so every saved visual,
-dashboard and query against the model goes on working untouched.
+dashboard and query against the model goes on working untouched. The two
+conform on what both import: `region` from `geography`, `calendar_date` from
+`calendar`. The demo notebook's *Orders vs Shipments* chart is this query.
 
 Which of the two shapes to use is a question about the reading, not about
 capability; they resolve through the same code:
 
-- **A standalone list** (`commercial_overview`) when the combination is the
-  subject — a named, described thing to pick in the builder and point Chat at,
-  belonging to no one fact.
-- **Facts on a fact model** when one table is the subject and the others are
-  context — you are reading Sales and want spend beside it.
+- **A standalone list** (`models/commercial_overview.yaml`) when the
+  combination is the subject — a named, described thing to pick in the builder
+  and point Chat at, belonging to no one fact.
+- **Facts on a fact model** (`models/sales.yaml`) when one table is the subject
+  and the others are context — you are reading Sales and want shipment volume
+  beside it.
+
+Both ship in the demo catalog, so neither has to be authored to be seen.
 
 Because the catalog follows the query, a host loses nothing by listing facts:
 group by `category` and it is sales as it ever was, add `mkt.spend` to the same

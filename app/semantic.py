@@ -1525,10 +1525,10 @@ def resolve_facts(model: Model, models: dict[str, Model]) -> Model:
             raise ModelError(
                 f"model '{model.name}': fact '{fr.alias}' references unknown model '{fr.model}'"
             )
-        if target.facts:
+        if target.is_composite:
             raise ModelError(
-                f"model '{model.name}': fact '{fr.alias}' references '{fr.model}', which reads "
-                f"facts of its own — list the fact models directly instead"
+                f"model '{model.name}': fact '{fr.alias}' references '{fr.model}', which has no "
+                f"fact table of its own — list the fact models it reads here directly instead"
             )
         model.fact_bindings.append(FactBinding(alias=fr.alias, model=target))
 
@@ -1544,6 +1544,14 @@ def resolve_facts(model: Model, models: dict[str, Model]) -> Model:
         if binding.host:
             continue   # its measures are already on the model, under their own names
         for meas in binding.model.measures.values():
+            # a fact contributes its own fact table, so only its own measures.
+            # Anything it borrows in turn is already prefixed, and reaching
+            # through would ask its scan for a column from someone else's — if
+            # you want that table, list it here too. (Filtered on the name
+            # rather than on the target's bindings so the result can't depend
+            # on which model resolve_facts happened to reach first.)
+            if MEASURE_SEP in meas.name:
+                continue
             qualified = f"{binding.alias}{MEASURE_SEP}{meas.name}"
             model.measures[qualified] = Measure(
                 name=qualified, label=f"{meas.label} · {binding.model.label}",

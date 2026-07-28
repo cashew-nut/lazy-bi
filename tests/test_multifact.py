@@ -128,9 +128,12 @@ def test_every_facts_measures_are_offered_under_an_alias_prefix(models):
     assert "sales.revenue" in overview.measures
     assert "marketing.spend" in overview.measures
     assert "subs.active_customers" in overview.measures
-    # each fact's whole measure list comes across, prefix and all
+    # each fact's own measure list comes across, prefix and all (sales borrows
+    # measures of its own — those stay behind, see
+    # test_a_fact_that_borrows_contributes_only_its_own_measures)
     for alias, fact in (("sales", "sales"), ("marketing", "marketing"), ("subs", "subscriptions")):
-        assert {f"{alias}.{m}" for m in models[fact].measures} <= set(overview.measures)
+        own = {m for m in models[fact].measures if "." not in m}
+        assert {f"{alias}.{m}" for m in own} <= set(overview.measures)
 
 
 def test_a_measure_label_names_the_fact_it_came_from(models):
@@ -143,18 +146,22 @@ def test_an_unknown_fact_model_is_a_load_time_error(models):
         _resolved("name: bad\nfacts:\n  - model: nope\n", models)
 
 
-def test_a_fact_cannot_itself_read_facts(models):
-    """Facts don't nest, whether the target is a standalone multi-fact model or
-    a fact model that borrows from its neighbours."""
-    with pytest.raises(ModelError, match="which reads facts of its own"):
+def test_a_fact_needs_a_fact_table_of_its_own(models):
+    """A standalone multi-fact model has nothing to scan, so it can't be read
+    as a fact — there is no single table behind it."""
+    with pytest.raises(ModelError, match="which has no fact table of its own"):
         _resolved("name: bad\nfacts:\n  - model: commercial_overview\n", models)
-    borrower = _parse(
-        "name: borrower\nsource: {format: parquet, path: s3://b/x.parquet}\n"
-        "dimensions:\n  - name: region\nmeasures:\n  - name: n\n    expr: count()\n"
-        "facts:\n  - model: marketing\n"
-    )
-    with pytest.raises(ModelError, match="which reads facts of its own"):
-        _resolved("name: bad\nfacts:\n  - model: borrower\n", {**models, "borrower": borrower})
+
+
+def test_a_fact_that_borrows_contributes_only_its_own_measures(models):
+    """`sales` reads logistics, and commercial_overview reads sales. Reading a
+    fact means reading its table, so what comes across is what that table can
+    answer — not, transitively, its neighbour's."""
+    overview = models["commercial_overview"]
+    assert "sales.revenue" in overview.measures
+    assert "ship.cost" in models["sales"].measures         # sales borrows it...
+    assert "sales.ship.cost" not in overview.measures      # ...and doesn't pass it on
+    assert not any(m.count(".") > 1 for m in overview.measures)
 
 
 def _fact_with(name: str, dim: str, dim_type: str) -> semantic.Model:
@@ -568,9 +575,19 @@ def test_to_public_reports_the_facts_and_marks_the_kind(models):
 
 
 def test_a_single_source_model_is_still_reported_as_a_fact(models):
-    public = models["sales"].to_public()
+    public = models["support"].to_public()      # a model that borrows nothing
     assert public["kind"] == "fact"
     assert public["facts"] == []
+
+
+def test_the_demo_catalog_ships_both_shapes(models):
+    """Discoverability: one of each in models/, so the two readings are visible
+    without having to author anything."""
+    standalone = models["commercial_overview"]
+    assert standalone.is_composite and standalone.source is None
+    borrowing = models["sales"]
+    assert not borrowing.is_composite and borrowing.source is not None
+    assert [b.alias for b in borrowing.fact_bindings if not b.host] == ["ship"]
 
 
 def test_a_multi_fact_model_reads_no_bucket_objects_of_its_own(models):
