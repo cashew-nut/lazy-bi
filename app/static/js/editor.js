@@ -35,15 +35,16 @@ source:
 #     anchor_dataset: regions
 #     on: region
 
-# To read several fact models on one axis instead, replace source/dimensions/
-# measures below with a facts: list — nothing else. They are never joined to
-# each other: each is queried on its own and the results merge on the
+# A facts: list reads other fact models alongside this one. They are never
+# joined to each other: each is queried on its own and the results merge on the
 # dimensions they all share, so no measure inflates. Facts conform on the
 # dimensions they already call by the same name, which is what importing the
-# same bundle into each of them gets you.
+# same bundle into each of them gets you. Keep the source above and this model
+# gains their measures under an alias prefix while keeping its own; drop
+# source/dimensions/measures and it becomes nothing but the list.
 # facts:
 #   - model: marketing
-#   - model: sales
+#     alias: mkt
 
 dimensions:
   - name: some_column

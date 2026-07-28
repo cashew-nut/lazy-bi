@@ -690,18 +690,59 @@ Other things worth knowing:
 - Sorting and the row limit apply *after* the merge, so a limit can't drop a
   bucket another fact still has rows for.
 - Facts don't nest — list the fact models directly.
-- A multi-fact model declares nothing else: no source, joins, dimensions,
-  measures or imports of its own. Those belong to the facts, and a load-time
-  error says so rather than silently ignoring them.
+- A model with `facts:` and no `source:` declares nothing else: no joins,
+  dimensions, measures or imports of its own. Those belong to the facts, and a
+  load-time error says so rather than silently ignoring them.
 - Two facts that disagree on a dimension's *type* — one calling `when` a time
   dimension, the other a category — is a load-time error, checked over every
   pair rather than only over the all-facts intersection.
 
+#### Or add facts to a fact model you already have
+
+`facts:` is not only for a model that has nothing else. Give an ordinary fact
+model a `facts:` list and it keeps everything it had, gaining its neighbours'
+measures:
+
+```yaml
+# models/sales.yaml
+source:
+  format: parquet
+  path: s3://cash-intel/sales/*.parquet
+# ...its own dimensions, measures, joins and imports, unchanged...
+facts:
+  - model: marketing
+    alias: mkt
+```
+
+Sales now measures `revenue` *and* `mkt.spend`. **The host's own measures keep
+their bare names** — only borrowed facts are prefixed — so every saved visual,
+dashboard and query against the model goes on working untouched.
+
+Which of the two shapes to use is a question about the reading, not about
+capability; they resolve through the same code:
+
+- **A standalone list** (`commercial_overview`) when the combination is the
+  subject — a named, described thing to pick in the builder and point Chat at,
+  belonging to no one fact.
+- **Facts on a fact model** when one table is the subject and the others are
+  context — you are reading Sales and want spend beside it.
+
+Because the catalog follows the query, a host loses nothing by listing facts:
+group by `category` and it is sales as it ever was, add `mkt.spend` to the same
+query and the axis narrows to what both facts have. A query that borrows
+nothing is handed straight to the single-table path, so it keeps what the merge
+can't do — inline measures, spine dimensions, a geo dimension's coordinates.
+Mixing an inline measure with a borrowed one is refused: an expression has to
+be scoped to one fact table.
+
 **In the app**: *+ CREATE MULTI-FACT MODEL* in the Modelling workspace's create
-chooser. It has no single source to pick, so it edits as YAML rather than
-through the guided form; the list marks it `multi-fact` and shows its facts.
-Everywhere else it behaves like any other model — Studio, dashboards,
-cross-filtering, Chat.
+chooser builds the standalone shape. It has no single source to pick, so it
+edits as YAML rather than through the guided form; the list marks it
+`multi-fact` and shows its facts. A fact model that lists facts is an ordinary
+model everywhere — it scans, introspects and reports as `fact` — except that it
+too edits as YAML, since the guided form has no control for `facts:` and would
+drop the list on save. Everywhere else both behave like any other model —
+Studio, dashboards, cross-filtering, Chat.
 
 ### Performance (13M-row fact table)
 

@@ -374,9 +374,11 @@ def test_new_model_opens_the_form_not_the_editor(client):
     assert 'return hooks.openModelForm && hooks.openModelForm(isNew ? null : name);' in router
     modelling = client.get("/static/js/modelling.js").text
     assert "paths.modellingModel(m.name)" in modelling                  # card click -> guided form
-    # ...except a multi-fact model, which has no single fact table for the
-    # guided form to edit and so goes straight to yaml (see test_multifact.py)
-    assert "composite ? paths.modellingModelYaml(m.name)" in modelling
+    # ...except a model that reads facts — a multi-fact model has no single
+    # fact table for the form to edit, and a fact model that borrows would have
+    # its `facts:` list dropped by a form save, so both go straight to yaml
+    # (see test_multifact.py)
+    assert "composite || borrows ? paths.modellingModelYaml(m.name)" in modelling
     assert "go(paths.modellingNewModelYaml())" in modelling             # + MULTI-FACT MODEL
     modelform_src = client.get("/static/js/modelform.js").text
     assert '$("#mf-yaml").addEventListener("click", editAsYaml)' in modelform_src   # { } yaml editing reachable from the form itself

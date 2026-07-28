@@ -24,25 +24,52 @@ def _resolved(text: str, others: dict) -> semantic.Model:
 
 # ── parsing ────────────────────────────────────────────────────────
 
-def test_a_model_declares_either_a_source_or_facts_never_both():
-    with pytest.raises(ModelError, match="either 'source'.*or 'facts'"):
-        _parse("""
-name: bad
-source: {format: parquet, path: s3://b/x.parquet}
-facts:
-  - model: sales
-""")
-
-
 @pytest.mark.parametrize("key,block", [
     ("dimensions", "dimensions:\n  - name: region"),
     ("measures", "measures:\n  - name: n\n    expr: count()"),
     ("joins", "joins:\n  - name: j\n    source: {format: csv, path: s3://b/j.csv}\n    on: id"),
     ("dimension_imports", "dimension_imports:\n  - bundle: geography\n    anchor_dataset: regions\n    on: region"),
 ])
-def test_a_multi_fact_model_cannot_declare_its_own_fields(key, block):
-    with pytest.raises(ModelError, match=f"declares '{key}'"):
+def test_a_sourceless_multi_fact_model_cannot_declare_its_own_fields(key, block):
+    with pytest.raises(ModelError, match=f"declares '{key}' but no 'source'"):
         _parse(f"name: bad\nfacts:\n  - model: sales\n{block}\n")
+
+
+def test_a_model_may_declare_a_source_and_facts_together():
+    """The other shape: an ordinary fact model that also reads its neighbours.
+    It keeps everything a fact model declares."""
+    parsed = _parse("""
+name: hybrid
+source: {format: parquet, path: s3://b/x.parquet}
+dimensions:
+  - name: region
+measures:
+  - name: n
+    expr: count()
+facts:
+  - model: marketing
+""")
+    assert parsed.source is not None
+    assert not parsed.is_composite      # it has a fact table of its own
+    assert [f.model for f in parsed.facts] == ["marketing"]
+    assert list(parsed.dimensions) == ["region"]
+    assert list(parsed.measures) == ["n"]
+
+
+def test_a_model_cannot_list_itself_as_a_fact():
+    with pytest.raises(ModelError, match="lists itself under 'facts'"):
+        _parse("""
+name: loop
+source: {format: parquet, path: s3://b/x.parquet}
+dimensions:
+  - name: region
+measures:
+  - name: n
+    expr: count()
+facts:
+  - model: loop
+    alias: again
+""")
 
 
 def test_a_fact_entry_needs_a_model():
@@ -116,9 +143,18 @@ def test_an_unknown_fact_model_is_a_load_time_error(models):
         _resolved("name: bad\nfacts:\n  - model: nope\n", models)
 
 
-def test_a_fact_cannot_itself_be_a_multi_fact_model(models):
-    with pytest.raises(ModelError, match="which is itself"):
+def test_a_fact_cannot_itself_read_facts(models):
+    """Facts don't nest, whether the target is a standalone multi-fact model or
+    a fact model that borrows from its neighbours."""
+    with pytest.raises(ModelError, match="which reads facts of its own"):
         _resolved("name: bad\nfacts:\n  - model: commercial_overview\n", models)
+    borrower = _parse(
+        "name: borrower\nsource: {format: parquet, path: s3://b/x.parquet}\n"
+        "dimensions:\n  - name: region\nmeasures:\n  - name: n\n    expr: count()\n"
+        "facts:\n  - model: marketing\n"
+    )
+    with pytest.raises(ModelError, match="which reads facts of its own"):
+        _resolved("name: bad\nfacts:\n  - model: borrower\n", {**models, "borrower": borrower})
 
 
 def _fact_with(name: str, dim: str, dim_type: str) -> semantic.Model:
@@ -300,6 +336,102 @@ def test_adding_a_third_facts_measure_withdraws_the_dimension(models):
     with pytest.raises(engine.QueryError, match="not shared by the facts this query reads"):
         engine.run_query(overview, {
             **query, "measures": ["sales.revenue", "marketing.spend", "subs.mrr"]})
+
+
+# ── a fact model that also reads its neighbours ───────────────────
+
+@pytest.fixture
+def borrowing_sales(models):
+    """`sales` as it stands, plus marketing's measures — the same reading as
+    commercial_overview, expressed from inside a fact model instead of from a
+    standalone list."""
+    text = open("models/sales.yaml").read() + "\nfacts:\n  - model: marketing\n    alias: mkt\n"
+    model = semantic.parse_model_text(text)
+    from app import config
+    semantic.resolve_imports(model, semantic.load_dimension_bundles(config.DIMENSIONS_DIR))
+    return semantic.resolve_facts(model, models)
+
+
+def test_a_host_keeps_its_own_catalog_whole(borrowing_sales, models):
+    """Adding facts to a fact model must not narrow it: everything sales could
+    be grouped by before is still there, and its measures keep their names."""
+    assert set(models["sales"].dimensions) <= set(borrowing_sales.dimensions)
+    assert "category" in borrowing_sales.dimensions      # sales-only, still offered
+    assert "revenue" in borrowing_sales.measures         # unprefixed
+    assert "mkt.spend" in borrowing_sales.measures       # borrowed, prefixed
+    assert "spend" not in borrowing_sales.measures
+
+
+def test_a_host_only_query_is_unchanged_by_the_facts_it_lists(borrowing_sales, models):
+    query = {"dimensions": ["category"], "measures": ["revenue"], "limit": 100}
+    borrowed = engine.run_query(borrowing_sales, query)
+    plain = engine.run_query(models["sales"], query)
+    assert (borrowed["rows"], borrowed["columns"]) == (plain["rows"], plain["columns"])
+
+
+def test_a_host_only_query_still_takes_inline_measures(borrowing_sales):
+    """The merge can't scope an expression to one fact, but a query that
+    borrows nothing never reaches it."""
+    result = engine.run_query(borrowing_sales, {
+        "dimensions": ["category"], "measures": ["adhoc"], "limit": 10,
+        "inline_measures": [{"name": "adhoc", "expr": "count()"}]})
+    assert result["rows"] and result["rows"][0]["adhoc"] > 0
+
+
+def test_borrowing_a_measure_merges_without_inflating_the_hosts(borrowing_sales, models):
+    both = engine.run_query(borrowing_sales, {
+        "dimensions": ["channel"], "measures": ["revenue", "mkt.spend"], "limit": 100})
+    alone = engine.run_query(models["sales"], {
+        "dimensions": ["channel"], "measures": ["revenue"], "limit": 100})
+    merged = {row["channel"]: row for row in both["rows"]}
+    for row in alone["rows"]:
+        assert merged[row["channel"]]["revenue"] == pytest.approx(row["revenue"])
+    assert any(row["mkt.spend"] is not None for row in both["rows"])
+
+
+def test_borrowing_narrows_the_axis_to_what_both_facts_have(borrowing_sales):
+    """`category` is sales-only: fine on its own, refused once a marketing
+    measure is on the same query."""
+    engine.run_query(borrowing_sales, {
+        "dimensions": ["category"], "measures": ["revenue"], "limit": 10})
+    with pytest.raises(engine.QueryError, match="'category' is not shared by the facts"):
+        engine.run_query(borrowing_sales, {
+            "dimensions": ["category"], "measures": ["revenue", "mkt.spend"], "limit": 10})
+
+
+def test_a_borrowed_query_cannot_also_carry_an_inline_measure(borrowing_sales):
+    with pytest.raises(engine.QueryError, match="can't mix inline measures"):
+        engine.run_query(borrowing_sales, {
+            "dimensions": ["channel"], "measures": ["mkt.spend", "adhoc"],
+            "inline_measures": [{"name": "adhoc", "expr": "count()"}]})
+
+
+def test_the_host_is_not_reported_as_a_borrowed_fact(borrowing_sales):
+    public = borrowing_sales.to_public()
+    assert public["kind"] == "fact"          # it has a fact table of its own
+    assert public["path"] is not None
+    assert [f["alias"] for f in public["facts"]] == ["mkt"]
+
+
+def test_the_guided_form_declines_a_model_that_reads_facts(borrowing_sales):
+    """The form rebuilds the whole file on save and has no control for
+    `facts:`, so editing one through it would silently drop the list."""
+    with pytest.raises(ModelError, match="reads facts from other models"):
+        semantic.model_to_spec(borrowing_sales)
+
+
+def test_a_host_is_scannable_unlike_a_standalone_multi_fact_model(borrowing_sales, models):
+    assert "category" in engine.scan(borrowing_sales, {"category": None}).collect_schema()
+    with pytest.raises(engine.QueryError, match="no single source to scan"):
+        engine.scan(models["commercial_overview"])
+
+
+def test_columns_name_the_host_as_the_fact_for_its_own_measures(borrowing_sales):
+    result = engine.run_query(borrowing_sales, {
+        "dimensions": ["channel"], "measures": ["revenue", "mkt.spend"], "limit": 10})
+    by_name = {c["name"]: c for c in result["columns"]}
+    assert by_name["revenue"]["fact"] == "sales"
+    assert by_name["mkt.spend"]["fact"] == "mkt"
 
 
 def test_one_fact_alone_offers_everything_that_fact_offers(models):
