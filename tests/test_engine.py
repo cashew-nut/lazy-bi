@@ -477,6 +477,68 @@ def test_import_inner_join_drops_unmatched_anchor_rows(import_edge_cases):
     assert r["rows"][0]["total"] == 30  # only "A" (10) + "B" (20); unmatched "Z" is dropped
 
 
+# --- Regression: a "matching columns" (equality) import whose right_on key is
+# itself a declared dimension, under a *different* name than left_on (e.g. a
+# custom calendar bundle's own `date` column imported against a fact's
+# `event_date`). Polars' default join `coalesce` behavior merges differently-
+# named key columns into the left one and drops the right one entirely — which
+# silently deleted the calendar's own `date` dimension after the join, even
+# though it's declared and importable. An interval (`how: between`) import
+# never hit this, since it joins via join_where rather than left_on/right_on.
+
+@pytest.fixture(scope="module")
+def renamed_key_import(seeded):
+    client = s3.client()
+    buf = io.BytesIO()
+    pl.DataFrame({
+        "study": ["s1", "s1"],
+        "event_date": [date(2026, 1, 5), date(2026, 2, 10)],
+        "event_count": [3, 7],
+    }).write_parquet(buf)
+    client.put_object(Bucket=config.BUCKET, Key="test/renamed_key_fact.parquet", Body=buf.getvalue())
+
+    days = pl.date_range(date(2026, 1, 1), date(2026, 2, 28), interval="1d", eager=True).alias("date")
+    cal = io.BytesIO()
+    pl.DataFrame(days).with_columns(pl.col("date").dt.year().alias("year")).write_parquet(cal)
+    client.put_object(Bucket=config.BUCKET, Key="test/renamed_key_cal.parquet", Body=cal.getvalue())
+
+    bundle = semantic.parse_bundle_text(f"""
+name: renamed_key_cal
+datasets:
+  - name: days
+    source: {{format: parquet, path: s3://{config.BUCKET}/test/renamed_key_cal.parquet}}
+    dimensions:
+      - {{name: date, label: Date, type: time}}
+      - {{name: year, label: Year, type: numeric}}
+""")
+    model = semantic.parse_model_text(f"""
+name: renamed_key_fact
+source: {{format: parquet, path: s3://{config.BUCKET}/test/renamed_key_fact.parquet}}
+dimension_imports:
+  - {{bundle: renamed_key_cal, anchor_dataset: days, left_on: event_date, right_on: date, how: left}}
+dimensions:
+  - {{name: study, label: Study}}
+measures:
+  - {{name: n, expr: sum(event_count)}}
+""")
+    return semantic.resolve_imports(model, {"renamed_key_cal": bundle})
+
+
+def test_renamed_equality_import_key_stays_queryable(renamed_key_import):
+    assert "date" in engine.scan(renamed_key_import, {"date": None}).collect_schema()
+    r = engine.run_query(renamed_key_import, {
+        "dimensions": [{"name": "date", "grain": "1mo"}], "measures": ["n"],
+    })
+    assert {row["date"][:7]: row["n"] for row in r["rows"]} == {"2026-01": 3, "2026-02": 7}
+
+
+def test_renamed_equality_import_non_key_column_still_worked_before(renamed_key_import):
+    # sanity check: `year` was never the collision — it survived even before
+    # the fix, unlike `date` (the join's own right_on key)
+    r = engine.run_query(renamed_key_import, {"dimensions": ["year"], "measures": ["n"]})
+    assert {row["year"]: row["n"] for row in r["rows"]} == {2026: 10}
+
+
 # --- Framed measures: expr aggregates over an intermediary derived frame ---
 # Synthetic event log with hand-computable answers: per study, the "days to
 # reach 75% of that study's events" is the date of the ceil(0.75 * n)-th
