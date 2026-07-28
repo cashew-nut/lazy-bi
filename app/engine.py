@@ -151,9 +151,12 @@ def _scan_bundle(binding: ImportBinding) -> pl.LazyFrame:
             if edge is None:
                 continue
             left_on, right_on = (edge.right_on, edge.left_on) if reversed_edge else (edge.left_on, edge.right_on)
+            # coalesce=False: a differently-named right_on key (e.g. a bridge
+            # table's own id column) can itself be a declared Dimension of
+            # ds_name — polars' default coalescing silently drops it otherwise
             lf = lf.join(
                 _scan_source(bundle.datasets[ds_name].source),
-                left_on=left_on, right_on=right_on, how=edge.how,
+                left_on=left_on, right_on=right_on, how=edge.how, coalesce=False,
             )
             joined.add(ds_name)
             remaining.discard(ds_name)
@@ -318,9 +321,12 @@ def scan(model: Model, dimensions: Optional[dict] = None) -> pl.LazyFrame:
         )
     lf = _scan_source(model.source)
     for join in model.joins:
+        # coalesce=False: see the matching note in _scan_bundle — a right_on
+        # key named differently from left_on is still a column a model
+        # dimension can address by its own name, not just the join's key
         lf = lf.join(
             _scan_source(join.source),
-            left_on=join.left_on, right_on=join.right_on, how=join.how,
+            left_on=join.left_on, right_on=join.right_on, how=join.how, coalesce=False,
         )
     for binding in model.import_bindings:
         if binding.import_spec.is_interval:
@@ -329,10 +335,13 @@ def scan(model: Model, dimensions: Optional[dict] = None) -> pl.LazyFrame:
             elif set(dimensions) & set(binding.dimension_owners):
                 lf = _join_interval(lf, binding, _interval_grain(model, binding, dimensions))
             continue
+        # same coalesce=False reasoning: a "matching columns" import's
+        # right_on (e.g. a calendar's own `date`) is routinely a declared
+        # Dimension of the anchor dataset in its own right, not just a key
         lf = lf.join(
             _scan_bundle(binding),
             left_on=binding.import_spec.left_on, right_on=binding.import_spec.right_on,
-            how=binding.import_spec.how,
+            how=binding.import_spec.how, coalesce=False,
         )
     return lf
 
