@@ -736,13 +736,17 @@ Mixing an inline measure with a borrowed one is refused: an expression has to
 be scoped to one fact table.
 
 **In the app**: *+ CREATE MULTI-FACT MODEL* in the Modelling workspace's create
-chooser builds the standalone shape. It has no single source to pick, so it
-edits as YAML rather than through the guided form; the list marks it
-`multi-fact` and shows its facts. A fact model that lists facts is an ordinary
-model everywhere — it scans, introspects and reports as `fact` — except that it
-too edits as YAML, since the guided form has no control for `facts:` and would
-drop the list on save. Everywhere else both behave like any other model —
-Studio, dashboards, cross-filtering, Chat.
+chooser builds the standalone shape. It has no fact table of its own to pick a
+source for, so it edits as YAML rather than through the guided form; the list
+marks it `multi-fact` and shows its facts.
+
+Adding facts to a fact model is a control in the guided form — **Borrowed →
+Fact models**, alongside the common-dimension imports, since both are about
+what this model borrows from elsewhere. Pick a model to read and give its
+measures a prefix; there is nothing to relate, because facts are never joined.
+The form round-trips `facts:` like any other block, so a model that has one
+stays editable and an unrelated edit won't drop it. Everywhere else both shapes
+behave like any other model — Studio, dashboards, cross-filtering, Chat.
 
 ### Performance (13M-row fact table)
 

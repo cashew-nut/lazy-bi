@@ -197,6 +197,51 @@ def test_form_save_flow_creates_model_with_interval_import(client):
         assert client.delete("/api/models/interval_smoke").status_code == 204
 
 
+def test_form_save_flow_creates_a_model_that_reads_another_fact(client):
+    """The form's "Borrowed / Fact models" control: a fact model that also
+    reads a neighbour's measures, all the way through generate -> save ->
+    query, and back out through /spec so a later form save keeps the list."""
+    spec = {
+        "name": "borrow_smoke", "label": "Borrow Smoke", "description": "",
+        "source": {"path": "s3://cash-intel/sales/*.parquet", "format": "parquet"},
+        "joins": [], "dimension_imports": [],
+        "facts": [{"model": "marketing", "alias": "mkt"}],
+        "dimensions": [{"name": "channel", "column": "channel", "label": "Channel",
+                        "type": "categorical", "description": "", "spine": None, "geo": None}],
+        "measures": [{"name": "revenue", "expr": "sum(unit_price * quantity)", "label": "Revenue",
+                      "format": "currency", "description": ""}],
+    }
+    gen = client.post("/api/models/generate", json=spec).json()
+    assert gen["ok"] is True
+    assert "facts:" in gen["yaml"] and "alias: mkt" in gen["yaml"]
+    # the editor's feedback on a facts list, for a model that also has a source
+    assert [f["alias"] for f in gen["facts"]] == ["mkt"]
+    assert "channel" in gen["shared_dimensions"]
+
+    created = client.post("/api/models", json={"yaml": gen["yaml"]})
+    assert created.status_code == 201
+    try:
+        q = client.post("/api/query", json={
+            "model": "borrow_smoke", "dimensions": ["channel"],
+            "measures": ["revenue", "mkt.spend"], "filters": [], "limit": 20,
+        })
+        assert q.status_code == 200
+        rows = q.json()["rows"]
+        # the two tables name their channels differently, so the merge is a
+        # full outer join: each contributes rows, and a channel only one of
+        # them knows reads null on the other rather than a zero nobody measured
+        assert any(r["revenue"] for r in rows)
+        assert any(r["mkt.spend"] for r in rows)
+        assert all(r["revenue"] or r["mkt.spend"] for r in rows)
+        # ...and reopening it in the form keeps the facts list rather than
+        # dropping it on the next save
+        spec_back = client.get("/api/models/borrow_smoke/spec").json()["spec"]
+        assert spec_back["facts"] == [{"model": "marketing", "alias": "mkt"}]
+        assert "facts:" in client.post("/api/models/generate", json=spec_back).json()["yaml"]
+    finally:
+        assert client.delete("/api/models/borrow_smoke").status_code == 204
+
+
 def test_generate_reports_incomplete_interval_import(client):
     """A half-filled date-range relation must come back as a problem, not as a
     silently broken join."""
@@ -374,11 +419,10 @@ def test_new_model_opens_the_form_not_the_editor(client):
     assert 'return hooks.openModelForm && hooks.openModelForm(isNew ? null : name);' in router
     modelling = client.get("/static/js/modelling.js").text
     assert "paths.modellingModel(m.name)" in modelling                  # card click -> guided form
-    # ...except a model that reads facts — a multi-fact model has no single
-    # fact table for the form to edit, and a fact model that borrows would have
-    # its `facts:` list dropped by a form save, so both go straight to yaml
-    # (see test_multifact.py)
-    assert "composite || borrows ? paths.modellingModelYaml(m.name)" in modelling
+    # ...except a multi-fact model, which has no fact table of its own for the
+    # guided form to edit and so goes straight to yaml. A model that has both a
+    # source and facts opens in the form like any other (see test_multifact.py)
+    assert "composite ? paths.modellingModelYaml(m.name)" in modelling
     assert "go(paths.modellingNewModelYaml())" in modelling             # + MULTI-FACT MODEL
     modelform_src = client.get("/static/js/modelform.js").text
     assert '$("#mf-yaml").addEventListener("click", editAsYaml)' in modelform_src   # { } yaml editing reachable from the form itself

@@ -91,6 +91,14 @@ class ImportSpec(BaseModel):
     match: str = "overlap"    # `how: between` only — see semantic.MATCH_MODES
 
 
+class FactSpec(BaseModel):
+    """One other fact model read alongside this one. Nothing to relate: facts
+    are never joined, and which dimensions they share is decided by what both
+    models call things (see semantic.resolve_facts)."""
+    model: str
+    alias: str = ""
+
+
 class ModelSpec(BaseModel):
     """Structured form of a model — what the guided modelling form edits.
     POST /models/generate renders it to YAML; GET /models/{name}/spec is the
@@ -101,6 +109,7 @@ class ModelSpec(BaseModel):
     source: SourceSpec
     joins: list[JoinSpec] = []
     dimension_imports: list[ImportSpec] = []
+    facts: list[FactSpec] = []
     dimensions: list[DimensionSpec] = []
     measures: list[MeasureSpec] = []
 

@@ -207,9 +207,10 @@ function renderModelsList() {
   for (const m of models) {
     const st = lastDatasetStats[m.name] || { files: 0, bytes: 0 };
     // a multi-fact model has no source of its own: it reads no bucket objects,
-    // so it describes itself by its facts instead. Either shape goes straight
-    // to the yaml editor — the guided form edits one fact table and has no
-    // control for `facts:`, so a save through it would drop the list.
+    // so it describes itself by its facts instead, and goes straight to the
+    // yaml editor since the guided form edits a fact table it hasn't got. One
+    // that has both opens in the form like any other — the form round-trips
+    // `facts:` (its "Borrowed" section).
     const composite = m.kind === "composite";
     const borrows = m.facts.length > 0;
     const title = composite
@@ -226,7 +227,7 @@ function renderModelsList() {
       el("span", { class: "mk-meta" }, meta),
       ...(!m.locked && isAdmin() ? [modelDeleteBtn(m)] : []));
     row.addEventListener("click", () => navigate(
-      composite || borrows ? paths.modellingModelYaml(m.name) : paths.modellingModel(m.name)));
+      composite ? paths.modellingModelYaml(m.name) : paths.modellingModel(m.name)));
     box.append(row);
   }
 }

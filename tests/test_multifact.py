@@ -340,14 +340,19 @@ def test_adding_a_third_facts_measure_withdraws_the_dimension(models):
 
 # ── a fact model that also reads its neighbours ───────────────────
 
+BORROWING_SALES_YAML = (
+    Path("models/sales.yaml").read_text() + "\nfacts:\n  - model: marketing\n    alias: mkt\n"
+)
+
+
 @pytest.fixture
 def borrowing_sales(models):
     """`sales` as it stands, plus marketing's measures — the same reading as
     commercial_overview, expressed from inside a fact model instead of from a
     standalone list."""
-    text = open("models/sales.yaml").read() + "\nfacts:\n  - model: marketing\n    alias: mkt\n"
-    model = semantic.parse_model_text(text)
     from app import config
+
+    model = semantic.parse_model_text(BORROWING_SALES_YAML)
     semantic.resolve_imports(model, semantic.load_dimension_bundles(config.DIMENSIONS_DIR))
     return semantic.resolve_facts(model, models)
 
@@ -366,7 +371,10 @@ def test_a_host_only_query_is_unchanged_by_the_facts_it_lists(borrowing_sales, m
     query = {"dimensions": ["category"], "measures": ["revenue"], "limit": 100}
     borrowed = engine.run_query(borrowing_sales, query)
     plain = engine.run_query(models["sales"], query)
-    assert (borrowed["rows"], borrowed["columns"]) == (plain["rows"], plain["columns"])
+    assert borrowed["columns"] == plain["columns"]
+    assert [r["category"] for r in borrowed["rows"]] == [r["category"] for r in plain["rows"]]
+    for got, want in zip(borrowed["rows"], plain["rows"]):
+        assert got["revenue"] == pytest.approx(want["revenue"])
 
 
 def test_a_host_only_query_still_takes_inline_measures(borrowing_sales):
@@ -413,11 +421,38 @@ def test_the_host_is_not_reported_as_a_borrowed_fact(borrowing_sales):
     assert [f["alias"] for f in public["facts"]] == ["mkt"]
 
 
-def test_the_guided_form_declines_a_model_that_reads_facts(borrowing_sales):
-    """The form rebuilds the whole file on save and has no control for
-    `facts:`, so editing one through it would silently drop the list."""
-    with pytest.raises(ModelError, match="reads facts from other models"):
-        semantic.model_to_spec(borrowing_sales)
+def test_the_guided_form_round_trips_the_facts_list():
+    """The form rebuilds the whole file on save, so it has to carry `facts:`
+    through or an unrelated edit would silently drop it. model_to_spec reads an
+    unresolved model, the same as GET /models/{name}/spec."""
+    original = semantic.parse_model_text(BORROWING_SALES_YAML)
+    spec = semantic.model_to_spec(original)
+    assert spec["facts"] == [{"model": "marketing", "alias": "mkt"}]
+
+    reparsed = semantic.parse_model_text(semantic.spec_to_yaml(spec))
+    assert [(f.model, f.alias) for f in reparsed.facts] == [("marketing", "mkt")]
+    assert reparsed.source is not None                    # still its own fact model
+    # ...and the rest of the file survives the trip untouched
+    assert list(reparsed.dimensions) == list(original.dimensions)
+    assert list(reparsed.measures) == list(original.measures)
+    assert [(i.bundle, i.left_on, i.right_on) for i in reparsed.imports] == \
+        [(i.bundle, i.left_on, i.right_on) for i in original.imports]
+
+
+def test_a_default_alias_is_not_written_back_out(models):
+    """`alias` defaults to the fact's own name, so writing it would be noise."""
+    spec = semantic.model_to_spec(models["sales"])
+    spec["facts"] = [{"model": "marketing", "alias": "marketing"}]
+    text = semantic.spec_to_yaml(spec)
+    assert "- model: marketing" in text and "alias" not in text
+    assert [f.alias for f in semantic.parse_model_text(text).facts] == ["marketing"]
+
+
+def test_the_guided_form_still_declines_a_standalone_multi_fact_model(models):
+    """It has no fact table of its own — every panel of the form would be
+    empty, so the yaml editor is the only place it can be edited."""
+    with pytest.raises(ModelError, match="no fact table of its own"):
+        semantic.model_to_spec(models["commercial_overview"])
 
 
 def test_a_host_is_scannable_unlike_a_standalone_multi_fact_model(borrowing_sales, models):

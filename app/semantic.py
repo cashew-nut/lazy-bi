@@ -975,14 +975,15 @@ def _dimension_to_spec(d: Dimension) -> dict:
 def model_to_spec(model: Model) -> dict:
     """Form-facing dict for a parsed-but-unresolved Model (native dimensions
     only — imported dimensions live in the bundle, not this file)."""
-    # the form has no control for `facts:` and rebuilds the whole file on save,
-    # so editing one through it would silently drop the list
-    if model.facts:
+    # a model with no source has no fact table for the form to edit — its whole
+    # catalog is borrowed, so there would be nothing on any of its panels
+    if model.source is None:
         raise ModelError(
-            f"model '{model.name}' reads facts from other models — the guided form edits a "
-            f"single fact table; edit its 'facts' list in the yaml editor instead"
+            f"model '{model.name}' is a multi-fact model with no fact table of its own — the "
+            f"guided form edits one; edit its 'facts' list in the yaml editor instead"
         )
     return {
+        "facts": [{"model": f.model, "alias": f.alias} for f in model.facts],
         "name": model.name,
         "label": model.label,
         "description": model.description,
@@ -1106,6 +1107,17 @@ def spec_to_yaml(spec: dict) -> str:
         imports.append(entry)
     if imports:
         doc["dimension_imports"] = imports
+
+    # other fact models read alongside this one, never joined to it. An alias
+    # equal to the fact's own name is what the parser defaults to, so omit it.
+    facts = []
+    for f in spec.get("facts") or []:
+        entry = {"model": f["model"]}
+        if f.get("alias") and f["alias"] != f["model"]:
+            entry["alias"] = f["alias"]
+        facts.append(entry)
+    if facts:
+        doc["facts"] = facts
 
     doc["dimensions"] = _spec_dimension_entries(spec.get("dimensions") or [])
 
