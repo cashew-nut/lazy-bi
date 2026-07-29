@@ -126,43 +126,93 @@ function renderModelSelect() {
 }
 
 let dimFilter = "", measureFilter = "";
+// datasets the user has manually expanded, by folder label — survives the
+// full re-render every dim toggle/model change triggers, since the <details>
+// elements themselves are thrown away and rebuilt each time
+let openDimFolders = new Set();
 
 export function setDimFilter(text) { dimFilter = text.trim().toLowerCase(); renderDims(); }
 export function setMeasureFilter(text) { measureFilter = text.trim().toLowerCase(); renderMeasures(); }
 
 function resetSidebarFilters() {
-  dimFilter = ""; measureFilter = "";
+  dimFilter = ""; measureFilter = ""; openDimFolders = new Set();
   if ($("#dim-filter")) $("#dim-filter").value = "";
   if ($("#measure-filter")) $("#measure-filter").value = "";
 }
 
 const matchesFilter = (q, ...fields) => !q || fields.some((f) => f && f.toLowerCase().includes(q));
 
+// dims grouped by the dataset they're sourced from (the fact's own table, or
+// a common-dimension bundle pulled in via an import — see
+// semantic.dimension_sources), preserving declared order: native dims first,
+// then each import in the order the model lists it
+function groupDimsByDataset(dims) {
+  const groups = new Map();
+  for (const dim of dims) {
+    const key = dim.dataset || "";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(dim);
+  }
+  return groups;
+}
+
+function dimChip(dim) {
+  const active = state.dims.find((d) => d.name === dim.name);
+  const chip = el("div", { class: "chip" + (active ? " on" : "") },
+    el("span", { class: "tick" }, active ? "◈" : "◇"),
+    el("span", { class: "lbl" }, dim.label),
+    el("span", { class: "hint" }, dim.spine ? "spine" : dim.type === "time" ? "time" : ""));
+  if (active && dim.type === "time") {
+    const grainSel = el("select", { class: "grain", onchange: (e) => { active.grain = e.target.value; syncSortOptions(); scheduleRun(); } });
+    for (const [g, label] of Object.entries(GRAINS)) grainSel.append(el("option", { value: g }, label));
+    grainSel.value = active.grain || "1mo";
+    grainSel.addEventListener("click", (e) => e.stopPropagation());
+    chip.append(grainSel);
+  }
+  chip.addEventListener("click", () => {
+    if (active) state.dims = state.dims.filter((d) => d.name !== dim.name);
+    else state.dims.push(dim.type === "time" ? { name: dim.name, grain: "1mo" } : { name: dim.name });
+    renderDims(); syncSortOptions(); scheduleRun();
+  });
+  return chip;
+}
+
+// one dataset's dims as a folder, collapsed by default. forceOpen expands it
+// while a filter is narrowing the list to matches (so a hit isn't hidden
+// behind a collapsed folder); a manual expand toggles openDimFolders
+// directly rather than relying on the <details> "toggle" event, which can
+// also fire from the initial `open` attribute set below and would otherwise
+// wrongly "stick" a filter's forced-open folder open once the filter clears
+function dimFolder(dataset, dims, forceOpen) {
+  const body = el("div", { class: "tree-children chip-list" });
+  for (const dim of dims) body.append(dimChip(dim));
+  const summary = el("summary", {},
+    el("span", { class: "tree-caret" }, "▸"),
+    el("span", { class: "nm" }, dataset),
+    el("span", { class: "tree-count" }, String(dims.length)));
+  const attrs = { class: "tree-folder dim-folder" };
+  if (forceOpen || openDimFolders.has(dataset)) attrs.open = "";
+  const folder = el("details", attrs, summary, body);
+  summary.addEventListener("click", (e) => {
+    e.preventDefault();
+    folder.open = !folder.open;
+    if (folder.open) openDimFolders.add(dataset); else openDimFolders.delete(dataset);
+  });
+  return folder;
+}
+
 export function renderDims() {
   const box = $("#dim-list");
   box.innerHTML = "";
-  const dims = state.model.dimensions.filter((d) => matchesFilter(dimFilter, d.label, d.name));
-  if (!dims.length) { box.append(el("div", { class: "empty-note" }, "no matches")); return; }
-  for (const dim of dims) {
-    const active = state.dims.find((d) => d.name === dim.name);
-    const chip = el("div", { class: "chip" + (active ? " on" : "") },
-      el("span", { class: "tick" }, active ? "◈" : "◇"),
-      el("span", { class: "lbl" }, dim.label),
-      el("span", { class: "hint" }, dim.spine ? "spine" : dim.type === "time" ? "time" : ""));
-    if (active && dim.type === "time") {
-      const grainSel = el("select", { class: "grain", onchange: (e) => { active.grain = e.target.value; syncSortOptions(); scheduleRun(); } });
-      for (const [g, label] of Object.entries(GRAINS)) grainSel.append(el("option", { value: g }, label));
-      grainSel.value = active.grain || "1mo";
-      grainSel.addEventListener("click", (e) => e.stopPropagation());
-      chip.append(grainSel);
-    }
-    chip.addEventListener("click", () => {
-      if (active) state.dims = state.dims.filter((d) => d.name !== dim.name);
-      else state.dims.push(dim.type === "time" ? { name: dim.name, grain: "1mo" } : { name: dim.name });
-      renderDims(); syncSortOptions(); scheduleRun();
-    });
-    box.append(chip);
+  const groups = groupDimsByDataset(state.model.dimensions);
+  let shown = 0;
+  for (const [dataset, dims] of groups) {
+    const matched = dims.filter((d) => matchesFilter(dimFilter, d.label, d.name));
+    if (!matched.length) continue;
+    shown += matched.length;
+    box.append(dimFolder(dataset, matched, !!dimFilter));
   }
+  if (!shown) box.append(el("div", { class: "empty-note" }, "no matches"));
 }
 
 export function renderMeasures() {

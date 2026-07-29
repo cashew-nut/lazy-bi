@@ -370,6 +370,7 @@ class Model:
             raise ModelError(f"unknown measure '{name}' in model '{self.name}'")
 
     def to_public(self) -> dict:
+        dim_sources = dimension_sources(self)
         return {
             "name": self.name,
             "label": self.label,
@@ -393,7 +394,7 @@ class Model:
             "dimensions": [
                 {"name": d.name, "label": d.label, "type": d.type,
                  "description": d.description, "spine": bool(d.spine), "geo": bool(d.geo),
-                 "synonyms": d.synonyms}
+                 "synonyms": d.synonyms, "dataset": dim_sources.get(d.name, self.label)}
                 for d in self.dimensions.values()
             ],
             "measures": [
@@ -1307,6 +1308,22 @@ def _bfs_reachable(bundle: DimensionBundle, start: str, allowed: set[str]) -> li
             order.append(neighbor)
             frontier.append(neighbor)
     return order
+
+
+def dimension_sources(model: Model) -> dict[str, str]:
+    """Best-effort label for the dataset each of `model`'s dimensions is drawn
+    from: the fact's own table (the model's own label), or the common-
+    dimension bundle that supplied it via an import — what the Studio groups
+    the dimension list into folders by (see Model.to_public). A composite
+    model borrows its (shared) dimensions from its first fact — see
+    shared_dimensions — so it reads that fact's own sourcing rather than
+    having any of its own (dimension_imports is forbidden on it)."""
+    target = model.fact_bindings[0].model if model.is_composite and model.fact_bindings else model
+    owners: dict[str, str] = {}
+    for binding in target.import_bindings:
+        for dim_name in binding.dimension_owners:
+            owners[dim_name] = binding.bundle.label
+    return {name: owners.get(name, target.label) for name in model.dimensions}
 
 
 def resolve_imports(model: Model, bundles: dict[str, DimensionBundle]) -> Model:
