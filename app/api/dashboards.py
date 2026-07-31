@@ -16,6 +16,10 @@ class DashboardIn(BaseModel):
     items: list[dict] = []
     views: list[dict] = []   # named filter sets: [{"name", "filters": [...]}]
     active_view: int = 0
+    # specs/016-instant-cross-filter/ — opt in to client-side re-aggregation.
+    # Default false, so every dashboard that existed before the feature (and
+    # every caller that doesn't send the field) is untouched.
+    instant: bool = False
 
 
 class PublishIn(BaseModel):
@@ -97,13 +101,14 @@ def get_dashboard(dash_id: int):
 @router.post("/dashboards", status_code=201, dependencies=[Depends(require_role("author"))])
 def create_dashboard(d: DashboardIn):
     _check_param_conflicts(d.items)
-    return registry.store.create_dashboard(d.name, d.items, d.views, d.active_view)
+    return registry.store.create_dashboard(d.name, d.items, d.views, d.active_view, d.instant)
 
 
 @router.put("/dashboards/{dash_id}", dependencies=[Depends(require_role("author"))])
 def update_dashboard(dash_id: int, d: DashboardIn):
     _check_param_conflicts(d.items)
-    updated = registry.store.update_dashboard(dash_id, d.name, d.items, d.views, d.active_view)
+    updated = registry.store.update_dashboard(
+        dash_id, d.name, d.items, d.views, d.active_view, d.instant)
     if not updated:
         raise HTTPException(status_code=404, detail="dashboard not found")
     return updated

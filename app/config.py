@@ -51,6 +51,17 @@ SANDBOX_ROW_LIMIT = 200
 # Hard cap on rows returned to the browser
 MAX_ROWS = 10_000
 
+# Instant cross-filter extracts (specs/016-instant-cross-filter/) — the
+# per-tile size cap that decides whether a dashboard tile gets the
+# round-trip-free treatment or silently stays on today's live query path.
+# An extract is a client-side *cache*, not a render payload, so it is allowed
+# past MAX_ROWS above; both limits are checked against the real response
+# (FR-009) and either one tripping sends the tile back to live mode.
+# research.md R5's proposed starting defaults, benchmarked against the 13M-row
+# NYC taxi dataset before shipping (SC-002).
+EXTRACT_MAX_ROWS = int(os.environ.get("CI_EXTRACT_MAX_ROWS", 150_000))
+EXTRACT_MAX_BYTES = int(os.environ.get("CI_EXTRACT_MAX_BYTES", 25 * 1024 * 1024))
+
 # Sessions — see specs/011-session-auth-rbac/. Idle/absolute lifetimes in
 # days; the cookie's Secure flag is off by default because the demo runs on
 # plain HTTP (set CI_COOKIE_SECURE=1 behind TLS).

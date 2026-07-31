@@ -120,6 +120,33 @@ not committed directly to `main`.
   by the browser. No bundler, no framework, no build step — this is a
   deliberate simplicity choice, not an oversight. New chart types follow the
   existing renderer + shared frame/pivot/dispatch pattern.
+
+  **Amended by the instant-cross-filter feature** (see
+  `specs/016-instant-cross-filter/`) — the project's first external frontend
+  dependency: `@finos/perspective` (Apache-2.0), used strictly as a headless
+  columnar aggregation engine so a dashboard can re-slice a fetched extract
+  without a round trip. The exception is deliberately narrow, and each of
+  these bounds is what the amendment is granted on:
+
+  - **No rendering moves.** `Table`/`View` only; `perspective-viewer` and
+    every other Perspective UI component stay out. The hand-rolled SVG
+    renderers remain the entire rendering layer and took no code change to
+    accept locally re-aggregated data.
+  - **No build step.** Perspective ships importable ES modules plus a `.wasm`
+    binary, loaded natively by the browser exactly like every other module in
+    `app/static/js/`. Nothing about "no bundler, no build step" changes.
+  - **Vendored, not CDN.** The assets are committed under
+    `app/static/vendor/`, preserving the single-image, no-external-call-at-
+    runtime packaging posture every other feature has kept. This deliberately
+    spends only the one new precedent the spec asked for, not two.
+  - **Lazy-loaded.** A dynamic `import()` gated on a dashboard's `instant`
+    flag; a dashboard without it — the default — never fetches a byte of it,
+    and no other view can (`tests/test_instant_dashboard.py` pins this).
+
+  A future frontend dependency does not inherit this exception. Adding one,
+  moving any rendering responsibility off the hand-rolled renderers, or
+  loading any asset from a CDN must re-open this constraint explicitly, the
+  same way this amendment does.
 - **Packaging**: a single Docker image (`python:3.12-slim`), state kept
   outside the image (SQLite volume, host-mounted `models/`), one uvicorn
   worker by design (in-process emulator + SQLite both want a single writer).
@@ -149,4 +176,4 @@ consistent with these principles; where a feature genuinely needs to violate
 one (e.g. Principle II for a use case that cannot be pushed down), say so
 explicitly in that feature's spec rather than quietly drifting.
 
-**Version**: 1.3.0 | **Ratified**: 2026-07-10 | **Last Amended**: 2026-07-17
+**Version**: 1.4.0 | **Ratified**: 2026-07-10 | **Last Amended**: 2026-07-31

@@ -19,6 +19,14 @@ dimensions:
 - name: vendor
   column: VendorID
   label: Vendor
+- name: pickup_zone
+  column: PULocationID
+  label: Pickup Zone
+  description: TLC taxi zone (265 of them) the trip started in.
+- name: dropoff_zone
+  column: DOLocationID
+  label: Dropoff Zone
+  description: TLC taxi zone the trip ended in.
 - name: active_trips
   label: Active At
   type: time

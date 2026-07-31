@@ -207,6 +207,15 @@ async function init() {
       state.tiles.forEach((rec) => rec.visual && rec.run());
     });
 
+    // instant mode: persisted per dashboard, and a full reload either way —
+    // turning it on has to fetch extracts, turning it off has to drop them
+    $("#dash-instant").addEventListener("change", async (e) => {
+      if (!state.dash) return;
+      state.dash.instant = e.target.checked;
+      await saveDash();
+      renderDashboard();
+    });
+
     // focus mode
     $("#focus-close").addEventListener("click", closeFocus);
     $("#focus-modal").addEventListener("click", (e) => { if (e.target.id === "focus-modal") closeFocus(); });

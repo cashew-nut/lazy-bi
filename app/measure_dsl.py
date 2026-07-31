@@ -555,3 +555,154 @@ def compile_measure(
     )
     expr = compiler.build(tree.body, depth=0)
     return expr.alias(alias)
+
+
+# ---------------------------------------------------------------------------
+# Roll-up decomposition (specs/016-instant-cross-filter/)
+#
+# Instant mode re-aggregates an *already aggregated* extract in the browser,
+# which is only arithmetically sound for measures that decompose. Summing a
+# column of per-bucket sums gives the right total; averaging a column of
+# per-bucket averages does not. So before an extract is ever served, a
+# measure is broken into (a) leaf aggregate *components*, each of which rolls
+# up correctly on its own, and (b) an aggregate-free *formula* recomputed
+# over those rolled-up components afterwards.
+#
+#   sum(revenue)              -> [sum(revenue)]                    ref 0
+#   count()                   -> [count()]                         ref 0
+#   mean(fare)                -> [sum(fare), count(fare)]          ref 0 / ref 1
+#   sum(cost) / sum(packages) -> [sum(cost), sum(packages)]        ref 0 / ref 1
+#
+# Applying the formula *after* the roll-up is what makes ratios and means
+# exact rather than approximate: the components are totalled first, then
+# divided once, exactly as the engine would have done over raw rows.
+#
+# A measure with no such decomposition (median/std/var/first/last/
+# count_distinct, a window measure, an intermediary-frame measure) returns
+# None, and the tile falls back to today's live query path per FR-009/FR-010
+# rather than rendering a plausible-looking wrong number.
+#
+# Like everything else in this module, this is parse-only — never eval/exec.
+# ---------------------------------------------------------------------------
+
+# aggregate -> the aggregation that combines its per-bucket results into the
+# same value the engine would have computed over the union of those buckets.
+# sum/count are additive; min/max are idempotent under union. Deliberately
+# absent: mean (handled by _decompose below as sum/count), and median/std/
+# var/first/last/count_distinct, which have no such combining function.
+_ROLLUP_AGGS = {"sum": "sum", "count": "sum", "min": "min", "max": "max"}
+
+_FORMULA_BINOPS = {ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/"}
+
+
+class _Decomposer:
+    """Walks a measure's AST once, collecting leaf aggregate components and
+    building the formula tree that recombines them. Raises _NotDecomposable
+    the moment it meets a node that can't be re-aggregated."""
+
+    class _NotDecomposable(Exception):
+        pass
+
+    def __init__(self) -> None:
+        self.components: list[dict] = []
+
+    def _component(self, agg: str, text: str) -> dict:
+        """Register a component (de-duplicated: two references to the same
+        aggregate share one extract column) and return a {"ref": i} node."""
+        for i, existing in enumerate(self.components):
+            if existing["agg"] == agg and existing["expr"] == text:
+                return {"ref": i}
+        self.components.append({"agg": agg, "expr": text})
+        return {"ref": len(self.components) - 1}
+
+    def walk(self, node: ast.AST) -> dict:
+        if isinstance(node, ast.Constant):
+            if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
+                raise self._NotDecomposable()
+            return {"const": node.value}
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+            inner = self.walk(node.operand)
+            return inner if isinstance(node.op, ast.UAdd) else {"op": "-", "l": {"const": 0}, "r": inner}
+        if isinstance(node, ast.BinOp):
+            op = _FORMULA_BINOPS.get(type(node.op))
+            if op is None:
+                raise self._NotDecomposable()
+            return {"op": op, "l": self.walk(node.left), "r": self.walk(node.right)}
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            return self._call(node)
+        # bare identifiers (sibling measure references), comparisons, and
+        # everything else only make sense inside an aggregate, never as the
+        # thing being rolled up
+        raise self._NotDecomposable()
+
+    def _call(self, node: ast.Call) -> dict:
+        name = node.func.id
+        if node.keywords:
+            raise self._NotDecomposable()
+        if name == "mean":
+            # the whole point of decomposition: a mean is a ratio of two
+            # additive components, so it survives a roll-up exactly
+            if len(node.args) != 1:
+                raise self._NotDecomposable()
+            arg = ast.unparse(node.args[0])
+            return {
+                "op": "/",
+                "l": self._component("sum", f"sum({arg})"),
+                "r": self._component("sum", f"count({arg})"),
+            }
+        agg = _ROLLUP_AGGS.get(name)
+        if agg is None:
+            raise self._NotDecomposable()
+        if name == "count" and len(node.args) > 1:
+            raise self._NotDecomposable()
+        if name != "count" and len(node.args) != 1:
+            raise self._NotDecomposable()
+        # any aggregate nested inside another is a shape this can't reason
+        # about (e.g. sum(mean(x)) is not valid DSL anyway, but sum(x) inside
+        # a min() would silently change meaning under a roll-up)
+        for inner in ast.walk(node):
+            if inner is node:
+                continue
+            if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name) and (
+                inner.func.id in _ROLLUP_AGGS or inner.func.id in ("mean", "median", "std", "var",
+                                                                   "first", "last", "count_distinct")
+            ):
+                raise self._NotDecomposable()
+        return self._component(agg, ast.unparse(node))
+
+
+def rollup_plan(text: str) -> Optional[dict]:
+    """Decompose a measure expression for client-side re-aggregation.
+
+    Returns {"components": [{"agg", "expr"}, ...], "formula": <tree>} where
+    the formula is a JSON-safe tree of {"ref": i} / {"const": n} /
+    {"op": "+|-|*|/", "l", "r"} nodes, or None when the measure cannot be
+    re-aggregated from its own already-aggregated output.
+
+    Components are DSL text, re-compiled by the engine through the ordinary
+    inline-measure path — so they carry no more language power than the
+    measure they came from, and are re-validated by compile_measure() like
+    any other expression. Parse-only; never evaluates `text`.
+    """
+    if len(text) > MAX_MEASURE_LEN:
+        return None
+    try:
+        tree = ast.parse(text, mode="eval")
+    except SyntaxError:
+        return None
+    if _is_window_tree(tree):
+        return None    # running totals/lags read neighbouring rows, not just their own
+    if any(_is_param_call(n) for n in ast.walk(tree)):
+        # param() outside an aggregate would need its resolved value on the
+        # client; inside one it is already baked into the component's text,
+        # but distinguishing the two isn't worth it — a parameter change
+        # forces a re-fetch (FR-007) either way.
+        return None
+    decomposer = _Decomposer()
+    try:
+        formula = decomposer.walk(tree.body)
+    except _Decomposer._NotDecomposable:
+        return None
+    if not decomposer.components:
+        return None
+    return {"components": decomposer.components, "formula": formula}
