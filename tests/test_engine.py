@@ -407,6 +407,22 @@ def test_spine_dimension_has_no_stored_values(models):
         engine.dimension_values(models["subscriptions"], "active_at")
 
 
+def test_dimension_values_column_missing_from_source_is_a_query_error(models):
+    """A dimension's declared column can drift from the real file underneath
+    it (e.g. the source path got repointed at a differently-shaped extract).
+    That used to surface as a raw, uncaught polars.exceptions.ColumnNotFoundError
+    — a 500 with a Python traceback dumped to the server console instead of the
+    same clean QueryError every other bad-column path (_as_date, _filter_expr)
+    already raises."""
+    import dataclasses
+
+    model = models["sales"]
+    bad_dim = dataclasses.replace(model.dimension("channel"), column="does_not_exist")
+    broken = dataclasses.replace(model, dimensions={**model.dimensions, "channel": bad_dim})
+    with pytest.raises(engine.QueryError, match="not found in source"):
+        engine.dimension_values(broken, "channel")
+
+
 # --- Dimension bundle imports (real `geography` bundle -> `sales`) ---------
 
 def test_imported_dimension_queryable_like_native(models):

@@ -34,7 +34,12 @@ export function pivotResult(ctx) {
     // color follows the entity: slot = position in the dimension's full distinct
     // value list (stable under filters) when it fits the palette
     const fullValues = fetchDimValues(ctx.model.name, seriesCol.name, ctx.rerender);
-    if (fullValues && fullValues.length <= MAX_SERIES) {
+    // an empty list is indistinguishable here from "the fetch failed" (see
+    // fetchDimValues' catch in common.js) as much as "a genuinely empty
+    // dimension" — treat it as unresolved and fall through to the ranked
+    // top-N+Other coloring below instead of flattening every series to
+    // PALETTE[-1] || OTHER_COLOR (i.e. every series rendering in grey)
+    if (fullValues && fullValues.length > 0 && fullValues.length <= MAX_SERIES) {
       for (const s of series) s.color = PALETTE[fullValues.map(String).indexOf(s.key)] || OTHER_COLOR;
       series.sort((a, b) => b.total - a.total);
     } else {

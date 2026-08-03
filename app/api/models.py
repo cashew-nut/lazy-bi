@@ -500,3 +500,5 @@ def get_dimension_values(name: str, dimension: str):
         return engine.dimension_values(get_model(name), dimension)
     except (semantic.ModelError, engine.QueryError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # polars errors from a stale/misrouted source surface as 400s
+        raise HTTPException(status_code=400, detail=f"dimension values failed: {exc}")
