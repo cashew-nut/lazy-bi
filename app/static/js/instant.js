@@ -19,6 +19,15 @@ const VENDOR = "/static/vendor/perspective";
 // endpoint plans in neutral terms (app/extract.py).
 const AGGREGATES = { sum: "sum", min: "min", max: "max", mean: "avg" };
 
+// the platform's filter ops (filters.js FILTER_OPS) in Perspective's spelling.
+// `contains` is absent on purpose and never reaches here: the engine runs it
+// as a case-insensitive regex, which no client-side substring match matches,
+// so app/extract.py keeps those filters pushed down.
+const OPS = {
+  eq: "==", ne: "!=", gt: ">", gte: ">=", lt: "<", lte: "<=",
+  in: "in", not_in: "not in",
+};
+
 /** A change the cached extract genuinely cannot answer — a finer grain than
  *  it was fetched at, or a filter on a dimension it doesn't carry. The caller
  *  answers this one interaction with a real query (FR-007); it is not a
@@ -57,6 +66,9 @@ class Extract {
     this.table = table;
     this.meta = meta;
     this.dims = new Map(meta.dimensions.map((d) => [d.name, d]));
+    // dashboard filters whose *value* this extract can change locally; every
+    // other filter was baked in when it was fetched
+    this.localFilters = new Set(meta.local_filters || []);
     // every component column the measures need, deduped — two measures
     // sharing an aggregate share one column — plus the geo coordinate
     // columns, which ride along as ordinary averaged passthroughs
@@ -71,6 +83,23 @@ class Extract {
    *  (that stays today's silent no-op); a field the model has but the extract
    *  doesn't means this interaction needs a real query. */
   canFilter(field) { return this.dims.has(field); }
+
+  /** One filter as a Perspective term. Values are coerced to the extract
+   *  column's own type first, the way engine._coerce does for the live path —
+   *  a picklist hands back the string "3" for a numeric dimension, and
+   *  Perspective would not match that against the number 3. */
+  term(f) {
+    const dim = this.dims.get(f.field);
+    if (!dim) throw new NeedsRefetch(`extract has no dimension '${f.field}'`);
+    const op = OPS[f.op || "eq"];
+    if (!op) throw new NeedsRefetch(`filter op '${f.op}' can't be applied locally`);
+    const cast = (v) => (dim.value_type === "number" ? Number(v)
+      : dim.value_type === "boolean" ? (v === true || v === "true" || v === 1)
+        : String(v));
+    return f.op === "in" || f.op === "not_in"
+      ? [f.field, op, (f.values || []).map(cast)]
+      : [f.field, op, cast(f.value)];
+  }
 
   /** The extract column holding `name` at `grain`: the dimension itself when
    *  the grain is unchanged, a precomputed coarser bucket when the session
@@ -91,7 +120,8 @@ class Extract {
   /** Re-aggregate the extract down to one tile's own shape.
    *
    *  `dims`    the tile's displayed dimensions, [{name, grain}]
-   *  `filters` cross-filter equality terms, [{field, value}]
+   *  `filters` terms to apply locally — the ephemeral cross-filter plus any
+   *            hoisted dashboard filter, [{field, op, value|values}]
    *  `sort`    the tile's saved sort, {by, desc} or null
    *  `limit`   the tile's saved row limit
    *
@@ -101,10 +131,7 @@ class Extract {
   async slice({ dims = [], filters = [], sort = null, limit = 1000 } = {}) {
     const started = performance.now();
     const groupBy = dims.map((d) => this.column(d.name, d.grain));
-    for (const f of filters) {
-      if (!this.canFilter(f.field)) throw new NeedsRefetch(`extract has no dimension '${f.field}'`);
-    }
-    const filter = filters.map((f) => [f.field, "==", f.value]);
+    const filter = filters.map((f) => this.term(f));
 
     // Perspective returns a grand-total row (an empty row path) ahead of the
     // groups, which is exactly what a dimensionless stat tile wants — and the

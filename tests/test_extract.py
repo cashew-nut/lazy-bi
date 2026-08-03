@@ -130,6 +130,135 @@ def test_extract_carries_other_tiles_dimensions(client):
     assert names["channel"]["display"] is False   # carried for filtering only
 
 
+def test_time_dimensions_are_never_unioned_in(client):
+    """No renderer emits a cross-filter from a time mark (charts/bar.js and
+    friends guard on type !== "time"), so another tile's dates can never be
+    the value that arrives — and carrying them, ungrained, is the single most
+    expensive thing an extract could do."""
+    lean = client.post("/api/query/extract",
+                       json={**SALES, "cross_dimensions": ["channel", "category"]})
+    fat = client.post("/api/query/extract",
+                      json={**SALES, "cross_dimensions": ["channel", "category", "order_date"]})
+    assert "order_date" not in _frame(fat).columns
+    assert _meta(lean)["row_count"] == _meta(fat)["row_count"]
+
+
+def test_a_tiles_own_time_dimension_is_still_carried(client):
+    """The exclusion above is about *other* tiles' dates. A tile groups by its
+    own, so those stay — with their coarser buckets intact."""
+    res = client.post("/api/query/extract", json={
+        "model": "sales", "dimensions": [{"name": "order_date", "grain": "1mo"}],
+        "measures": ["revenue"], "cross_dimensions": ["channel"]})
+    dims = {d["name"]: d for d in _meta(res)["dimensions"]}
+    assert dims["order_date"]["display"] is True
+    assert set(dims["order_date"]["coarser"]) == {"1q", "1y"}
+
+
+# ── hoisting the dashboard's own filters ────────────────────────────────
+
+def test_an_interactive_filter_is_carried_not_pushed_down(client):
+    """The point of hoisting: the extract holds every value of the filtered
+    dimension, so changing the filter is a re-slice rather than a re-fetch."""
+    body = {"model": "sales", "dimensions": ["channel"], "measures": ["revenue"],
+            "filters": [{"field": "region", "op": "in", "values": ["Night City"]}],
+            "interactive_filters": ["region"]}
+    res = client.post("/api/query/extract", json=body)
+    meta, df = _meta(res), _frame(res)
+    assert meta["local_filters"] == ["region"]
+    assert "region" in df.columns
+    assert len(set(df["region"])) > 1, "the filter should not have been applied server-side"
+
+
+def test_a_filter_field_with_no_value_yet_is_still_carried(client):
+    """The state a dashboard sits in before anyone touches its filters. If the
+    column only appeared once a value existed, the *first* change would cost a
+    re-fetch and only the second would be instant."""
+    res = client.post("/api/query/extract", json={
+        "model": "sales", "dimensions": ["channel"], "measures": ["revenue"],
+        "filters": [], "interactive_filters": ["region"]})
+    assert _meta(res)["local_filters"] == ["region"]
+    assert "region" in _frame(res).columns
+
+
+def test_a_filter_left_out_of_interactive_stays_pushed_down(client):
+    """A visual's own saved filter never changes, so baking it in is strictly
+    better — smaller extract, same answer."""
+    body = {"model": "sales", "dimensions": ["channel"], "measures": ["revenue"],
+            "filters": [{"field": "region", "op": "in", "values": ["Night City"]}]}
+    res = client.post("/api/query/extract", json=body)
+    assert _meta(res)["local_filters"] == []
+    assert "region" not in _frame(res).columns
+
+
+def test_time_filters_are_never_hoisted(client):
+    """The trap: the engine filters the *raw* date column, while an extract
+    holds it truncated to the tile's grain — so `>= 2024-06-15` would keep all
+    of June locally instead of half of it."""
+    body = {"model": "sales", "dimensions": ["channel"], "measures": ["revenue"],
+            "filters": [{"field": "order_date", "op": "gte", "value": "2024-06-15"}],
+            "interactive_filters": ["order_date"]}
+    assert _meta(client.post("/api/query/extract", json=body))["local_filters"] == []
+
+
+def test_contains_filters_are_never_hoisted(client):
+    """The engine runs `contains` as a case-insensitive regex over the column
+    cast to string, which no client-side substring match reproduces."""
+    body = {"model": "sales", "dimensions": ["channel"], "measures": ["revenue"],
+            "filters": [{"field": "region", "op": "contains", "value": "night"}],
+            "interactive_filters": ["region"]}
+    assert _meta(client.post("/api/query/extract", json=body))["local_filters"] == []
+
+
+def test_hoisted_filter_applied_locally_equals_the_live_query(client):
+    """The correctness property for hoisting, the same one the roll-up test
+    makes for measures: filtering the extract has to reproduce /query exactly."""
+    flt = [{"field": "region", "op": "in", "values": ["Night City", "Pacifica"]}]
+    live = client.post("/api/query", json={
+        "model": "sales", "dimensions": ["channel"], "measures": ["revenue"], "filters": flt}).json()
+    res = client.post("/api/query/extract", json={
+        "model": "sales", "dimensions": ["channel"], "measures": ["revenue"],
+        "filters": flt, "interactive_filters": ["region"]})
+    meta, df = _meta(res), _frame(res)
+    aggs = {c["col"]: c["agg"] for m in meta["measures"] for c in m["components"]}
+    rolled = (df.filter(pl.col("region").is_in(["Night City", "Pacifica"]))
+                .group_by("channel")
+                .agg([getattr(pl.col(col), agg)() for col, agg in aggs.items()]))
+    got = {r["channel"]: _evaluate(meta["measures"][0]["formula"],
+                                   [r[c["col"]] for c in meta["measures"][0]["components"]])
+           for r in rolled.to_dicts()}
+    assert got
+    for row in live["rows"]:
+        assert got[row["channel"]] == pytest.approx(row["revenue"], rel=1e-9)
+
+
+def test_hoisting_is_given_up_before_the_tile_is(client, monkeypatch):
+    """Hoisting multiplies an extract by however selective those filters were,
+    which can blow a cap the tile fitted under. That costs the hoisting, not
+    the whole feature — the retry pushes the filters back down and the tile
+    stays instant."""
+    body = {"model": "sales", "dimensions": ["channel"], "measures": ["revenue"],
+            "filters": [{"field": "region", "op": "in", "values": ["Night City"]}],
+            "interactive_filters": ["region"]}
+    hoisted = _meta(client.post("/api/query/extract", json=body))
+    assert hoisted["local_filters"] == ["region"]
+
+    # a cap that the hoisted extract misses but the pushed-down one clears
+    monkeypatch.setattr(config, "EXTRACT_MAX_ROWS", hoisted["row_count"] - 1)
+    res = client.post("/api/query/extract", json=body)
+    assert res.headers["content-type"] == "application/vnd.apache.arrow.stream", \
+        "the tile should have kept instant mode by giving up the hoisting"
+    assert _meta(res)["local_filters"] == []
+    assert "region" not in _frame(res).columns
+
+
+def test_a_tile_that_cannot_fit_either_way_still_falls_back(client, monkeypatch):
+    monkeypatch.setattr(config, "EXTRACT_MAX_ROWS", 1)
+    body = {"model": "sales", "dimensions": ["channel"], "measures": ["revenue"],
+            "filters": [{"field": "region", "op": "in", "values": ["Night City"]}],
+            "interactive_filters": ["region"]}
+    assert client.post("/api/query/extract", json=body).json()["fallback"]["cap"] == "rows"
+
+
 def test_extract_rolled_back_up_equals_the_live_query(client):
     """The core correctness property. Re-aggregating the wider extract down to
     the tile's own dimension must reproduce /query's numbers exactly — this is

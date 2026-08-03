@@ -33,11 +33,22 @@ class QueryRequest(BaseModel):
 
 
 class ExtractRequest(QueryRequest):
-    """A /query request, plus the dimensions other tiles on the same dashboard
-    can cross-filter by — the only thing an extract needs to know that an
-    ordinary query doesn't (FR-006). Everything else is the identical shape,
-    resolved through the identical model/auth/engine path."""
-    cross_dimensions: list[str] = []
+    """A /query request, plus the two things an extract needs to know that an
+    ordinary query doesn't. Everything else is the identical shape, resolved
+    through the identical model/auth/engine path.
+
+    `cross_dimensions` are the dimensions other tiles on the same dashboard
+    display, each at the grain that tile shows it at, so a cross-filter from
+    there can be applied locally (FR-006). Plain strings are accepted too, for
+    a dimension with no grain.
+
+    `interactive_filters` names the filter fields whose *values* may change
+    without the tile being rebuilt — the dashboard view's filters. Those are
+    kept out of the pushdown and carried as columns instead, so changing one
+    costs no round trip either.
+    """
+    cross_dimensions: list[str | dict] = []
+    interactive_filters: list[str] = []
 
 
 @router.post("/query")
@@ -67,8 +78,9 @@ def run_extract(req: ExtractRequest):
     model = get_model(req.model)  # outside the try: unknown model stays a 404
     body = req.model_dump()
     cross = body.pop("cross_dimensions", [])
+    interactive = body.pop("interactive_filters", [])
     try:
-        payload, meta = extract.build(model, body, cross)
+        payload, meta = extract.build(model, body, cross, interactive)
     except extract.NotInstantable as exc:
         return {"fallback": {"reason": str(exc), "cap": None}}
     except extract.CapExceeded as exc:

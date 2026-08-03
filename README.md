@@ -901,7 +901,7 @@ route-by-route matrix lives in
 | `POST/PUT/DELETE /api/models/{m}/measures[/{name}]` | create/update/delete a model measure (**author** role; `frame:` payloads **admin** — see "Authoring model measures" above) |
 | `GET /api/models/{m}/measures/{name}/history` | append-only provenance for a saved measure |
 | `POST /api/query` | run a semantic query, returns columns + rows + timing |
-| `POST /api/query/extract` | the same query, same model resolution and same role check, answered as an Arrow IPC stream a dashboard tile can re-aggregate in the browser (metadata rides on `X-Extract-Meta`). Accepts one extra field, `cross_dimensions`. Answers 200 with a small `{"fallback": …}` JSON instead when the tile isn't eligible or trips the size cap — declining is routine, not an error. See "Instant mode" below |
+| `POST /api/query/extract` | the same query, same model resolution and same role check, answered as an Arrow IPC stream a dashboard tile can re-aggregate in the browser (metadata rides on `X-Extract-Meta`). Two extra fields: `cross_dimensions` (what other tiles display, so a cross-filter lands locally) and `interactive_filters` (filter fields whose values may change, carried as columns rather than pushed down). Answers 200 with a small `{"fallback": …}` JSON instead when the tile isn't eligible or trips the size cap — declining is routine, not an error. See "Instant mode" below |
 | `GET/POST /api/visuals`, `PUT/DELETE /api/visuals/{id}` | saved visuals (SQLite: `cash_intel.db`) |
 | `GET/POST /api/dashboards`, `GET/PUT/DELETE /api/dashboards/{id}` | dashboards — ordered tiles `{visual_id, w:1\|2}`; GET by id resolves tile visuals; create/update reject a tile set where two visuals declare a same-named, differently-defined parameter (see "Visual parameters" above) |
 | `GET/POST /api/conversations`, `GET/PATCH/DELETE /api/conversations/{id}`, `POST /api/conversations/{id}/ask` | conversational analytics (SQLite: `cash_intel.db`) — strictly owner-scoped; 503 unless `CI_LLM_API_KEY` is set (see "Conversational analytics" below) |
@@ -1434,14 +1434,14 @@ from the query shape; the exotic types are explicit choices in DISPLAY:
 - **grain override** — the GRAIN select re-buckets every tile's time dimensions
   (day → year) regardless of each visual's saved grain.
 
-### Instant mode (round-trip-free cross-filtering)
+### Instant mode (round-trip-free interaction)
 
 Tick **INSTANT** in a dashboard's view bar and each tile fetches its data once,
-as an Arrow extract, then answers every subsequent cross-filter, coarser grain
-change and focus-mode open *in the browser* — zero network calls until the page
-reloads or a static filter/parameter actually changes. It is opt-in per
-dashboard and persisted with it; every dashboard defaults to off and behaves
-exactly as it always has.
+as an Arrow extract, then answers every subsequent **cross-filter, view-filter
+change, coarser grain change and focus-mode open** *in the browser* — zero
+network calls until the page reloads or something the extract genuinely can't
+answer changes. It is opt-in per dashboard and persisted with it; every
+dashboard defaults to off and behaves exactly as it always has.
 
 The aggregation engine is [Perspective](https://perspective.finos.org/) (FINOS,
 Apache-2.0), used **headless**: `Table`/`View` only, no `perspective-viewer`,
@@ -1455,11 +1455,33 @@ no other view loads a byte of it.
 every *other* tile's dimensions that this tile's model also has, so a
 cross-filter originating elsewhere can be applied without asking the server.
 That is the trade: a wider result set (still fully pushed down, still capped)
-in exchange for no round trips afterwards. It also carries precomputed coarser
-time buckets, so a GRAIN change to a coarser bucket is answered locally from
-values polars truncated — the browser never does date arithmetic of its own.
-Weeks don't nest inside months, so a week-grained extract offers nothing
-coarser; a *finer* grain than was fetched re-queries for that interaction.
+in exchange for no round trips afterwards. Time dimensions are the exception —
+no renderer emits a cross-filter from a time mark, so another tile's dates are
+never carried, which is what keeps the union cheap. It also carries precomputed
+coarser time buckets for the tile's *own* dates, so a GRAIN change to a coarser
+bucket is answered locally from values polars truncated — the browser never
+does date arithmetic of its own. Weeks don't nest inside months, so a
+week-grained extract offers nothing coarser; a *finer* grain than was fetched
+re-queries for that interaction.
+
+**The view bar's filters are carried, not baked in.** A dashboard filter is
+the thing viewers actually poke at, so its dimension rides along as a column
+and the extract holds every value of it — changing the filter is then a
+re-slice, not a re-query. A field another tile already displays costs nothing
+extra; a new one costs its cardinality, which is what the cap is for. If
+hoisting pushes a tile over the cap, the filters go back into the pushdown and
+the tile *stays* instant — it just re-fetches when a filter changes, which is
+what it did before. Two filters are never hoisted, because the browser cannot
+reproduce them exactly:
+
+- **time filters** — the engine filters the raw date column, while the extract
+  holds it truncated to the tile's grain, so `>= 2024-06-15` would keep all of
+  June locally instead of half of it.
+- **`contains`** — the engine runs it as a case-insensitive *regex* over the
+  column cast to string, which no client-side substring match reproduces.
+
+Changing either still works; it just re-fetches that tile's extract, exactly
+as a parameter change does.
 
 **Measures are decomposed, not re-averaged.** Re-aggregating an already
 aggregated extract is only sound for measures that decompose, so each one is

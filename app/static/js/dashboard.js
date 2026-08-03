@@ -283,7 +283,19 @@ export function dashFiltersChanged() {
   clearTimeout(dashFilterTimer);
   dashFilterTimer = setTimeout(async () => {
     await saveDash();       // filters auto-save into the active view
-    renderDashboard();      // re-run every tile with the new pushdown
+    // On an instant dashboard the tiles already hold the rows behind every
+    // value of these filters, so a change is a re-slice, not a re-query —
+    // re-running the tiles in place keeps the extracts. Any tile whose
+    // extract can't answer the new values re-fetches its own (instantResult),
+    // and a live tile does what it always did.
+    if (!instantOn()) return renderDashboard();
+    // saveDash() swaps state.dash.views for the server's copy, so the filter
+    // controls are now bound to objects that are no longer the ones anybody
+    // reads — rebuild them, exactly as the renderDashboard() path does. Skip
+    // this and the *second* edit to a filter silently mutates an orphan.
+    renderDashFilters();
+    state.tiles.forEach((rec) => rec.visual && rec.run());
+    updateTileBadges();
   }, 250);
 }
 
@@ -483,6 +495,13 @@ async function runTile(rec) {
   const { visual, body, legend, idx } = rec;
   const model = modelByName(visual.model);
   if (!model) return vizMessage(body, `model '${visual.model}' is gone`, true);
+  // Runs for one tile can overlap — two quick edits to a dashboard filter
+  // start two — and they don't necessarily finish in order. Since a filter
+  // change now re-runs tiles *in place* rather than rebuilding the grid, both
+  // runs write to the same live container, so the loser has to know to stay
+  // quiet. Same token trick the builder uses for its own query races.
+  const token = (rec.token = (rec.token || 0) + 1);
+  const superseded = () => rec.token !== token;
   const { query, dims } = tileQuery(visual, idx);
   const ctx = {
     model, dims,
@@ -500,14 +519,17 @@ async function runTile(rec) {
   // including the one-off interaction an otherwise-instant tile can't
   // answer from its cache (a finer grain, an unfetched dimension)
   ctx.result = await instantResult(rec, dims, query);
+  if (superseded()) return;
   if (!ctx.result) {
     vizMessage(body, "querying…");
     try {
       ctx.result = await api("/api/query", { method: "POST", body: query });
     } catch (err) {
+      if (superseded()) return;
       renderTileModes();
       return vizMessage(body, "QUERY ERROR // " + err.message, true);
     }
+    if (superseded()) return;
   }
   state.tileCtxs.push(ctx);
   renderViz(ctx);
@@ -558,7 +580,8 @@ function discardExtracts() {
 /** Every dimension any tile on this dashboard displays — the complete set of
  *  fields a cross-filter click can produce, and so what an extract has to
  *  carry to answer one locally (FR-006). The server drops the ones a given
- *  tile's model doesn't have. */
+ *  tile's model doesn't have, and the time dimensions, which no renderer
+ *  cross-filters from. */
 function crossDimensions() {
   const names = new Set();
   for (const item of state.dash.items) {
@@ -570,9 +593,37 @@ function crossDimensions() {
   return [...names];
 }
 
+/** The active view's filter fields for one tile — the ones a viewer can change
+ *  without the tile itself changing, so the extract carries them as columns
+ *  rather than baking their current values in.
+ *
+ *  A field the *visual* also filters on is deliberately excluded: the tile's
+ *  own saved filter and the view's filter arrive at the engine as one merged
+ *  list, so hoisting that field would lift both out of the pushdown and
+ *  quietly discard the one the visual is defined by. Rare, and not worth
+ *  being clever about — that field just stays pushed down. */
+function interactiveFilters(visual) {
+  const ownFields = new Set((((visual || {}).spec || {}).query || {}).filters
+    ?.map((f) => f.field) || []);
+  return [...new Set(activeView().filters
+    .filter((f) => f.field && !ownFields.has(f.field))
+    .map((f) => f.field))];
+}
+
+/** The static filters a tile currently has, split into the ones its extract
+ *  can answer locally and the ones that were baked into it when it was
+ *  fetched. A change to anything in `baked` means the extract is stale. */
+function splitFilters(rec, extract) {
+  const local = [], baked = [];
+  for (const f of tileFilters(rec.visual, rec.idx, false)) {
+    (extract.localFilters.has(f.field) ? local : baked).push(f);
+  }
+  return { local, baked };
+}
+
 /** This tile's result, re-aggregated from its cached extract — or null,
  *  meaning "run it live". Null is a normal outcome, never a failure. */
-async function instantResult(rec, dims, query) {
+async function instantResult(rec, dims, query, refetched = false) {
   if (!instantOn() || tileMode(rec).mode === "live") return null;
   const mod = await instantModule();
   if (!mod) return null;
@@ -590,10 +641,22 @@ async function instantResult(rec, dims, query) {
     extracts.delete(rec.item.visual_id);
     return null;
   }
-  const term = crossTerm(rec.visual, rec.idx);
+
+  // a filter this extract couldn't hoist is baked into it, so a change to one
+  // means the cache is answering the wrong question — throw it away and fetch
+  // the right one. Once only: a re-fetch that comes back still stale would be
+  // a bug, not a reason to loop.
+  const { local, baked } = splitFilters(rec, extract);
+  if (!refetched && signature(baked) !== extract.bakedSignature) {
+    discardExtract(rec);
+    return instantResult(rec, dims, query, true);
+  }
+
+  const cross = crossTerm(rec.visual, rec.idx);
   try {
     return await extract.slice({
-      dims, filters: term ? [term] : [],
+      dims,
+      filters: [...local, ...(cross ? [{ ...cross, op: "eq" }] : [])],
       sort: query.sort, limit: query.limit,
     });
   } catch (err) {
@@ -605,6 +668,16 @@ async function instantResult(rec, dims, query) {
   }
 }
 
+// what a set of filters was, for spotting that one of them moved
+const signature = (filters) => JSON.stringify(
+  filters.map((f) => [f.field, f.op, f.value ?? "", ...(f.values || [])]).sort());
+
+function discardExtract(rec) {
+  const pending = extracts.get(rec.item.visual_id);
+  extracts.delete(rec.item.visual_id);
+  if (pending) Promise.resolve(pending).then((ex) => ex && ex.destroy()).catch(() => {});
+}
+
 async function fetchExtract(rec, mod) {
   // fetched without the cross-filter: that is the part the browser applies
   // to the cached rows, and baking it in would cache the wrong question
@@ -612,7 +685,11 @@ async function fetchExtract(rec, mod) {
   vizMessage(rec.body, "loading extract…");
   let res;
   try {
-    res = await apiRaw("/api/query/extract", { ...query, cross_dimensions: crossDimensions() });
+    res = await apiRaw("/api/query/extract", {
+      ...query,
+      cross_dimensions: crossDimensions(),
+      interactive_filters: interactiveFilters(rec.visual),
+    });
   } catch (err) {
     markLive(rec, "extract request failed: " + err.message);
     return null;
@@ -628,8 +705,14 @@ async function fetchExtract(rec, mod) {
   try {
     const meta = decodeMeta(res.headers.get("X-Extract-Meta"));
     const extract = await mod.makeExtract(await res.arrayBuffer(), meta);
-    tileModes.set(rec.item.visual_id,
-                  { mode: "instant", rows: meta.row_count, bytes: meta.byte_size });
+    // remember the filters that went in baked, so a later change to one of
+    // them is recognisable as having invalidated this extract
+    extract.bakedSignature = signature(
+      tileFilters(rec.visual, rec.idx, false).filter((f) => !extract.localFilters.has(f.field)));
+    tileModes.set(rec.item.visual_id, {
+      mode: "instant", rows: meta.row_count, bytes: meta.byte_size,
+      local: meta.local_filters || [],
+    });
     return extract;
   } catch (err) {
     markLive(rec, "extract could not be loaded: " + err.message);

@@ -151,13 +151,17 @@ def _measure_text(model: Model, name: str, inline: dict) -> str:
 
 # ── planning ────────────────────────────────────────────────────────────
 
-def plan(model: Model, query: dict, cross_dimensions: list) -> dict:
+def plan(model: Model, query: dict, cross_dimensions: list,
+         interactive_filters: Optional[list] = None, hoist: bool = True) -> dict:
     """Decide what this tile's extract contains, or raise NotInstantable.
 
     Returns {"query": <the rewritten engine query>, "measures": [...],
-    "dimensions": [...], "passthrough": [...]} — the rewritten query is what
-    goes to the engine, the rest is what the browser needs to re-aggregate
-    the result it comes back with.
+    "dimensions": [...], "passthrough": [...], "local_filters": [...]} — the
+    rewritten query is what goes to the engine, the rest is what the browser
+    needs to re-aggregate the result it comes back with.
+
+    `hoist=False` re-plans with every filter pushed down again, which is what
+    build() falls back to when hoisting blows the size cap.
     """
     inline = {m["name"]: m for m in (query.get("inline_measures") or []) if m.get("name")}
     measure_names = list(query.get("measures") or [])
@@ -184,14 +188,53 @@ def plan(model: Model, query: dict, cross_dimensions: list) -> dict:
     # dashboard, so a cross-filter from there lands locally (FR-006). A
     # dimension the model doesn't have is skipped — exactly today's silent
     # no-op for a mismatched model.
-    grain = _override_grain(own)
+    #
+    # Time dimensions are never unioned in. Every chart renderer refuses to
+    # emit a cross-filter from a time mark (the `type !== "time"` guards in
+    # charts/bar.js, ribbon.js, scatter.js), so another tile's dates can never
+    # be the value that arrives here — carrying them buys nothing, and at
+    # ungrained resolution they are by far the most expensive thing an extract
+    # could hold. A tile's *own* time dimensions are unaffected: it groups by
+    # those, and they keep their coarser buckets for the grain override.
     extra: list[tuple[str, Optional[str]]] = []
-    for name in cross_dimensions:
-        if name in own_names or _dimension(model, name) is None or _fans_out(model, name):
+    for entry in cross_dimensions:
+        if isinstance(entry, str):
+            entry = {"name": entry}
+        name = entry.get("name")
+        dim = _dimension(model, name) if name else None
+        if not name or name in own_names or dim is None or dim.type == "time" or _fans_out(model, name):
             continue
         own_names.add(name)
-        dim = _dimension(model, name)
-        extra.append((name, grain if dim.type == "time" else None))
+        extra.append((name, None))
+
+    # ── static filters: pushed down, or carried as a column ──
+    # A dashboard-view filter the viewer can change is normally baked into the
+    # extract, which means changing it costs a re-fetch — the slowest thing on
+    # an instant dashboard. Hoisting it instead (leave it out of the pushdown,
+    # carry its dimension as a column) lets the browser answer a value change
+    # locally, at the price of an extract holding every value rather than one.
+    # A dimension another tile already contributed is free; a new one costs its
+    # cardinality, which is what the cap below is for.
+    #
+    # Only the fields the caller names are candidates: a visual's *own* saved
+    # filters are part of what the tile is, never edited from the dashboard, so
+    # hoisting them would buy nothing and cost the same cardinality.
+    filters = list(query.get("filters") or [])
+    hoisted: list[str] = []
+    if hoist:
+        for field in dict.fromkeys(interactive_filters or []):
+            on_field = [f for f in filters if f.get("field") == field]
+            # a field with no value set yet is hoisted anyway — that is the
+            # state a dashboard sits in before anyone touches its filters, and
+            # carrying the column now is what makes the *first* change local
+            # rather than the second
+            if _field_hoistable(model, field) and all(_op_hoistable(f) for f in on_field):
+                hoisted.append(field)
+        for field in hoisted:
+            if field not in own_names:
+                own_names.add(field)
+                extra.append((field, None))
+        filters = [f for f in filters if f.get("field") not in hoisted]
 
     # ── measures: decomposed into additive components ──
     # A measure's formula refs index its *own* components list, so each entry
@@ -239,6 +282,7 @@ def plan(model: Model, query: dict, cross_dimensions: list) -> dict:
     dims = [{"name": name, "grain": g} if g else name for name, g in [*own, *extra]]
     engine_query = {
         **query,
+        "filters": filters,
         "dimensions": dims,
         "measures": [c["col"] for c in components],
         "inline_measures": ([] if model.is_composite else
@@ -259,32 +303,68 @@ def plan(model: Model, query: dict, cross_dimensions: list) -> dict:
             entry["coarser"] = {c: f"{GRAIN_PREFIX}{c}__{name}" for c in COARSER_GRAINS.get(g, [])}
         dimensions.append(entry)
 
-    passthrough = [
+    return {"query": engine_query, "measures": measures, "dimensions": dimensions,
+            "passthrough": _passthrough(model, [*own, *extra]), "local_filters": hoisted}
+
+
+def _passthrough(model: Model, dims: list) -> list:
+    return [
         {"col": f"__{axis}_{name}", "agg": "mean"}
-        for name, _ in [*own, *extra]
+        for name, _ in dims
         for axis in ("lat", "lon")
         if getattr(_dimension(model, name), "geo", None)
     ]
-    return {"query": engine_query, "measures": measures,
-            "dimensions": dimensions, "passthrough": passthrough}
 
 
-def _override_grain(own: list) -> Optional[str]:
-    """The grain a unioned time dimension should be fetched at: whatever the
-    tile's own time dimensions are showing, so a cross-filter value clicked on
-    another tile compares equal to a value in this extract."""
-    for _, g in own:
-        if g:
-            return g
-    return None
+# filter ops the browser can reproduce exactly. `contains` is deliberately
+# absent: the engine implements it as a case-insensitive *regex* over the
+# column cast to string (engine._filter_expr), which is not what any
+# client-side substring match does — so it stays pushed down.
+HOISTABLE_OPS = {"eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in"}
+
+
+def _field_hoistable(model: Model, field: str) -> bool:
+    """Can this dimension be carried as a column for the browser to filter on?
+
+    The one genuinely dangerous case is a time dimension: the engine filters
+    the *raw* column, while an extract holds it truncated to the tile's grain,
+    so `order_date >= 2024-06-15` would keep all of June rather than half of
+    it. Rather than reason about bucket alignment for a value that changes
+    after the extract was built, time filters always stay pushed down.
+    """
+    dim = _dimension(model, field)
+    return dim is not None and dim.type != "time" and not _fans_out(model, field)
+
+
+def _op_hoistable(spec: dict) -> bool:
+    return spec.get("op", "eq") in HOISTABLE_OPS
 
 
 # ── building ────────────────────────────────────────────────────────────
 
-def build(model: Model, query: dict, cross_dimensions: list) -> tuple[bytes, dict]:
+def build(model: Model, query: dict, cross_dimensions: list,
+          interactive_filters: Optional[list] = None) -> tuple[bytes, dict]:
     """Run the planned extract through the ordinary engine path and serialize
-    it as an Arrow IPC stream. Returns (payload, metadata)."""
-    planned = plan(model, query, cross_dimensions)
+    it as an Arrow IPC stream. Returns (payload, metadata).
+
+    Hoisting the dashboard's static filters (so changing one costs no round
+    trip) makes an extract as many times larger as those filters were
+    selective, which can push a tile over the cap that fitted comfortably
+    without it. That is a reason to give up the hoisting, not the whole
+    feature — so a cap miss is retried once with every filter pushed back
+    down, and only a tile that fails *that* goes live.
+    """
+    try:
+        return _build(model, query, cross_dimensions, interactive_filters, hoist=True)
+    except CapExceeded:
+        if not plan(model, query, cross_dimensions, interactive_filters)["local_filters"]:
+            raise      # nothing was hoisted, so there is nothing to give up
+    return _build(model, query, cross_dimensions, interactive_filters, hoist=False)
+
+
+def _build(model: Model, query: dict, cross_dimensions: list,
+           interactive_filters: Optional[list], hoist: bool) -> tuple[bytes, dict]:
+    planned = plan(model, query, cross_dimensions, interactive_filters, hoist=hoist)
     df, columns, elapsed_ms = engine.run_query_frame(
         model, planned["query"], row_cap=config.EXTRACT_MAX_ROWS + 1)
     if df.height > config.EXTRACT_MAX_ROWS:
@@ -298,6 +378,13 @@ def build(model: Model, query: dict, cross_dimensions: list) -> tuple[bytes, dic
         if dim.get("coarser"):
             dim["coarser"] = {g: c for g, c in dim["coarser"].items() if c in df.columns}
     df = _normalize(df)
+    # the browser has to coerce a filter value the same way engine._coerce
+    # does, and after normalization every dimension column is one of three
+    # things — so say which, rather than make it guess from the value
+    for dim in planned["dimensions"]:
+        dtype = df.schema.get(dim["name"])
+        dim["value_type"] = ("number" if dtype is not None and dtype.is_numeric()
+                             else "boolean" if dtype == pl.Boolean else "string")
     # compat_level=oldest: polars' current Arrow output encodes strings as
     # `utf8_view`, which Perspective's reader rejects outright ("Could not
     # load arrow column of type `utf8_view`"). The oldest compatibility level
@@ -321,6 +408,10 @@ def build(model: Model, query: dict, cross_dimensions: list) -> tuple[bytes, dic
         "dimensions": planned["dimensions"],
         "measures": planned["measures"],
         "passthrough": [p for p in planned["passthrough"] if p["col"] in df.columns],
+        # the dashboard filters this extract can answer a *value change* on
+        # without coming back; anything else stayed baked in, and changing it
+        # still costs a re-fetch
+        "local_filters": planned["local_filters"],
     }
     return payload, meta
 
