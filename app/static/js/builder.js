@@ -1,4 +1,5 @@
-/* The query builder: sidebar controls, query execution, saved visuals. */
+/* The query builder: model switcher, field rail, query strip, chart toolbar,
+   query execution, saved visuals. */
 "use strict";
 
 import { decideChart, renderViz, vizMessage } from "./charts/index.js";
@@ -6,7 +7,7 @@ import { GRAINS } from "./charts/common.js";
 import { renderTableInto } from "./charts/table.js";
 import { renderRoleMap } from "./charts/rolemap.js";
 import {
-  filterReady, filterValueControl, normalizeCategoricalOp,
+  FILTER_OPS, filterReady, filterValueControl, normalizeCategoricalOp,
   opsForDim, resetFilterForField, toApiFilter,
 } from "./filters.js";
 import { $, api, el } from "./lib.js";
@@ -35,6 +36,7 @@ function builderCtx() {
       if (axis === "x") state.xAxisTitle = value; else state.yAxisTitle = value;
       $(`#axis-title-${axis}`).value = value;
       renderBuilderViz();
+      syncDisplayBtn();
     },
   };
 }
@@ -95,6 +97,7 @@ export async function run() {
     $("#legend").innerHTML = "";
     vizMessage($("#chart"), "QUERY ERROR // " + err.message, true);
   }
+  syncSaveBadge();
 }
 
 function setMeta(html, busy = false) {
@@ -115,29 +118,131 @@ export function renderBuilderViz() {
   }
 }
 
-// ── sidebar ──────────────────────────────────────────────────
+// ── popover management ──────────────────────────────────────
+// every popover in the builder (model switcher, chart-type menu, overflow
+// menu, display panel, and the "+"-pill pickers below) funnels through this
+// one open/close registry so opening one always closes the others, and Esc /
+// an outside click (wired in main.js) can close whichever is open without
+// needing to know which one that is
+const STATIC_POPOVER_IDS = ["#model-pop", "#auto-menu", "#head-menu", "#dash-pick-menu", "#display-pop"];
 
-function renderModelSelect() {
-  const sel = $("#model-select");
-  sel.innerHTML = "";
-  for (const m of state.models) sel.append(el("option", { value: m.name }, m.label));
-  sel.value = state.model.name;
-  $("#model-desc").textContent = state.model.description;
+let qsPickerEl = null;
+let qsPickerBuild = null;
+
+function closeQsPicker() {
+  if (qsPickerEl) qsPickerEl.remove();
+  qsPickerEl = null;
+  qsPickerBuild = null;
 }
 
-let dimFilter = "", measureFilter = "";
-// datasets the user has manually expanded, by folder label — survives the
-// full re-render every dim toggle/model change triggers, since the <details>
-// elements themselves are thrown away and rebuilt each time
-let openDimFolders = new Set();
+export function closeAllPopovers() {
+  for (const id of STATIC_POPOVER_IDS) { const e = $(id); if (e) e.hidden = true; }
+  closeQsPicker();
+  syncDisplayBtn();
+}
 
-export function setDimFilter(text) { dimFilter = text.trim().toLowerCase(); renderDims(); }
-export function setMeasureFilter(text) { measureFilter = text.trim().toLowerCase(); renderMeasures(); }
+function togglePopover(id) {
+  const target = $(id);
+  const opening = target.hidden;
+  closeAllPopovers();
+  target.hidden = !opening;
+  return !opening;
+}
+
+export function toggleModelPop() { togglePopover("#model-pop"); }
+export function toggleAutoMenu() { togglePopover("#auto-menu"); }
+export function toggleHeadMenu() { togglePopover("#head-menu"); }
+export function toggleDisplayPop() { togglePopover("#display-pop"); syncDisplayBtn(); }
+
+// a "+"-pill picker (field/filter/parameter pickers, the grain menu, the
+// query-strip overflow list): appended to <body> and positioned in viewport
+// coordinates so it survives a query-strip re-render (which happens on
+// nearly every edit inside these pickers) instead of being torn down with it
+function openQsPicker(anchorEl, key, buildFn) {
+  const already = qsPickerEl && qsPickerEl.dataset.key === key;
+  closeAllPopovers();
+  if (already) return;
+  const rect = anchorEl.getBoundingClientRect();
+  const pop = el("div", { class: "qs-picker" });
+  pop.dataset.key = key;
+  pop.style.top = (rect.bottom + 4) + "px";
+  pop.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - 268)) + "px";
+  qsPickerEl = pop;
+  qsPickerBuild = buildFn;
+  buildFn(pop);
+  document.body.append(pop);
+}
+
+// re-runs the picker's own build function in place — used by pickers whose
+// content depends on state that just changed (e.g. picking a filter's field
+// changes which operators/value-control apply)
+function refreshQsPicker() {
+  if (!qsPickerEl || !qsPickerBuild) return;
+  qsPickerEl.innerHTML = "";
+  qsPickerBuild(qsPickerEl);
+}
+
+export function openDashPickMenu() {
+  if (!state.visualId) { alert("save the visual first"); return; }
+  const list = $("#dash-pick-list");
+  list.innerHTML = "";
+  if (!state.dashboards.length) {
+    list.append(el("div", { class: "empty-note" }, "no dashboards yet"));
+  } else {
+    for (const d of state.dashboards) {
+      const row = el("div", { class: "menu-item" }, d.name);
+      row.addEventListener("click", () => { closeAllPopovers(); addCurrentToDashboard(d.id); });
+      list.append(row);
+    }
+  }
+  $("#head-menu").hidden = true;
+  $("#dash-pick-menu").hidden = false;
+}
+
+// ── model switcher (zone A) ──────────────────────────────────
+
+function modelSourceLine(model) {
+  if (model.kind === "composite") {
+    return `${model.facts.length} fact${model.facts.length === 1 ? "" : "s"} · ${model.facts.map((f) => f.label || f.model).join(" + ")}`;
+  }
+  return model.path || "";
+}
+
+export function renderModelSwitch() {
+  $("#model-switch-label").textContent = state.model.label;
+  $("#model-switch-source").textContent = modelSourceLine(state.model);
+  const pop = $("#model-pop");
+  pop.innerHTML = "";
+  for (const m of state.models) {
+    const item = el("div", { class: "model-pop-item" + (m.name === state.model.name ? " on" : "") },
+      el("div", { class: "nm" }, m.label),
+      el("div", { class: "desc" }, m.description || ""));
+    item.addEventListener("click", () => { closeAllPopovers(); if (m.name !== state.model.name) navigate(paths.studioModel(m.name)); });
+    pop.append(item);
+  }
+}
+
+// ── field rail (zone B) ───────────────────────────────────────
+
+let fieldFilter = "";
+// dataset/window-measure folders the user has manually expanded, keyed by
+// label — survives the full re-render every toggle triggers, since the
+// <details> elements themselves are thrown away and rebuilt each time
+let openFolders = new Set();
+// {kind:"dim"|"measure", name} of the first row matched by the current
+// search, for ⏎ in the field search to toggle straight into the query
+let firstFieldMatch = null;
+
+export function setFieldFilter(text) {
+  fieldFilter = text.trim().toLowerCase();
+  renderFieldRail();
+}
 
 function resetSidebarFilters() {
-  dimFilter = ""; measureFilter = ""; openDimFolders = new Set();
-  if ($("#dim-filter")) $("#dim-filter").value = "";
-  if ($("#measure-filter")) $("#measure-filter").value = "";
+  fieldFilter = "";
+  openFolders = new Set();
+  firstFieldMatch = null;
+  if ($("#field-search")) $("#field-search").value = "";
 }
 
 const matchesFilter = (q, ...fields) => !q || fields.some((f) => f && f.toLowerCase().includes(q));
@@ -156,88 +261,57 @@ function groupDimsByDataset(dims) {
   return groups;
 }
 
-function dimChip(dim) {
+const isWindowMeasure = (m) => /running_total\(|lag\(/.test(m.expr || "");
+
+function toggleDim(dim) {
   const active = state.dims.find((d) => d.name === dim.name);
-  const chip = el("div", { class: "chip" + (active ? " on" : "") },
-    el("span", { class: "tick" }, active ? "◈" : "◇"),
-    el("span", { class: "lbl" }, dim.label),
-    el("span", { class: "hint" }, dim.spine ? "spine" : dim.type === "time" ? "time" : ""));
-  if (active && dim.type === "time") {
-    const grainSel = el("select", { class: "grain", onchange: (e) => { active.grain = e.target.value; syncSortOptions(); scheduleRun(); } });
+  if (active) state.dims = state.dims.filter((d) => d.name !== dim.name);
+  else state.dims.push(dim.type === "time" ? { name: dim.name, grain: "1mo" } : { name: dim.name });
+  renderFieldRail();
+  renderQueryStrip();
+  syncSortOptions();
+  scheduleRun();
+}
+
+function toggleMeasure(name) {
+  if (state.measures.includes(name)) state.measures = state.measures.filter((m) => m !== name);
+  else state.measures.push(name);
+  renderFieldRail();
+  renderQueryStrip();
+  syncSortOptions();
+  scheduleRun();
+}
+
+export function toggleFirstFieldMatch() {
+  if (!firstFieldMatch) return;
+  if (firstFieldMatch.kind === "dim") toggleDim(dimByName(firstFieldMatch.name));
+  else toggleMeasure(firstFieldMatch.name);
+}
+
+function selectedDimRow(dim, entry) {
+  const chip = el("div", { class: "chip on" },
+    el("span", { class: "tick" }, "◈"),
+    el("span", { class: "lbl" }, dim.label));
+  if (dim.type === "time") {
+    const grainSel = el("select", {
+      class: "grain",
+      onchange: (e) => { entry.grain = e.target.value; syncSortOptions(); renderQueryStrip(); scheduleRun(); },
+    });
     for (const [g, label] of Object.entries(GRAINS)) grainSel.append(el("option", { value: g }, label));
-    grainSel.value = active.grain || "1mo";
+    grainSel.value = entry.grain || "1mo";
     grainSel.addEventListener("click", (e) => e.stopPropagation());
     chip.append(grainSel);
   }
-  chip.addEventListener("click", () => {
-    if (active) state.dims = state.dims.filter((d) => d.name !== dim.name);
-    else state.dims.push(dim.type === "time" ? { name: dim.name, grain: "1mo" } : { name: dim.name });
-    renderDims(); syncSortOptions(); scheduleRun();
-  });
+  chip.addEventListener("click", () => toggleDim(dim));
   return chip;
 }
 
-// one dataset's dims as a folder, collapsed by default. forceOpen expands it
-// while a filter is narrowing the list to matches (so a hit isn't hidden
-// behind a collapsed folder); a manual expand toggles openDimFolders
-// directly rather than relying on the <details> "toggle" event, which can
-// also fire from the initial `open` attribute set below and would otherwise
-// wrongly "stick" a filter's forced-open folder open once the filter clears
-function dimFolder(dataset, dims, forceOpen) {
-  const body = el("div", { class: "tree-children chip-list" });
-  for (const dim of dims) body.append(dimChip(dim));
-  const summary = el("summary", {},
-    el("span", { class: "tree-caret" }, "▸"),
-    el("span", { class: "nm" }, dataset),
-    el("span", { class: "tree-count" }, String(dims.length)));
-  const attrs = { class: "tree-folder dim-folder" };
-  if (forceOpen || openDimFolders.has(dataset)) attrs.open = "";
-  const folder = el("details", attrs, summary, body);
-  summary.addEventListener("click", (e) => {
-    e.preventDefault();
-    folder.open = !folder.open;
-    if (folder.open) openDimFolders.add(dataset); else openDimFolders.delete(dataset);
-  });
-  return folder;
-}
-
-export function renderDims() {
-  const box = $("#dim-list");
-  box.innerHTML = "";
-  const groups = groupDimsByDataset(state.model.dimensions);
-  let shown = 0;
-  for (const [dataset, dims] of groups) {
-    const matched = dims.filter((d) => matchesFilter(dimFilter, d.label, d.name));
-    if (!matched.length) continue;
-    shown += matched.length;
-    box.append(dimFolder(dataset, matched, !!dimFilter));
-  }
-  if (!shown) box.append(el("div", { class: "empty-note" }, "no matches"));
-}
-
-export function renderMeasures() {
-  const box = $("#measure-list");
-  box.innerHTML = "";
-  const toggle = (name) => {
-    if (state.measures.includes(name)) state.measures = state.measures.filter((m) => m !== name);
-    else state.measures.push(name);
-    renderMeasures(); syncSortOptions(); scheduleRun();
-  };
-  const measures = state.model.measures.filter((m) => matchesFilter(measureFilter, m.label, m.name));
-  const inline = state.inlineMeasures.filter((m) => matchesFilter(measureFilter, m.label, m.name));
-  if (!measures.length && !inline.length) box.append(el("div", { class: "empty-note" }, "no matches"));
-  for (const mea of measures) {
-    const active = state.measures.includes(mea.name);
-    const chip = el("div", { class: "chip measure" + (active ? " on" : ""), title: mea.expr },
-      el("span", { class: "tick" }, active ? "◆" : "◇"),
-      el("span", { class: "lbl" }, mea.label),
-      el("span", { class: "hint" }, mea.format === "number" ? "" : mea.format));
-    chip.addEventListener("click", () => toggle(mea.name));
-    box.append(chip);
-  }
-  // visual-scoped measures from the lab — saved with the visual, not the model
-  for (const mea of inline) {
-    const active = state.measures.includes(mea.name);
+function selectedMeasureRow(mea) {
+  const isInline = state.inlineMeasures.some((m) => m.name === mea.name);
+  const chip = el("div", { class: "chip on measure" + (isInline ? " inline" : ""), title: mea.expr },
+    el("span", { class: "tick" }, "◆"),
+    el("span", { class: "lbl" }, mea.label || mea.name));
+  if (isInline) {
     const edit = el("button", { class: "mini", title: "edit in the measure lab" }, "✎");
     edit.addEventListener("click", (e) => { e.stopPropagation(); hooks.openLab(mea); });
     const rm = el("button", { class: "mini rm", title: "remove from this visual" }, "✕");
@@ -245,50 +319,318 @@ export function renderMeasures() {
       e.stopPropagation();
       state.inlineMeasures = state.inlineMeasures.filter((m) => m.name !== mea.name);
       state.measures = state.measures.filter((m) => m !== mea.name);
-      renderMeasures(); syncSortOptions(); scheduleRun();
+      renderFieldRail(); renderQueryStrip(); syncSortOptions(); scheduleRun();
     });
-    const chip = el("div", { class: "chip measure inline" + (active ? " on" : ""), title: mea.expr },
-      el("span", { class: "tick" }, active ? "◆" : "◇"),
-      el("span", { class: "lbl" }, mea.label || mea.name),
-      el("span", { class: "hint" }, "visual"),
-      edit, rm);
-    chip.addEventListener("click", () => toggle(mea.name));
-    box.append(chip);
+    chip.append(el("span", { class: "hint" }, "visual"), edit, rm);
+  } else {
+    chip.append(el("span", { class: "hint" }, mea.format === "number" ? "" : mea.format));
   }
+  chip.addEventListener("click", () => toggleMeasure(mea.name));
+  return chip;
 }
 
-export function renderFilters() {
-  const box = $("#filter-list");
-  box.innerHTML = "";
-  state.filters.forEach((flt, idx) => {
+function availableDimRow(dim) {
+  const row = el("div", { class: "field-row" },
+    el("span", { class: "tick" }, "◇"),
+    el("span", { class: "lbl" }, dim.label),
+    el("span", { class: "hint" }, dim.spine ? "spine" : dim.type === "time" ? "time" : ""));
+  row.addEventListener("click", () => toggleDim(dim));
+  return row;
+}
+
+function availableMeasureRow(mea) {
+  const row = el("div", { class: "field-row", title: mea.expr },
+    el("span", { class: "tick" }, "◇"),
+    el("span", { class: "lbl" }, mea.label),
+    el("span", { class: "hint" }, mea.format === "number" ? "" : mea.format));
+  row.addEventListener("click", () => toggleMeasure(mea.name));
+  return row;
+}
+
+function availableInlineMeasureRow(mea) {
+  const edit = el("button", { class: "mini", title: "edit in the measure lab" }, "✎");
+  edit.addEventListener("click", (e) => { e.stopPropagation(); hooks.openLab(mea); });
+  const rm = el("button", { class: "mini rm", title: "remove from this visual" }, "✕");
+  rm.addEventListener("click", (e) => {
+    e.stopPropagation();
+    state.inlineMeasures = state.inlineMeasures.filter((m) => m.name !== mea.name);
+    renderFieldRail();
+  });
+  const row = el("div", { class: "field-row", title: mea.expr },
+    el("span", { class: "tick" }, "◇"),
+    el("span", { class: "lbl" }, mea.label || mea.name),
+    el("span", { class: "hint" }, "visual"), edit, rm);
+  row.addEventListener("click", () => toggleMeasure(mea.name));
+  return row;
+}
+
+// one folder (dataset bundle, or the "window measures" bucket), collapsed by
+// default. forceOpen expands it while a search is narrowing the list to
+// matches; a manual expand toggles openFolders directly rather than relying
+// on the <details> "toggle" event, which can also fire from the initial
+// `open` attribute set below and would otherwise wrongly "stick" a search's
+// forced-open folder open once the search clears
+function fieldFolder(key, items, rowBuilder, forceOpen) {
+  const body = el("div", { class: "tree-children chip-list" });
+  for (const item of items) body.append(rowBuilder(item));
+  const summary = el("summary", {},
+    el("span", { class: "tree-caret" }, "▸"),
+    el("span", { class: "nm" }, key),
+    el("span", { class: "tree-count" }, String(items.length)));
+  const attrs = { class: "tree-folder" };
+  if (forceOpen || openFolders.has(key)) attrs.open = "";
+  const folder = el("details", attrs, summary, body);
+  summary.addEventListener("click", (e) => {
+    e.preventDefault();
+    folder.open = !folder.open;
+    if (folder.open) openFolders.add(key); else openFolders.delete(key);
+  });
+  return folder;
+}
+
+function groupHeader(text, kind, count) {
+  return el("div", { class: "fr-group-head" },
+    el("span", { class: `fr-group-title ${kind}` }, text),
+    el("span", { class: `fr-group-rule ${kind}` }),
+    el("span", { class: "fr-group-count" }, String(count)));
+}
+
+export function renderFieldRail() {
+  const list = $("#field-rail-list");
+  if (!list || !state.model) return;
+  list.innerHTML = "";
+  firstFieldMatch = null;
+
+  const qDims = state.dims
+    .map((entry) => ({ entry, dim: dimByName(entry.name) }))
+    .filter((x) => x.dim && matchesFilter(fieldFilter, x.dim.label, x.dim.name));
+  const qMeas = state.measures
+    .map((n) => measureByName(n))
+    .filter((m) => m && matchesFilter(fieldFilter, m.label || m.name, m.name));
+
+  const nativeDims = state.model.dimensions.filter((d) => (d.dataset || state.model.label) === state.model.label);
+  const importedGroups = [...groupDimsByDataset(state.model.dimensions)].filter(([key]) => key && key !== state.model.label);
+  const nativeMeasures = state.model.measures.filter((m) => !isWindowMeasure(m));
+  const windowMeasures = state.model.measures.filter(isWindowMeasure);
+
+  const availDims = nativeDims.filter((d) => !state.dims.some((sd) => sd.name === d.name) && matchesFilter(fieldFilter, d.label, d.name));
+  const availMeasures = nativeMeasures.filter((m) => !state.measures.includes(m.name) && matchesFilter(fieldFilter, m.label, m.name));
+  const availInline = state.inlineMeasures.filter((m) => !state.measures.includes(m.name) && matchesFilter(fieldFilter, m.label || m.name, m.name));
+
+  const folders = [];
+  for (const [dataset, dims] of importedGroups) {
+    const matched = dims.filter((d) => !state.dims.some((sd) => sd.name === d.name) && matchesFilter(fieldFilter, d.label, d.name));
+    if (matched.length) folders.push({ key: dataset, items: matched, rowBuilder: availableDimRow });
+  }
+  const matchedWindow = windowMeasures.filter((m) => !state.measures.includes(m.name) && matchesFilter(fieldFilter, m.label, m.name));
+  if (matchedWindow.length) folders.push({ key: "window measures", items: matchedWindow, rowBuilder: availableMeasureRow });
+
+  const availCount = availDims.length + availMeasures.length + availInline.length
+    + folders.reduce((n, f) => n + f.items.length, 0);
+  const totalShown = qDims.length + qMeas.length + availCount;
+
+  if (fieldFilter) {
+    if (availDims.length) firstFieldMatch = { kind: "dim", name: availDims[0].name };
+    else if (availMeasures.length) firstFieldMatch = { kind: "measure", name: availMeasures[0].name };
+    else if (availInline.length) firstFieldMatch = { kind: "measure", name: availInline[0].name };
+    else if (folders.length) firstFieldMatch = { kind: folders[0].rowBuilder === availableDimRow ? "dim" : "measure", name: folders[0].items[0].name };
+  }
+
+  list.append(groupHeader("in this query", "in-query", qDims.length + qMeas.length));
+  for (const { entry, dim } of qDims) list.append(selectedDimRow(dim, entry));
+  for (const mea of qMeas) list.append(selectedMeasureRow(mea));
+
+  list.append(groupHeader("available", "available", availCount));
+  for (const dim of availDims) list.append(availableDimRow(dim));
+  for (const mea of availMeasures) list.append(availableMeasureRow(mea));
+  for (const mea of availInline) list.append(availableInlineMeasureRow(mea));
+  if (folders.length) {
+    const wrap = el("div", { class: "fr-folders" });
+    for (const f of folders) wrap.append(fieldFolder(f.key, f.items, f.rowBuilder, !!fieldFilter));
+    list.append(wrap);
+  }
+
+  if (!totalShown) list.append(el("div", { class: "empty-note" }, "no matches"));
+}
+
+function openMeasurePicker(anchor) {
+  openQsPicker(anchor, "add-measure", (pop) => {
+    const search = el("input", { type: "text", placeholder: "find a measure…", spellcheck: "false", autocomplete: "off" });
+    const listBox = el("div", { class: "chip-list" });
+    const renderRows = () => {
+      const q = search.value.trim().toLowerCase();
+      listBox.innerHTML = "";
+      const items = [
+        ...state.model.measures.filter((m) => !state.measures.includes(m.name)),
+        ...state.inlineMeasures.filter((m) => !state.measures.includes(m.name)),
+      ].filter((m) => matchesFilter(q, m.label || m.name, m.name));
+      if (!items.length) { listBox.append(el("div", { class: "empty-note" }, "no matches")); return; }
+      for (const m of items) {
+        const row = el("div", { class: "field-row" }, el("span", { class: "tick" }, "◇"), el("span", { class: "lbl" }, m.label || m.name));
+        row.addEventListener("click", () => { closeAllPopovers(); toggleMeasure(m.name); });
+        listBox.append(row);
+      }
+    };
+    search.addEventListener("input", renderRows);
+    pop.append(el("div", { class: "field-search" }, el("span", { class: "fs-ic" }, "⌕"), search), listBox);
+    renderRows();
+    setTimeout(() => search.focus(), 0);
+  });
+}
+
+function openDimensionPicker(anchor) {
+  openQsPicker(anchor, "add-dimension", (pop) => {
+    const search = el("input", { type: "text", placeholder: "find a dimension…", spellcheck: "false", autocomplete: "off" });
+    const listBox = el("div", { class: "chip-list" });
+    const renderRows = () => {
+      const q = search.value.trim().toLowerCase();
+      listBox.innerHTML = "";
+      const items = state.model.dimensions.filter((d) => !state.dims.some((sd) => sd.name === d.name) && matchesFilter(q, d.label, d.name));
+      if (!items.length) { listBox.append(el("div", { class: "empty-note" }, "no matches")); return; }
+      for (const d of items) {
+        const row = el("div", { class: "field-row" }, el("span", { class: "tick" }, "◇"), el("span", { class: "lbl" }, d.label));
+        row.addEventListener("click", () => { closeAllPopovers(); toggleDim(d); });
+        listBox.append(row);
+      }
+    };
+    search.addEventListener("input", renderRows);
+    pop.append(el("div", { class: "field-search" }, el("span", { class: "fs-ic" }, "⌕"), search), listBox);
+    renderRows();
+    setTimeout(() => search.focus(), 0);
+  });
+}
+
+function openGrainMenu(anchorEl, entry) {
+  openQsPicker(anchorEl, "grain:" + entry.name, (pop) => {
+    for (const [g, label] of Object.entries(GRAINS)) {
+      const item = el("div", { class: "model-pop-item" + (g === (entry.grain || "1mo") ? " on" : "") }, el("div", { class: "nm" }, label));
+      item.addEventListener("click", () => {
+        entry.grain = g;
+        closeAllPopovers();
+        syncSortOptions();
+        renderFieldRail();
+        renderQueryStrip();
+        scheduleRun();
+      });
+      pop.append(item);
+    }
+  });
+}
+
+// ── query strip ────────────────────────────────────────────────
+
+function pillMeasure(mea) {
+  const rm = el("span", { class: "qs-rm" }, "✕");
+  rm.addEventListener("click", (e) => { e.stopPropagation(); toggleMeasure(mea.name); });
+  return el("span", { class: "qs-pill qs-measure" }, "◆ " + (mea.label || mea.name) + " ", rm);
+}
+
+function pillDim(dim, entry) {
+  const rm = el("span", { class: "qs-rm" }, "✕");
+  rm.addEventListener("click", (e) => { e.stopPropagation(); toggleDim(dim); });
+  const kids = ["◈ " + dim.label + " "];
+  if (dim.type === "time") {
+    const grain = el("span", { class: "qs-grain" }, `· ${GRAINS[entry.grain || "1mo"]} ▾`);
+    grain.addEventListener("click", (e) => { e.stopPropagation(); openGrainMenu(grain, entry); });
+    kids.push(grain, " ");
+  }
+  kids.push(rm);
+  return el("span", { class: "qs-pill qs-dim" }, ...kids);
+}
+
+function filterOpLabel(op) {
+  const found = FILTER_OPS.find(([o]) => o === op);
+  return found ? found[1] : op;
+}
+
+function filterValueLabel(flt) {
+  if (flt.op === "in" || flt.op === "not_in") return flt.values.length ? flt.values.join(", ") : "…";
+  return flt.value !== "" && flt.value != null ? String(flt.value) : "…";
+}
+
+function pillFilter(flt, idx) {
+  const dim = dimByName(flt.field);
+  const rm = el("span", { class: "qs-rm" }, "✕");
+  rm.addEventListener("click", (e) => {
+    e.stopPropagation();
+    state.filters.splice(idx, 1);
+    closeAllPopovers();
+    renderQueryStrip();
+    scheduleRun();
+  });
+  const pill = el("span", { class: "qs-pill qs-filter" },
+    (dim ? dim.label : flt.field) + " ",
+    el("span", { class: "qs-op" }, filterOpLabel(flt.op)),
+    " " + filterValueLabel(flt) + " ",
+    rm);
+  pill.dataset.filterIdx = String(idx);
+  pill.addEventListener("click", (e) => { if (e.target !== rm) openFilterPicker(pill, idx); });
+  return pill;
+}
+
+function pillParam(p, idx) {
+  const current = state.parameterValues[p.name] ?? p.default;
+  const rm = el("span", { class: "qs-rm" }, "✕");
+  rm.addEventListener("click", (e) => {
+    e.stopPropagation();
+    delete state.parameterValues[p.name];
+    state.parameters.splice(idx, 1);
+    closeAllPopovers();
+    renderParamToggleBar();
+    renderQueryStrip();
+    scheduleRun();
+  });
+  const pill = el("span", { class: "qs-pill qs-param" }, `${p.name} = ${current} `, rm);
+  pill.dataset.paramIdx = String(idx);
+  pill.addEventListener("click", (e) => { if (e.target !== rm) openParamPicker(pill, idx); });
+  return pill;
+}
+
+function openFilterPicker(anchorEl, idx) {
+  openQsPicker(anchorEl, "filter:" + idx, (pop) => {
+    const flt = state.filters[idx];
+    if (!flt) { closeAllPopovers(); return; }
+    const dim = dimByName(flt.field);
+    normalizeCategoricalOp(flt, dim);
     const row = el("div", { class: "filter-row" });
     const dimSel = el("select", {
-      onchange: (e) => { flt.field = e.target.value; resetFilterForField(flt, dimByName(flt.field)); renderFilters(); scheduleRun(); },
+      onchange: (e) => { flt.field = e.target.value; resetFilterForField(flt, dimByName(flt.field)); renderQueryStrip(); scheduleRun(); refreshQsPicker(); },
     });
     for (const d of state.model.dimensions) dimSel.append(el("option", { value: d.name }, d.label));
     dimSel.value = flt.field;
-
-    const dim = dimByName(flt.field);
-    normalizeCategoricalOp(flt, dim);
-    const opSel = el("select", { class: "op", onchange: (e) => { flt.op = e.target.value; flt.value = ""; flt.values = []; renderFilters(); scheduleRun(); } });
+    const opSel = el("select", {
+      class: "op",
+      onchange: (e) => { flt.op = e.target.value; flt.value = ""; flt.values = []; renderQueryStrip(); scheduleRun(); refreshQsPicker(); },
+    });
     for (const [op, label] of opsForDim(dim)) opSel.append(el("option", { value: op }, label));
     opSel.value = flt.op;
-    const rm = el("button", { class: "rm", onclick: () => { state.filters.splice(idx, 1); renderFilters(); scheduleRun(); } }, "✕");
+    const rm = el("button", {
+      class: "rm",
+      onclick: () => { state.filters.splice(idx, 1); closeAllPopovers(); renderQueryStrip(); scheduleRun(); },
+    }, "✕");
     row.append(el("div", { class: "top" }, dimSel, opSel, rm));
-
     const srcModel = dim && !dim.spine ? state.model.name : null;
-    row.append(filterValueControl(flt, dim, srcModel, scheduleRun, renderFilters));
-    box.append(row);
+    row.append(filterValueControl(flt, dim, srcModel, () => { renderQueryStrip(); scheduleRun(); }, () => refreshQsPicker()));
+    pop.append(row);
   });
+}
+
+function addFilterAndEdit() {
+  if (!state.model.dimensions.length) return;
+  state.filters.push({ field: state.model.dimensions[0].name, op: "eq", value: "", values: [] });
+  const idx = state.filters.length - 1;
+  renderQueryStrip();
+  const pillEl = $("#query-strip").querySelector(`[data-filter-idx="${idx}"]`);
+  if (pillEl) openFilterPicker(pillEl, idx);
 }
 
 // ── visual parameters ────────────────────────────────────────
 // Declared here (name, values, default) and referenced from a measure via
-// param('name') in the Measure Lab. The declaration editor below doubles as
-// the "standalone visual" viewer control (renderParamToggleBar) — this app
-// has no separate read-only single-visual view, so previewing a value here
-// is the closest analog to a viewer toggling it (dashboards get their own
-// tile-level control in dashboard.js).
+// param('name') in the Measure Lab. This editor doubles as the "standalone
+// visual" viewer control (renderParamToggleBar) — this app has no separate
+// read-only single-visual view, so previewing a value here is the closest
+// analog to a viewer toggling it (dashboards get their own tile-level
+// control in dashboard.js).
 
 // Parses the comma-separated "values" text input per the parameter's
 // declared type: int/float use numeric parsing (deduped, NaN dropped);
@@ -309,10 +651,34 @@ function parseDefaultInput(text, type) {
   return type === "float" ? parseFloat(text) : parseInt(text, 10);
 }
 
-export function renderParameters() {
-  const box = $("#param-list");
-  box.innerHTML = "";
-  state.parameters.forEach((p, idx) => {
+export function addParameter() {
+  const n = state.parameters.length + 1;
+  const p = { name: `param_${n}`, type: "int", values: [1, 2, 3, 4], default: 1 };
+  state.parameters.push(p);
+  state.parameterValues[p.name] = p.default;
+  renderQueryStrip();
+  renderParamToggleBar();
+  scheduleRun();
+}
+
+function openParamAddPicker(anchor) {
+  openQsPicker(anchor, "add-param", (pop) => {
+    const btn = el("button", { class: "ghost" }, "+ parameter");
+    btn.addEventListener("click", () => {
+      addParameter();
+      closeAllPopovers();
+      const idx = state.parameters.length - 1;
+      const pillEl = $("#query-strip").querySelector(`[data-param-idx="${idx}"]`);
+      if (pillEl) openParamPicker(pillEl, idx);
+    });
+    pop.append(btn);
+  });
+}
+
+function openParamPicker(anchorEl, idx) {
+  openQsPicker(anchorEl, "param:" + idx, (pop) => {
+    const p = state.parameters[idx];
+    if (!p) { closeAllPopovers(); return; }
     const type = p.type || "int";
     const row = el("div", { class: "filter-row" });
     const nameInput = el("input", {
@@ -324,7 +690,7 @@ export function renderParameters() {
           state.parameterValues[p.name] = state.parameterValues[old];
           delete state.parameterValues[old];
         }
-        renderParamToggleBar(); scheduleRun();
+        renderParamToggleBar(); renderQueryStrip(); scheduleRun(); refreshQsPicker();
       },
     });
     const typeSel = el("select", {
@@ -337,7 +703,7 @@ export function renderParameters() {
         p.values = [];
         p.default = undefined;
         delete state.parameterValues[p.name];
-        renderParameters(); renderParamToggleBar(); scheduleRun();
+        renderParamToggleBar(); renderQueryStrip(); scheduleRun(); refreshQsPicker();
       },
     });
     for (const t of ["int", "float", "string"]) typeSel.append(el("option", { value: t }, t));
@@ -347,7 +713,7 @@ export function renderParameters() {
       onclick: () => {
         delete state.parameterValues[p.name];
         state.parameters.splice(idx, 1);
-        renderParameters(); renderParamToggleBar(); scheduleRun();
+        renderParamToggleBar(); closeAllPopovers(); renderQueryStrip(); scheduleRun();
       },
     }, "✕");
     const valuesInput = el("input", {
@@ -356,11 +722,11 @@ export function renderParameters() {
         p.values = parseValuesInput(e.target.value, type);
         if (!p.values.includes(p.default)) p.default = p.values[0];
         if (!p.values.includes(state.parameterValues[p.name])) state.parameterValues[p.name] = p.default;
-        renderParameters(); renderParamToggleBar(); scheduleRun();
+        renderParamToggleBar(); renderQueryStrip(); scheduleRun(); refreshQsPicker();
       },
     });
     const defaultSel = el("select", {
-      onchange: (e) => { p.default = parseDefaultInput(e.target.value, type); renderParamToggleBar(); scheduleRun(); },
+      onchange: (e) => { p.default = parseDefaultInput(e.target.value, type); renderParamToggleBar(); renderQueryStrip(); scheduleRun(); },
     });
     for (const v of p.values) defaultSel.append(el("option", { value: v }, String(v)));
     defaultSel.value = String(p.default);
@@ -368,16 +734,8 @@ export function renderParameters() {
     row.append(el("div", { class: "row2" },
       el("div", {}, el("div", { class: "field-label" }, "VALUES"), valuesInput),
       el("div", {}, el("div", { class: "field-label" }, "DEFAULT"), defaultSel)));
-    box.append(row);
+    pop.append(row);
   });
-}
-
-export function addParameter() {
-  const n = state.parameters.length + 1;
-  const p = { name: `param_${n}`, type: "int", values: [1, 2, 3, 4], default: 1 };
-  state.parameters.push(p);
-  state.parameterValues[p.name] = p.default;
-  renderParameters(); renderParamToggleBar(); scheduleRun();
 }
 
 export function renderParamToggleBar() {
@@ -391,12 +749,127 @@ export function renderParamToggleBar() {
     for (const v of p.values) {
       const btn = el("button", {
         class: v === current ? "on" : "",
-        onclick: () => { state.parameterValues[p.name] = v; renderParamToggleBar(); scheduleRun(); },
+        onclick: () => { state.parameterValues[p.name] = v; renderParamToggleBar(); renderQueryStrip(); scheduleRun(); },
       }, String(v));
       seg.append(btn);
     }
     bar.append(seg);
   }
+}
+
+// group labels render only if they have pills — except SHOW, which always
+// renders (accented when empty, per the "select at least one measure" guard
+// in run()) since it's the one group a fresh query can't do without
+function appendGroup(strip, label, pills, onAdd, forceShow) {
+  if (!pills.length && !forceShow) return;
+  const lbl = el("span", { class: "qs-label" + (strip.children.length ? " qs-sp" : "") }, label);
+  strip.append(lbl);
+  for (const p of pills) strip.append(p);
+  const add = el("span", { class: "qs-add" + (!pills.length ? " qs-accent" : "") }, "+");
+  add.addEventListener("click", () => onAdd(add));
+  strip.append(add);
+}
+
+function collapseQueryStripOverflow(strip) {
+  requestAnimationFrame(() => {
+    const kids = [...strip.children];
+    if (!kids.length) return;
+    const firstTop = kids[0].offsetTop;
+    const rowHeight = kids[0].offsetHeight || 20;
+    const lineOf = (node) => Math.round((node.offsetTop - firstTop) / (rowHeight + 8));
+    const overflow = kids.filter((k) => lineOf(k) >= 2);
+    if (!overflow.length) return;
+    for (const k of overflow) k.remove();
+    const more = el("span", { class: "qs-more" }, `+${overflow.length} more ▾`);
+    more.addEventListener("click", () => {
+      openQsPicker(more, "overflow", (pop) => {
+        const box = el("div", { class: "chip-list" });
+        for (const k of overflow) box.append(k);
+        pop.append(box);
+      });
+    });
+    strip.append(more);
+  });
+}
+
+export function renderQueryStrip() {
+  const strip = $("#query-strip");
+  if (!strip || !state.model) return;
+  strip.innerHTML = "";
+
+  const showMeas = state.measures.map((n) => measureByName(n)).filter(Boolean);
+  appendGroup(strip, "SHOW", showMeas.map((m) => pillMeasure(m)), openMeasurePicker, true);
+
+  const byDims = state.dims.map((entry) => ({ entry, dim: dimByName(entry.name) })).filter((x) => x.dim);
+  appendGroup(strip, "BY", byDims.map(({ dim, entry }) => pillDim(dim, entry)), openDimensionPicker, true);
+
+  appendGroup(strip, "WHERE", state.filters.map((flt, idx) => pillFilter(flt, idx)), addFilterAndEdit, true);
+
+  if (state.parameters.length) {
+    appendGroup(strip, "WITH", state.parameters.map((p, idx) => pillParam(p, idx)), openParamAddPicker, true);
+  }
+
+  collapseQueryStripOverflow(strip);
+  syncAutoBtn();
+  syncDisplayBtn();
+  syncSaveBadge();
+}
+
+// ── chart type (AUTO · <resolved> ▾) ─────────────────────────
+
+export function renderChartSeg() {
+  for (const btn of $("#chart-seg").querySelectorAll("button")) {
+    btn.classList.toggle("on", btn.dataset.t === state.chartType);
+  }
+}
+
+export function syncAutoBtn() {
+  const btn = $("#auto-btn");
+  if (!btn || !state.model) return;
+  if (state.chartType === "auto") {
+    const resolved = state.dims.length || state.measures.length ? decideChart(builderCtx()) : "bar";
+    btn.textContent = `AUTO · ${resolved} ▾`;
+    btn.classList.remove("on");
+  } else {
+    btn.textContent = `${state.chartType.toUpperCase()} ▾`;
+    btn.classList.add("on");
+  }
+}
+
+export function renderYScaleSeg() {
+  for (const btn of $("#yscale-seg").querySelectorAll("button")) {
+    btn.classList.toggle("on", btn.dataset.s === state.yScale);
+  }
+}
+
+// ── display popover ──────────────────────────────────────────
+
+function displayIsNonDefault() {
+  return !!state.sort.by || state.limit !== 1000 || state.yScale !== "linear" || !!state.xAxisTitle || !!state.yAxisTitle;
+}
+
+export function syncDisplayBtn() {
+  const btn = $("#display-btn");
+  const pop = $("#display-pop");
+  if (!btn || !pop) return;
+  btn.classList.toggle("accent", !pop.hidden || displayIsNonDefault());
+}
+
+export function resetDisplay() {
+  state.sort = { by: "", desc: true };
+  state.limit = 1000;
+  state.yScale = "linear";
+  state.xAxisTitle = "";
+  state.yAxisTitle = "";
+  syncSortOptions();
+  $("#sort-dir").value = "desc";
+  $("#limit").value = state.limit;
+  $("#axis-title-x").value = "";
+  $("#axis-title-y").value = "";
+  renderYScaleSeg();
+  syncDisplayBtn();
+  renderBuilderViz();
+  scheduleRun();
 }
 
 export function syncSortOptions() {
@@ -410,16 +883,24 @@ export function syncSortOptions() {
   state.sort.by = sel.value;
 }
 
-export function renderChartSeg() {
-  for (const btn of $("#chart-seg").querySelectorAll("button")) {
-    btn.classList.toggle("on", btn.dataset.t === state.chartType);
-  }
+// ── footer rows (saved visuals / dashboards) ─────────────────
+
+let footerOpen = null; // null | "saved" | "dashboards"
+
+export function toggleFooterRow(key) {
+  footerOpen = footerOpen === key ? null : key;
+  syncFooterRows();
 }
 
-export function renderYScaleSeg() {
-  for (const btn of $("#yscale-seg").querySelectorAll("button")) {
-    btn.classList.toggle("on", btn.dataset.s === state.yScale);
-  }
+export function syncFooterRows() {
+  $("#footer-row-saved").classList.toggle("open", footerOpen === "saved");
+  $("#footer-row-dash").classList.toggle("open", footerOpen === "dashboards");
+  $("#footer-expand").hidden = !footerOpen;
+  $("#saved-filter").hidden = footerOpen !== "saved";
+  $("#saved-list").hidden = footerOpen !== "saved";
+  $("#dash-list-filter").hidden = footerOpen !== "dashboards";
+  $("#dash-list").hidden = footerOpen !== "dashboards";
+  $("#new-dash").hidden = footerOpen !== "dashboards";
 }
 
 // ── saved visuals ────────────────────────────────────────────
@@ -432,6 +913,7 @@ export function setSavedFilter(text) { savedFilter = text.trim().toLowerCase(); 
 function renderSavedList() {
   const box = $("#saved-list");
   box.innerHTML = "";
+  if ($("#footer-saved-count")) $("#footer-saved-count").textContent = String(savedVisualsCache.length);
   if (!savedVisualsCache.length) { box.append(el("div", { class: "empty-note" }, "nothing saved yet — build a query and hit SAVE")); return; }
   const visuals = savedVisualsCache.filter((v) => matchesFilter(savedFilter, v.name, v.model));
   if (!visuals.length) { box.append(el("div", { class: "empty-note" }, "no matches")); return; }
@@ -469,6 +951,38 @@ export function currentSpec() {
   };
 }
 
+// ── save badge (SAVED · <age> / UNSAVED) ─────────────────────
+
+let lastSavedSpec = null;
+let lastSavedAt = 0;
+
+function elapsedLabel(ms) {
+  const s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+  if (s < 45) return "just now";
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m AGO`;
+  return `${Math.round(m / 60)}h AGO`;
+}
+
+function markSaved() {
+  lastSavedSpec = JSON.stringify(currentSpec());
+  lastSavedAt = Date.now();
+  syncSaveBadge();
+}
+
+export function syncSaveBadge() {
+  const badge = $("#save-badge");
+  if (!badge || !state.model) return;
+  if (!state.visualId) {
+    badge.textContent = state.measures.length ? "UNSAVED" : "";
+    badge.classList.toggle("unsaved", !!state.measures.length);
+    return;
+  }
+  const dirty = lastSavedSpec !== JSON.stringify(currentSpec());
+  badge.classList.toggle("unsaved", dirty);
+  badge.textContent = dirty ? "UNSAVED" : `SAVED · ${elapsedLabel(lastSavedAt)}`;
+}
+
 export async function saveVisual(asNew) {
   const name = $("#visual-name").value.trim() || "untitled_visual";
   const payload = { name, model: state.model.name, spec: currentSpec() };
@@ -483,8 +997,57 @@ export async function saveVisual(asNew) {
   }
   state.visualId = saved.id;
   state.visualName = saved.name;
+  markSaved();
   refreshSaved();
   navigate(paths.studioVisual(saved.id), { replace: true });
+}
+
+export async function duplicateVisual() {
+  if (!state.visualId) { alert("save the visual first"); return; }
+  const payload = { name: (state.visualName || "untitled_visual") + " copy", model: state.model.name, spec: currentSpec() };
+  try {
+    const saved = await api("/api/visuals", { method: "POST", body: payload });
+    refreshSaved();
+    navigate(paths.studioVisual(saved.id), { replace: true });
+  } catch (err) {
+    alert("Couldn't duplicate: " + err.message);
+  }
+}
+
+export async function copyQueryJson() {
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(buildQuery(), null, 2));
+  } catch {
+    alert("Couldn't copy — clipboard access is blocked");
+  }
+}
+
+export async function deleteCurrentVisual() {
+  if (!state.visualId) return;
+  if (!confirm(`Delete '${state.visualName || "this visual"}'? This can't be undone.`)) return;
+  try {
+    await api(`/api/visuals/${state.visualId}`, { method: "DELETE" });
+  } catch (err) {
+    alert("Couldn't delete: " + err.message);
+    return;
+  }
+  refreshSaved();
+  navigate(paths.studio());
+}
+
+export async function addCurrentToDashboard(dashId) {
+  if (!state.visualId) { alert("save the visual first"); return; }
+  try {
+    const dash = await api(`/api/dashboards/${dashId}`);
+    dash.items.push({ visual_id: state.visualId, w: 1 });
+    await api(`/api/dashboards/${dashId}`, {
+      method: "PUT",
+      body: { name: dash.name, items: dash.items, views: dash.views, active_view: dash.active_view, instant: !!dash.instant },
+    });
+    alert(`Added to '${dash.name}'.`);
+  } catch (err) {
+    alert("Couldn't add to dashboard: " + err.message);
+  }
 }
 
 export function loadVisual(v) {
@@ -510,26 +1073,31 @@ export function loadVisual(v) {
   state.showTable = false;
   resetSidebarFilters();
   syncBuilderUI();
+  markSaved();
   refreshSaved();
   scheduleRun();
 }
 
 export function syncBuilderUI() {
-  renderModelSelect();
-  renderDims();
-  renderMeasures();
-  renderFilters();
-  renderParameters();
+  renderModelSwitch();
+  renderFieldRail();
+  renderQueryStrip();
   renderParamToggleBar();
   renderChartSeg();
   renderYScaleSeg();
   syncSortOptions();
+  syncAutoBtn();
   $("#sort-dir").value = state.sort.desc ? "desc" : "asc";
   $("#limit").value = state.limit;
   $("#axis-title-x").value = state.xAxisTitle;
   $("#axis-title-y").value = state.yAxisTitle;
   $("#visual-name").value = state.visualName;
   $("#toggle-table").classList.toggle("on", state.showTable);
+  syncDisplayBtn();
+  syncSaveBadge();
+  closeAllPopovers();
+  footerOpen = null;
+  syncFooterRows();
 }
 
 export function selectModel(name) {
@@ -547,6 +1115,8 @@ export function selectModel(name) {
   state.yScale = "linear";
   resetSidebarFilters();
   state.visualId = null;
+  lastSavedSpec = null;
+  lastSavedAt = 0;
   // sensible starting query: time dim at month grain (if any) + first measure
   const timeDim = state.model.dimensions.find((d) => d.type === "time");
   if (timeDim) state.dims.push({ name: timeDim.name, grain: "1mo" });

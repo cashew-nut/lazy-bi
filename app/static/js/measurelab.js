@@ -4,7 +4,10 @@
    (saved with the visual's spec) or promote it to the model yaml. */
 "use strict";
 
-import { buildQuery, refreshModels, renderBuilderViz, renderMeasures, scheduleRun, syncSortOptions } from "./builder.js";
+import {
+  buildQuery, refreshModels, renderBuilderViz, renderFieldRail, renderQueryStrip,
+  scheduleRun, syncSortOptions,
+} from "./builder.js";
 import { dslContext, dslItems, makeCompleter } from "./completion.js";
 import { $, api, el, fmtMeasure } from "./lib.js";
 import { hooks, state } from "./state.js";
@@ -146,7 +149,8 @@ async function saveToVisual() {
   }
   if (!state.measures.includes(def.name)) state.measures.push(def.name);
   closeLab(false);
-  renderMeasures();
+  renderFieldRail();
+  renderQueryStrip();
   syncSortOptions();
   scheduleRun();
 }

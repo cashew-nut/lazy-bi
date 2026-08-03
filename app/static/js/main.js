@@ -2,8 +2,11 @@
 "use strict";
 
 import {
-  addParameter, refreshSaved, renderBuilderViz, renderChartSeg, renderFilters, renderYScaleSeg,
-  saveVisual, scheduleRun, setDimFilter, setMeasureFilter, setSavedFilter,
+  closeAllPopovers, copyQueryJson, deleteCurrentVisual, duplicateVisual, openDashPickMenu,
+  refreshSaved, renderBuilderViz, renderChartSeg, renderYScaleSeg, resetDisplay,
+  saveVisual, scheduleRun, setFieldFilter, setSavedFilter, syncAutoBtn, syncDisplayBtn,
+  toggleAutoMenu, toggleDisplayPop, toggleFirstFieldMatch, toggleFooterRow, toggleHeadMenu,
+  toggleModelPop,
 } from "./builder.js";
 import { PALETTE } from "./charts/common.js";
 import { renderViz, vizMessage } from "./charts/index.js";
@@ -52,44 +55,81 @@ async function init() {
     if (!models.length) return vizMessage($("#chart"), "no semantic models found — add a yaml file to models/", true);
     initMeasureLab();
 
-    // ── builder ──
-    $("#model-select").addEventListener("change", (e) => navigate(paths.studioModel(e.target.value)));
-    $("#add-filter").addEventListener("click", () => {
-      state.filters.push({ field: state.model.dimensions[0].name, op: "eq", value: "", values: [] });
-      renderFilters();
+    // ── builder: rail (model switch, field search, footer rows) ──
+    $("#model-switch").addEventListener("click", () => toggleModelPop());
+    $("#model-switch").addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleModelPop(); }
     });
-    $("#add-param").addEventListener("click", () => addParameter());
+    $("#field-search").addEventListener("input", (e) => setFieldFilter(e.target.value));
+    $("#field-search").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); toggleFirstFieldMatch(); }
+      else if (e.key === "Escape") { e.target.value = ""; setFieldFilter(""); e.target.blur(); }
+    });
+    $("#saved-filter").addEventListener("input", (e) => setSavedFilter(e.target.value));
+    $("#dash-list-filter").addEventListener("input", (e) => setDashListFilter(e.target.value));
+    $("#footer-row-saved").addEventListener("click", () => toggleFooterRow("saved"));
+    $("#footer-row-dash").addEventListener("click", () => toggleFooterRow("dashboards"));
+
+    // ── builder: chart-head (save badge, table toggle, overflow menu, save) ──
+    $("#head-menu-btn").addEventListener("click", () => toggleHeadMenu());
+    $("#hm-save-as").addEventListener("click", () => { closeAllPopovers(); saveVisual(true); });
+    $("#hm-add-dash").addEventListener("click", () => openDashPickMenu());
+    $("#hm-duplicate").addEventListener("click", () => { closeAllPopovers(); duplicateVisual(); });
+    $("#hm-copy-json").addEventListener("click", () => { closeAllPopovers(); copyQueryJson(); });
+    $("#hm-delete").addEventListener("click", () => { closeAllPopovers(); deleteCurrentVisual(); });
+    $("#dash-pick-back").addEventListener("click", () => { $("#dash-pick-menu").hidden = true; $("#head-menu").hidden = false; });
+    $("#save").addEventListener("click", () => saveVisual(false));
+    $("#toggle-table").addEventListener("click", () => {
+      state.showTable = !state.showTable;
+      $("#toggle-table").classList.toggle("on", state.showTable);
+      renderBuilderViz();
+    });
+
+    // ── builder: chart toolbar (chart-type menu, display popover) ──
+    $("#auto-btn").addEventListener("click", () => toggleAutoMenu());
     $("#chart-seg").addEventListener("click", (e) => {
       const btn = e.target.closest("button");
       if (!btn) return;
       state.chartType = btn.dataset.t;
       state.showTable = false;
       $("#toggle-table").classList.remove("on");
+      closeAllPopovers();
       renderChartSeg();
+      syncAutoBtn();
       renderBuilderViz();
     });
-    $("#sort-by").addEventListener("change", (e) => { state.sort.by = e.target.value; scheduleRun(); });
-    $("#sort-dir").addEventListener("change", (e) => { state.sort.desc = e.target.value === "desc"; scheduleRun(); });
-    $("#limit").addEventListener("change", (e) => { state.limit = Math.max(1, +e.target.value || 1000); scheduleRun(); });
-    $("#axis-title-x").addEventListener("change", (e) => { state.xAxisTitle = e.target.value.trim(); renderBuilderViz(); });
-    $("#axis-title-y").addEventListener("change", (e) => { state.yAxisTitle = e.target.value.trim(); renderBuilderViz(); });
+    $("#display-btn").addEventListener("click", () => toggleDisplayPop());
+    $("#display-reset").addEventListener("click", () => resetDisplay());
+    $("#sort-by").addEventListener("change", (e) => { state.sort.by = e.target.value; syncDisplayBtn(); scheduleRun(); });
+    $("#sort-dir").addEventListener("change", (e) => { state.sort.desc = e.target.value === "desc"; syncDisplayBtn(); scheduleRun(); });
+    $("#limit").addEventListener("change", (e) => { state.limit = Math.max(1, +e.target.value || 1000); syncDisplayBtn(); scheduleRun(); });
+    $("#axis-title-x").addEventListener("change", (e) => { state.xAxisTitle = e.target.value.trim(); syncDisplayBtn(); renderBuilderViz(); });
+    $("#axis-title-y").addEventListener("change", (e) => { state.yAxisTitle = e.target.value.trim(); syncDisplayBtn(); renderBuilderViz(); });
     $("#yscale-seg").addEventListener("click", (e) => {
       const btn = e.target.closest("button");
       if (!btn) return;
       state.yScale = btn.dataset.s;
       renderYScaleSeg();
+      syncDisplayBtn();
       renderBuilderViz();
     });
-    $("#dim-filter").addEventListener("input", (e) => setDimFilter(e.target.value));
-    $("#measure-filter").addEventListener("input", (e) => setMeasureFilter(e.target.value));
-    $("#saved-filter").addEventListener("input", (e) => setSavedFilter(e.target.value));
-    $("#dash-list-filter").addEventListener("input", (e) => setDashListFilter(e.target.value));
-    $("#save").addEventListener("click", () => saveVisual(false));
-    $("#save-as").addEventListener("click", () => saveVisual(true));
-    $("#toggle-table").addEventListener("click", () => {
-      state.showTable = !state.showTable;
-      $("#toggle-table").classList.toggle("on", state.showTable);
-      renderBuilderViz();
+
+    // ⌘K focuses the field search; Esc closes whichever builder popover is
+    // open; an outside click closes it too (the popovers themselves handle
+    // their own toggle-open, so this is purely the "click away" / Esc path)
+    document.addEventListener("keydown", (e) => {
+      if (state.view !== "builder") return;
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        $("#field-search").focus();
+        return;
+      }
+      if (e.key === "Escape" && document.activeElement !== $("#field-search")) closeAllPopovers();
+    });
+    document.addEventListener("click", (e) => {
+      if (state.view !== "builder") return;
+      if (e.target.closest(".menu-wrap, .model-switch, .model-pop, .display-pop, #display-btn, .qs-picker, .qs-add, .qs-pill")) return;
+      closeAllPopovers();
     });
 
     attachAccount();  // tokens / password / user-management wiring
