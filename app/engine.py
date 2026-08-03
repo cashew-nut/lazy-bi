@@ -543,6 +543,22 @@ def _referenced_dimensions(query: dict) -> dict:
     return names
 
 
+def run_query_frame(model: Model, query: dict, row_cap: Optional[int] = None) -> tuple[pl.DataFrame, list[dict], float]:
+    """run_query's body, stopping one step short of JSON: the collected frame,
+    its column metadata, and how long the whole thing took.
+
+    Split out for the instant-extract path (specs/016-instant-cross-filter/),
+    which serializes the same frame as Arrow IPC instead. `row_cap` raises the
+    default MAX_ROWS ceiling for that one caller — it is a keyword argument
+    rather than a query field precisely so no HTTP request can lift its own
+    limit; see app/extract.py.
+    """
+    started = time.perf_counter()
+    runner = _run_composite if model.is_composite else _run_single
+    df, columns = runner(model, query, row_cap) if row_cap else runner(model, query)
+    return df, columns, round((time.perf_counter() - started) * 1000, 1)
+
+
 def run_query(model: Model, query: dict) -> dict:
     """Execute a semantic query.
 
@@ -564,16 +580,13 @@ def run_query(model: Model, query: dict) -> dict:
     running one of these per fact and merging the results on the dimensions
     they share — see _run_composite.
     """
-    started = time.perf_counter()
-    runner = _run_composite if model.is_composite else _run_single
-    df, columns = runner(model, query)
-    elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+    df, columns, elapsed_ms = run_query_frame(model, query)
     # write_json serializes dates/decimals to JSON-safe values for us
     rows = json.loads(df.write_json())
     return {"columns": columns, "rows": rows, "row_count": df.height, "elapsed_ms": elapsed_ms}
 
 
-def _run_single(model: Model, query: dict) -> tuple[pl.DataFrame, list[dict]]:
+def _run_single(model: Model, query: dict, row_cap: Optional[int] = None) -> tuple[pl.DataFrame, list[dict]]:
     """Answer a query against one fact table — the whole of the engine's
     aggregation path. Returns the collected frame and its column metadata;
     run_query wraps it, and _run_composite calls it once per fact."""
@@ -877,7 +890,7 @@ def _run_single(model: Model, query: dict) -> tuple[pl.DataFrame, list[dict]]:
         else:
             lf = lf.sort(measure_names[0], descending=True)
 
-    limit = min(int(query.get("limit") or 1000), config.MAX_ROWS)
+    limit = min(int(query.get("limit") or 1000), row_cap or config.MAX_ROWS)
     df = lf.limit(limit).collect()
 
     def _measure_meta(m: str) -> dict:
@@ -960,7 +973,7 @@ def _composite_dimensions(
     return entries
 
 
-def _run_composite(model: Model, query: dict) -> tuple[pl.DataFrame, list[dict]]:
+def _run_composite(model: Model, query: dict, row_cap: Optional[int] = None) -> tuple[pl.DataFrame, list[dict]]:
     """Answer a query against a multi-fact model: one _run_single per fact that
     contributes a measure, merged on the shared dimensions."""
     if query.get("inline_measures"):
@@ -1002,10 +1015,10 @@ def _run_composite(model: Model, query: dict) -> tuple[pl.DataFrame, list[dict]]
             "filters": filters,
             # merge first, then sort and cut: a per-fact limit would drop
             # buckets another fact still has rows for
-            "limit": config.MAX_ROWS,
+            "limit": row_cap or config.MAX_ROWS,
             "parameters": query.get("parameters"),
             "parameter_values": query.get("parameter_values"),
-        })
+        }, row_cap)
         qualified = {m: f"{binding.alias}{semantic.MEASURE_SEP}{m}" for m in own_measures}
         part = part.rename(qualified).select([*dim_names, *qualified.values()])
         part = _align_join_key(part, dim_names)
@@ -1031,7 +1044,7 @@ def _run_composite(model: Model, query: dict) -> tuple[pl.DataFrame, list[dict]]
         else:
             out = out.sort(measure_names[0], descending=True, nulls_last=True)
 
-    out = out.head(min(int(query.get("limit") or 1000), config.MAX_ROWS))
+    out = out.head(min(int(query.get("limit") or 1000), row_cap or config.MAX_ROWS))
     columns = [
         {"name": name, "label": shared[name].label, "kind": "dimension",
          "type": shared[name].type}

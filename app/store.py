@@ -119,9 +119,13 @@ class VisualStore:
 
     # ── dashboards ──────────────────────────────────────────
     # The items column stores {"items": [{"visual_id": int, "w": 1|2}],
-    # "views": [{"name": str, "filters": [...]}], "active_view": int}.
+    # "views": [{"name": str, "filters": [...]}], "active_view": int,
+    # "instant": bool}.
     # A view is a named filter set pushed down to every tile whose model has
     # the filtered dimension. Legacy rows stored a bare items list.
+    # `instant` opts the dashboard into client-side re-aggregation (specs/
+    # 016-instant-cross-filter/); absent means false, so every dashboard
+    # saved before that feature keeps behaving exactly as it did.
 
     @staticmethod
     def _dash_to_dict(row: sqlite3.Row) -> dict:
@@ -139,6 +143,7 @@ class VisualStore:
             "items": items or [],
             "views": views,
             "active_view": min(payload.get("active_view", 0), len(views) - 1),
+            "instant": bool(payload.get("instant", False)),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
@@ -154,27 +159,29 @@ class VisualStore:
         return self._dash_to_dict(row) if row else None
 
     @staticmethod
-    def _dash_payload(items: list, views: list, active_view: int) -> str:
+    def _dash_payload(items: list, views: list, active_view: int, instant: bool = False) -> str:
         if not views:
             views = [{"name": "default", "filters": []}]
-        return json.dumps({"items": items, "views": views, "active_view": active_view})
+        return json.dumps({"items": items, "views": views, "active_view": active_view,
+                           "instant": bool(instant)})
 
-    def create_dashboard(self, name: str, items: list, views: list, active_view: int = 0) -> dict:
+    def create_dashboard(self, name: str, items: list, views: list, active_view: int = 0,
+                         instant: bool = False) -> dict:
         now = self._now()
         with self._conn() as conn:
             cur = conn.execute(
                 "INSERT INTO dashboards (name, items, created_at, updated_at) VALUES (?, ?, ?, ?)",
-                (name, self._dash_payload(items, views, active_view), now, now),
+                (name, self._dash_payload(items, views, active_view, instant), now, now),
             )
         return self.get_dashboard(cur.lastrowid)
 
     def update_dashboard(self, dash_id: int, name: str, items: list, views: list,
-                         active_view: int = 0) -> Optional[dict]:
+                         active_view: int = 0, instant: bool = False) -> Optional[dict]:
         now = self._now()
         with self._conn() as conn:
             cur = conn.execute(
                 "UPDATE dashboards SET name = ?, items = ?, updated_at = ? WHERE id = ?",
-                (name, self._dash_payload(items, views, active_view), now, dash_id),
+                (name, self._dash_payload(items, views, active_view, instant), now, dash_id),
             )
         return self.get_dashboard(dash_id) if cur.rowcount else None
 

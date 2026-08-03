@@ -40,6 +40,21 @@ export async function api(path, opts = {}) {
   return data;
 }
 
+// POST for an endpoint whose *response* isn't JSON (the Arrow IPC extract
+// endpoint, specs/016-instant-cross-filter/). Same CSRF header and 401
+// handling as api() above, but the caller owns reading the body — it may be
+// bytes, and a non-2xx answer here is a routine fallback signal rather than
+// an exception, so this never throws on status.
+export async function apiRaw(path, body) {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Requested-With": "fetch" },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 401) window.dispatchEvent(new Event("auth-required"));
+  return res;
+}
+
 // Multipart upload (dataset files) — same CSRF header and 401/error handling
 // as api() above, but the body is a FormData the browser must set its own
 // Content-Type (with boundary) for, so it's never forced to application/json.

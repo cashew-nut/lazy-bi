@@ -38,6 +38,9 @@ MATRIX = {
     ("GET", "/api/dimensions/{name}/spec"): "viewer",
     ("GET", "/api/dimensions/{name}/yaml"): "viewer",
     ("POST", "/api/query"): "viewer",
+    # the same query, same model resolution, same data — only the wire format
+    # differs, so instant mode must grant no role any access it lacked (FR-003)
+    ("POST", "/api/query/extract"): "viewer",
     ("GET", "/api/visuals"): "viewer",
     ("GET", "/api/dashboards"): "viewer",
     ("GET", "/api/dashboards/{dash_id}"): "viewer",
