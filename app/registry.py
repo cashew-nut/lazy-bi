@@ -11,6 +11,7 @@ from .authstore import AuthStore
 from .conversationstore import ConversationStore
 from .localbundlestore import LocalBundleStore
 from .localmodelstore import LocalModelStore
+from .localpipelinestore import LocalPipelineStore
 from .memorystore import MemoryStore
 from .pipelinestore import PipelineStore
 from .sandboxstore import SandboxStore
@@ -31,6 +32,7 @@ class Registry:
         self.sandbox_store: Optional[SandboxStore] = None
         self.local_model_store: Optional[LocalModelStore] = None
         self.local_bundle_store: Optional[LocalBundleStore] = None
+        self.local_pipeline_store: Optional[LocalPipelineStore] = None
 
     def init(self) -> None:
         self.store = VisualStore(config.DB_PATH)
@@ -45,6 +47,7 @@ class Registry:
         self.sandbox_store = SandboxStore(config.DB_PATH)
         self.local_model_store = LocalModelStore(config.DB_PATH)
         self.local_bundle_store = LocalBundleStore(config.DB_PATH)
+        self.local_pipeline_store = LocalPipelineStore(config.DB_PATH)
         self.reload_all()
 
     def reload_all(self) -> None:
@@ -102,8 +105,34 @@ class Registry:
                 if model.locked:
                     raise
                 del self.models[name]
-        self.layers = pipelines_mod.load_layers(config.PIPELINES_DIR)
+        # layers: the DB row (once anyone has PUT /lineage/layers) always
+        # wins over the built-in file — a PUT there always replaces the
+        # whole ordered list, so there's no per-layer merge to do, unlike
+        # pipelines/models/bundles below.
+        db_layers_yaml = self.local_pipeline_store.get_layers_yaml() if self.local_pipeline_store else None
+        self.layers = (
+            pipelines_mod.parse_layers_text(db_layers_yaml) if db_layers_yaml is not None
+            else pipelines_mod.load_layers(config.PIPELINES_DIR)
+        )
         self.pipelines = pipelines_mod.load_pipelines(config.PIPELINES_DIR, self.layers)
+        if self.local_pipeline_store is not None:
+            for row in self.local_pipeline_store.list():
+                try:
+                    local = pipelines_mod.parse_pipeline_text(row["yaml"])
+                except pipelines_mod.PipelineError:
+                    continue  # a hand-corrupted row shouldn't sink the whole reload
+                if local.name in self.pipelines:
+                    continue  # a name the built-in catalog (or an earlier local row) already owns wins
+                local.locked = False
+                local.origin = None
+                self.pipelines[local.name] = local
+                try:
+                    pipelines_mod.validate_pipeline_set(self.pipelines, self.layers)
+                except pipelines_mod.PipelineError:
+                    # this pipeline alone made the set invalid (stale layer
+                    # ref, target collision) — drop just it, same tolerance
+                    # as the parse failure above
+                    del self.pipelines[local.name]
 
     def read_model_text(self, model: semantic.Model) -> str:
         if model.locked:
@@ -128,6 +157,12 @@ class Registry:
         if bundle.locked:
             return bundle.origin.read_text()
         row = self.local_bundle_store.get(bundle.name)
+        return row["yaml"] if row else ""
+
+    def read_pipeline_text(self, pipeline: pipelines_mod.Pipeline) -> str:
+        if pipeline.locked:
+            return pipeline.origin.read_text()
+        row = self.local_pipeline_store.get(pipeline.name)
         return row["yaml"] if row else ""
 
 
