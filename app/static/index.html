@@ -61,113 +61,45 @@
   </header>
 
   <div class="layout">
-    <aside>
-      <details class="mk-section" open>
-        <summary class="sec-title"><span class="tree-caret">▸</span>Model</summary>
-        <div class="mk-section-body">
-          <select id="model-select"></select>
-          <div id="model-desc" class="empty-note"></div>
-          <div class="empty-note" style="margin-top:6px">author models in the <b>MODELLING</b> workspace</div>
-        </div>
-      </details>
-
-      <details class="mk-section" open>
-        <summary class="sec-title"><span class="tree-caret">▸</span>Display</summary>
-        <div class="mk-section-body">
-          <div class="field-label">CHART</div>
-          <div class="seg wrap" id="chart-seg">
-            <button data-t="auto">AUTO</button>
-            <button data-t="bar">BAR</button>
-            <button data-t="line">LINE</button>
-            <button data-t="scatter">SCTR</button>
-            <button data-t="sankey">SNKY</button>
-            <button data-t="ribbon">RIBN</button>
-            <button data-t="geo">GEO</button>
-            <button data-t="stat">STAT</button>
-            <button data-t="table">TABLE</button>
+    <aside id="studio-rail">
+      <div class="rail-a">
+        <div class="model-switch" id="model-switch" tabindex="0">
+          <span class="ms-glyph">◫</span>
+          <div class="ms-info">
+            <div class="ms-label" id="model-switch-label"></div>
+            <div class="ms-source" id="model-switch-source"></div>
           </div>
-          <div class="row2" style="margin-top:8px">
-            <div>
-              <div class="field-label">SORT</div>
-              <select id="sort-by"><option value="">auto</option></select>
-            </div>
-            <div>
-              <div class="field-label">DIR</div>
-              <select id="sort-dir"><option value="desc">desc</option><option value="asc">asc</option></select>
-            </div>
-            <div>
-              <div class="field-label">LIMIT</div>
-              <input type="number" id="limit" value="1000" min="1" max="10000">
-            </div>
-          </div>
-          <div class="field-label" style="margin-top:10px">AXIS TITLES</div>
-          <div class="row2">
-            <div>
-              <div class="field-label">X AXIS</div>
-              <input type="text" id="axis-title-x" placeholder="auto" spellcheck="false">
-            </div>
-            <div>
-              <div class="field-label">Y AXIS</div>
-              <input type="text" id="axis-title-y" placeholder="auto" spellcheck="false">
-            </div>
-          </div>
-          <div class="field-label" style="margin-top:10px">Y SCALE</div>
-          <div class="seg" id="yscale-seg">
-            <button data-s="linear">LINEAR</button>
-            <button data-s="log">LOG</button>
-          </div>
+          <span class="ms-car">▾</span>
         </div>
-      </details>
+        <div class="model-pop" id="model-pop" hidden></div>
 
-      <details class="mk-section" open>
-        <summary class="sec-title"><span class="tree-caret">▸</span>Dimensions</summary>
-        <div class="mk-section-body">
-          <input type="text" id="dim-filter" class="sb-filter" placeholder="type to filter…" spellcheck="false">
-          <div id="dim-list" class="chip-list"></div>
+        <div class="field-search">
+          <span class="fs-ic">⌕</span>
+          <input type="text" id="field-search" placeholder="find a field…" spellcheck="false" autocomplete="off">
+          <span class="fs-key">⌘K</span>
         </div>
-      </details>
+      </div>
 
-      <details class="mk-section" open>
-        <summary class="sec-title"><span class="tree-caret">▸</span>Measures</summary>
-        <div class="mk-section-body">
-          <input type="text" id="measure-filter" class="sb-filter" placeholder="type to filter…" spellcheck="false">
-          <div id="measure-list" class="chip-list"></div>
-          <button class="ghost" id="lab-open" style="margin-top:6px">+ new measure</button>
-        </div>
-      </details>
+      <div class="rail-b" id="field-rail">
+        <div id="field-rail-list"></div>
+        <button class="ghost" id="lab-open">+ NEW MEASURE</button>
+      </div>
 
-      <details class="mk-section" open>
-        <summary class="sec-title"><span class="tree-caret">▸</span>Filters</summary>
-        <div class="mk-section-body">
-          <div id="filter-list"></div>
-          <button class="ghost" id="add-filter">+ add filter</button>
+      <div class="rail-c" id="rail-footer">
+        <div class="footer-row" id="footer-row-saved" data-key="saved">
+          <span class="fr-car">▸</span><span class="fr-lbl">Saved Visuals</span><span class="fr-cnt" id="footer-saved-count">0</span>
         </div>
-      </details>
-
-      <details class="mk-section" open>
-        <summary class="sec-title"><span class="tree-caret">▸</span>Parameters</summary>
-        <div class="mk-section-body">
-          <div id="param-list"></div>
-          <button class="ghost" id="add-param">+ add parameter</button>
+        <div class="footer-row" id="footer-row-dash" data-key="dashboards">
+          <span class="fr-car">▸</span><span class="fr-lbl">Dashboards</span><span class="fr-cnt" id="footer-dash-count">0</span>
         </div>
-      </details>
-
-      <details class="mk-section" open>
-        <summary class="sec-title"><span class="tree-caret">▸</span>Saved Visuals</summary>
-        <div class="mk-section-body">
-          <input type="text" id="saved-filter" class="sb-filter" placeholder="type to filter…" spellcheck="false">
-          <div id="saved-list"></div>
+        <div class="footer-expand" id="footer-expand" hidden>
+          <input type="text" id="saved-filter" class="sb-filter" placeholder="type to filter…" spellcheck="false" hidden>
+          <div id="saved-list" hidden></div>
+          <input type="text" id="dash-list-filter" class="sb-filter" placeholder="type to filter…" spellcheck="false" hidden>
+          <div id="dash-list" hidden></div>
+          <button class="ghost" id="new-dash" data-role="author" hidden>+ new dashboard</button>
         </div>
-      </details>
-
-      <details class="mk-section" open>
-        <summary class="sec-title"><span class="tree-caret">▸</span>Dashboards</summary>
-        <div class="mk-section-body">
-          <input type="text" id="dash-list-filter" class="sb-filter" placeholder="type to filter…" spellcheck="false">
-          <div id="dash-list"></div>
-          <button class="ghost" id="new-dash" data-role="author">+ new dashboard</button>
-        </div>
-      </details>
+      </div>
     </aside>
 
     <main>
@@ -271,11 +203,27 @@
       <div id="builder-view" class="chart-card">
         <div class="chart-head">
           <input id="visual-name" placeholder="untitled_visual" spellcheck="false">
-          <button class="btn plain" id="toggle-table">TABLE VIEW</button>
-          <button class="btn alt" id="save-as" data-role="author">SAVE AS NEW</button>
+          <span class="save-badge" id="save-badge"></span>
+          <button class="btn plain" id="toggle-table">⌗ TABLE</button>
+          <div class="menu-wrap">
+            <button class="btn plain" id="head-menu-btn">⋯</button>
+            <div class="menu-pop" id="head-menu" hidden>
+              <button class="menu-item" id="hm-save-as" data-role="author">SAVE AS NEW</button>
+              <button class="menu-item" id="hm-add-dash" data-role="author">ADD TO DASHBOARD…</button>
+              <button class="menu-item" id="hm-duplicate" data-role="author">DUPLICATE</button>
+              <button class="menu-item" id="hm-copy-json">COPY QUERY JSON</button>
+              <button class="menu-item menu-item-danger" id="hm-delete" data-role="author">DELETE VISUAL</button>
+            </div>
+            <div class="menu-pop" id="dash-pick-menu" hidden>
+              <button class="menu-item" id="dash-pick-back">‹ back</button>
+              <div id="dash-pick-list"></div>
+            </div>
+          </div>
           <button class="btn" id="save" data-role="author">SAVE</button>
         </div>
-        <div id="meta"></div>
+
+        <div class="query-strip" id="query-strip"></div>
+
         <div id="param-toggle-bar" hidden></div>
         <div id="measure-lab" hidden>
           <div class="lab-row">
@@ -305,7 +253,66 @@
           </div>
         </div>
         <div id="role-map" class="role-map-box" hidden></div>
-        <div id="legend" class="legend-box"></div>
+
+        <div class="chart-toolbar" id="chart-toolbar">
+          <div id="legend" class="legend-box"></div>
+          <div id="meta"></div>
+          <div class="menu-wrap">
+            <button class="btn plain" id="auto-btn">AUTO · bar ▾</button>
+            <div class="menu-pop auto-menu" id="auto-menu" hidden>
+              <div class="seg wrap" id="chart-seg">
+                <button data-t="auto">AUTO</button>
+                <button data-t="bar">BAR</button>
+                <button data-t="line">LINE</button>
+                <button data-t="scatter">SCTR</button>
+                <button data-t="sankey">SNKY</button>
+                <button data-t="ribbon">RIBN</button>
+                <button data-t="geo">GEO</button>
+                <button data-t="stat">STAT</button>
+                <button data-t="table">TABLE</button>
+              </div>
+            </div>
+          </div>
+          <button class="btn plain" id="display-btn">⚙ DISPLAY</button>
+
+          <div class="display-pop" id="display-pop" hidden>
+            <div class="dp-head">
+              <span class="dp-title">DISPLAY</span>
+              <span class="dp-rule"></span>
+              <span class="dp-reset" id="display-reset">reset</span>
+            </div>
+            <div class="row2 dp-row1">
+              <div style="flex:1.4">
+                <div class="field-label">SORT</div>
+                <select id="sort-by"><option value="">auto</option></select>
+              </div>
+              <div>
+                <div class="field-label">DIR</div>
+                <select id="sort-dir"><option value="desc">desc</option><option value="asc">asc</option></select>
+              </div>
+              <div style="flex:.9">
+                <div class="field-label">LIMIT</div>
+                <input type="number" id="limit" value="1000" min="1" max="10000">
+              </div>
+            </div>
+            <div class="field-label">Y SCALE</div>
+            <div class="seg" id="yscale-seg">
+              <button data-s="linear">LINEAR</button>
+              <button data-s="log">LOG</button>
+            </div>
+            <div class="field-label" style="margin-top:10px">AXIS TITLES</div>
+            <div class="row2">
+              <div>
+                <input type="text" id="axis-title-x" placeholder="x · auto" spellcheck="false">
+              </div>
+              <div>
+                <input type="text" id="axis-title-y" placeholder="y · auto" spellcheck="false">
+              </div>
+            </div>
+            <div class="dp-hint">click the chart's axis labels to rename them in place</div>
+          </div>
+        </div>
+
         <div id="chart" class="chart-box"><div class="msg">initialising…</div></div>
         <div id="table-wrap" hidden></div>
       </div>

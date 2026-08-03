@@ -184,10 +184,11 @@ header {
    callouts), and an element-wide rule would style — or, worse, the
    mode-nav rule below would display:none — every one of them */
 .layout > aside {
-  width: 304px; flex: none; overflow-y: auto;
+  width: 252px; flex: none; overflow: hidden;
   border-right: 1px solid var(--line);
   background: var(--panel);
-  padding: 14px 14px 40px;
+  padding: 0;
+  display: flex; flex-direction: column;
 }
 .layout > aside section { margin-bottom: 18px; }
 .sb-filter { margin-bottom: 6px; }
@@ -275,6 +276,110 @@ button.ghost:hover { color: var(--neon); border-color: var(--neon); }
 .saved-item .del:hover { color: var(--bad); }
 .empty-note { color: var(--ink-3); font-size: 11px; padding: 4px 2px; }
 
+/* ── studio rail (Quiet Builder) ───────────────────────
+   zone A (model + search, pinned) / zone B (field list, scrolls) /
+   zone C (footer rows, pinned) — see .layout > aside above for the
+   flex-column shell these three zones live in. */
+.rail-a {
+  flex: none; padding: 12px 12px 10px; display: flex; flex-direction: column;
+  gap: 9px; border-bottom: 1px solid var(--line); position: relative;
+}
+.rail-b {
+  flex: 1; min-height: 0; overflow-y: auto; padding: 11px 12px 4px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.rail-c { flex: none; border-top: 1px solid var(--line); display: flex; flex-direction: column; }
+
+.model-switch {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 9px; border: 1px solid var(--line); border-radius: 3px;
+  background: var(--panel-2); cursor: pointer; transition: border-color 0.12s;
+}
+.model-switch:hover, .model-switch:focus-visible { border-color: var(--ink-3); outline: none; }
+.ms-glyph { color: var(--neon); flex: none; }
+.ms-info { flex: 1; min-width: 0; }
+.ms-label { font-size: 11.5px; color: var(--ink); letter-spacing: 0.5px; }
+.ms-source {
+  font-size: 9px; color: var(--ink-3); margin-top: 2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ms-car { color: var(--ink-3); font-size: 10px; flex: none; }
+
+.model-pop {
+  position: absolute; left: 12px; right: 12px; top: 100%; margin-top: 4px; z-index: 6;
+  border: 1px solid var(--neon); border-radius: 3px; background: var(--popover);
+  box-shadow: 0 8px 26px color-mix(in srgb, var(--neon) 18%, transparent);
+  padding: 4px; max-height: 280px; overflow-y: auto;
+}
+.model-pop-item { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; border-radius: 3px; cursor: pointer; }
+.model-pop-item:hover { background: color-mix(in srgb, var(--neon) 8%, transparent); }
+.model-pop-item .nm { font-size: 11.5px; color: var(--ink-2); }
+.model-pop-item.on .nm { color: var(--neon); }
+.model-pop-item .desc { font-size: 9.5px; color: var(--ink-3); }
+
+.field-search {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 9px; border: 1px solid var(--line); border-radius: 3px; background: var(--bg);
+}
+.field-search:focus-within { border-color: var(--neon); box-shadow: 0 0 6px var(--neon-dim); }
+.fs-ic { color: var(--neon); font-size: 11px; flex: none; }
+.field-search input {
+  flex: 1; width: auto; background: none; border: none; padding: 0;
+  font-size: 11px; color: var(--ink);
+}
+.field-search input:focus { border: none; box-shadow: none; }
+.field-search input::placeholder { color: var(--ink-3); }
+.fs-key {
+  font-size: 9px; color: var(--ink-3); border: 1px solid var(--line);
+  border-radius: 2px; padding: 1px 4px; flex: none;
+}
+
+.fr-group-head { display: flex; align-items: center; gap: 8px; margin: 12px 0 3px; }
+.fr-group-head:first-child { margin-top: 0; }
+.fr-group-title { font-size: 10px; letter-spacing: 2.5px; text-transform: uppercase; }
+.fr-group-title.in-query { color: var(--neon); }
+.fr-group-title.available { color: var(--ink-3); }
+.fr-group-rule { flex: 1; height: 1px; }
+.fr-group-rule.in-query { background: linear-gradient(90deg, var(--neon-dim), transparent); }
+.fr-group-rule.available { background: var(--line); }
+.fr-group-count { font-size: 9px; color: var(--ink-3); flex: none; }
+
+/* "available" rows: quieter than the selected .chip rows above — no border box */
+.field-row {
+  display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 3px;
+  color: var(--ink-2); cursor: pointer; user-select: none;
+  transition: color 0.12s, background 0.12s;
+}
+.field-row:hover { color: var(--ink); background: color-mix(in srgb, var(--neon) 6%, transparent); }
+.field-row .tick { width: 14px; color: var(--ink-3); flex: none; }
+.field-row .lbl { flex: 1; font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.field-row .hint { font-size: 9px; color: var(--ink-3); flex: none; }
+
+.fr-folders { border-top: 1px dashed var(--line); margin-top: 4px; padding-top: 2px; }
+.rail-b button.ghost { flex: none; margin-top: 6px; }
+
+.footer-row {
+  display: flex; align-items: center; gap: 8px; padding: 9px 14px;
+  color: var(--ink-2); cursor: pointer; border-top: 1px solid var(--line);
+}
+.footer-row:first-child { border-top: none; }
+.footer-row:hover { color: var(--ink); }
+.footer-row.open .fr-car { transform: rotate(90deg); color: var(--neon); }
+.fr-car {
+  font-size: 9px; color: var(--ink-3); flex: none;
+  transition: transform 0.15s ease-out, color 0.15s ease-out;
+}
+.fr-lbl { flex: 1; font-size: 10px; letter-spacing: 2px; text-transform: uppercase; }
+.fr-cnt { font-size: 9px; color: var(--ink-3); flex: none; }
+/* capped + scrollable "expands upward in place" panel; 40vh approximates the
+   spec's "40% of the rail height" since the rail's own height is a flex
+   auto-size, which percentage heights can't resolve against */
+.footer-expand {
+  max-height: 40vh; overflow-y: auto; padding: 8px 14px 10px;
+  border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px;
+}
+.footer-expand .sb-filter { margin-bottom: 0; }
+
 /* ── main / chart card ──────────────────────────────── */
 main { flex: 1; min-width: 0; padding: 16px 20px; display: flex; flex-direction: column; }
 .chart-card {
@@ -302,15 +407,14 @@ main { flex: 1; min-width: 0; padding: 16px 20px; display: flex; flex-direction:
 .btn.alt:hover { background: color-mix(in srgb, var(--pink) 10%, transparent); box-shadow: 0 0 10px color-mix(in srgb, var(--pink) 40%, transparent); }
 .btn.plain { border-color: var(--line); color: var(--ink-2); }
 .btn.plain:hover { color: var(--ink); box-shadow: none; }
+.btn.plain.accent { border-color: var(--neon); color: var(--neon); background: color-mix(in srgb, var(--neon) 8%, transparent); }
 .btn.on { background: var(--neon); color: var(--bg); font-weight: 700; }
 .btn:disabled { opacity: 0.35; cursor: not-allowed; box-shadow: none; }
 .btn:disabled:hover { background: transparent; box-shadow: none; }
 
-#meta {
-  padding: 6px 16px; color: var(--ink-3); font-size: 11px; letter-spacing: 0.5px;
-  border-bottom: 1px solid var(--line); min-height: 27px;
-  display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
-}
+/* meta text now lives inline in .chart-toolbar (see below); no more
+   standalone 27px band */
+#meta { color: var(--ink-3); font-size: 10px; letter-spacing: 0.5px; white-space: nowrap; flex: none; }
 #meta .path { color: var(--ink-2); }
 #meta .ms { color: var(--neon); }
 
@@ -326,6 +430,11 @@ main { flex: 1; min-width: 0; padding: 16px 20px; display: flex; flex-direction:
 .legend-box:empty { display: none; }
 .leg-item { display: flex; align-items: center; gap: 6px; color: var(--ink-2); font-size: 11px; }
 .leg-item .sw { width: 10px; height: 10px; border-radius: 2px; }
+/* the builder canvas's legend now sits inline in .chart-toolbar, flex:1 —
+   scoped by id so dashboard tiles / the focus modal (also .legend-box) keep
+   their own layout */
+#legend { flex: 1; min-width: 0; padding: 0; }
+#legend:empty { display: flex; }
 
 .role-map-box {
   display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
@@ -342,6 +451,100 @@ main { flex: 1; min-width: 0; padding: 16px 20px; display: flex; flex-direction:
   padding: 2px 8px; letter-spacing: 1px; font-size: 9px; font-weight: 700;
 }
 .role-chip .role-val { color: var(--ink); letter-spacing: 0.3px; }
+
+/* ── chart-head extras: save badge, overflow menu ─────── */
+.save-badge {
+  font-size: 9.5px; color: var(--ink-3); border: 1px solid var(--line);
+  border-radius: 2px; padding: 1px 5px; flex: none; white-space: nowrap;
+}
+.save-badge:empty { display: none; }
+.save-badge.unsaved { color: var(--warn); border-color: var(--warn); }
+
+.menu-wrap { position: relative; flex: none; }
+.menu-pop {
+  position: absolute; right: 0; top: 100%; margin-top: 4px; z-index: 6;
+  min-width: 180px; border: 1px solid var(--neon); border-radius: 3px;
+  background: var(--popover); box-shadow: 0 8px 26px color-mix(in srgb, var(--neon) 18%, transparent);
+  padding: 4px; display: flex; flex-direction: column;
+}
+.menu-item {
+  background: none; border: none; text-align: left; cursor: pointer;
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.5px;
+  color: var(--ink-2); padding: 7px 9px; border-radius: 3px;
+}
+.menu-item:hover { color: var(--ink); background: color-mix(in srgb, var(--neon) 8%, transparent); }
+.menu-item:disabled { opacity: 0.35; cursor: not-allowed; }
+.menu-item-danger:hover { color: var(--bad); background: color-mix(in srgb, var(--bad) 10%, transparent); }
+.auto-menu { padding: 8px; min-width: 0; }
+.auto-menu .seg.wrap { width: 190px; }
+
+/* ── query strip ───────────────────────────────────────
+   the whole query as one editable line above the chart */
+.query-strip {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--card-top);
+}
+.qs-label { font-size: 9.5px; letter-spacing: 2px; color: var(--ink-3); }
+.qs-label.qs-sp { margin-left: 6px; }
+.qs-pill {
+  display: flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: 12px;
+  font-size: 11px; color: var(--ink);
+}
+.qs-pill.qs-measure { border: 1px solid color-mix(in srgb, var(--pink) 55%, transparent); background: color-mix(in srgb, var(--pink) 7%, transparent); }
+.qs-pill.qs-dim { border: 1px solid color-mix(in srgb, var(--neon) 55%, transparent); background: color-mix(in srgb, var(--neon) 7%, transparent); }
+.qs-pill.qs-filter, .qs-pill.qs-param { border: 1px solid var(--line); background: var(--panel-2); cursor: pointer; }
+.qs-pill .qs-op { color: var(--warn); }
+.qs-pill .qs-grain {
+  color: var(--ink-2); cursor: pointer; background: none; border: none;
+  font-family: var(--mono); font-size: 11px; padding: 0;
+}
+.qs-pill .qs-rm {
+  color: var(--ink-3); cursor: pointer; flex: none; background: none; border: none;
+  font-family: var(--mono); font-size: 11px; padding: 0; line-height: 1;
+}
+.qs-pill .qs-rm:hover { color: var(--bad); }
+.qs-add {
+  font-size: 11px; color: var(--ink-3); border: 1px dashed var(--line); border-radius: 12px;
+  padding: 4px 8px; cursor: pointer; background: none; font-family: var(--mono);
+}
+.qs-add:hover { color: var(--neon); border-color: var(--neon); }
+.qs-add.qs-accent { color: var(--neon); border-color: var(--neon); }
+.qs-more {
+  font-size: 11px; color: var(--ink-2); border: 1px solid var(--line); border-radius: 12px;
+  padding: 4px 9px; cursor: pointer; background: var(--panel-2); font-family: var(--mono);
+}
+
+/* popover pickers opened from a "+" pill (measure/dimension/filter/parameter/overflow) */
+.qs-picker {
+  position: fixed; z-index: 50; width: 260px;
+  border: 1px solid var(--neon); border-radius: 3px; background: var(--popover);
+  box-shadow: 0 8px 26px color-mix(in srgb, var(--neon) 18%, transparent);
+  padding: 8px; max-height: 320px; overflow-y: auto;
+}
+.qs-picker .field-search { margin-bottom: 6px; }
+.qs-picker .field-row, .qs-picker .chip { margin: 0; }
+.qs-picker .filter-row { margin-bottom: 0; }
+
+/* ── chart toolbar (legend + meta + chart-type + display) ─ */
+.chart-toolbar {
+  display: flex; align-items: center; gap: 14px;
+  padding: 8px 14px 4px; position: relative;
+}
+
+.display-pop {
+  position: absolute; right: 14px; top: 38px; z-index: 5; width: 270px;
+  border: 1px solid var(--neon); border-radius: 3px; background: var(--popover);
+  box-shadow: 0 8px 26px color-mix(in srgb, var(--neon) 18%, transparent);
+  padding: 12px;
+}
+.dp-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; }
+.dp-title { font-size: 10px; letter-spacing: 2.5px; color: var(--neon); }
+.dp-rule { flex: 1; height: 1px; background: linear-gradient(90deg, var(--neon-dim), transparent); }
+.dp-reset { font-size: 9.5px; color: var(--ink-3); cursor: pointer; }
+.dp-reset:hover { color: var(--neon); }
+.dp-row1 { margin-bottom: 10px; }
+.display-pop .field-label:not(:first-child) { margin-top: 10px; }
+.dp-hint { margin-top: 10px; font-size: 10px; color: var(--ink-3); line-height: 1.5; }
 
 .chart-box { flex: 1; min-height: 0; position: relative; padding: 8px 10px 12px; }
 .chart-box svg { display: block; width: 100%; height: 100%; }

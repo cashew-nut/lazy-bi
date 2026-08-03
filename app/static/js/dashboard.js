@@ -27,6 +27,7 @@ export function setDashListFilter(text) { dashListFilter = text.trim().toLowerCa
 export function renderDashList() {
   const box = $("#dash-list");
   box.innerHTML = "";
+  if ($("#footer-dash-count")) $("#footer-dash-count").textContent = String(state.dashboards.length);
   if (!state.dashboards.length) {
     box.append(el("div", { class: "empty-note" }, "no dashboards yet"));
     return;
