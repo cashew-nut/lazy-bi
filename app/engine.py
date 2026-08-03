@@ -1074,6 +1074,8 @@ def dimension_values(model: Model, dimension: str, limit: int = 100) -> list:
     # interval join at all, hence the empty dimension set
     interval = _interval_binding_for(model, dimension)
     base = _scan_bundle(interval) if interval else scan(model, {})
+    if dim.column not in base.collect_schema():
+        raise QueryError(f"column '{dim.column}' not found in source")
     df = (
         base
         .select(pl.col(dim.column).alias(dim.name))

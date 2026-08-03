@@ -33,6 +33,26 @@ def test_unknown_model_is_404(client):
     assert client.post("/api/query", json={"model": "x", "measures": ["y"]}).status_code == 404
 
 
+def test_dimension_values_column_missing_from_source_is_400(client, monkeypatch):
+    """Regression: a dimension whose declared column drifted from the real
+    file underneath it (e.g. the source got repointed at a differently-shaped
+    extract) used to raise a raw polars.exceptions.ColumnNotFoundError that
+    only the app-wide 500 handler caught — a scary generic error plus a
+    traceback dumped to the server console for what is really a routine
+    400-worthy "your model and your data disagree" case. It should read the
+    same as any other bad-config query error, matching /api/query's shape."""
+    import dataclasses
+
+    from app.registry import registry
+
+    model = registry.models["sales"]
+    bad_dim = dataclasses.replace(model.dimension("channel"), column="does_not_exist")
+    monkeypatch.setitem(model.dimensions, "channel", bad_dim)
+    res = client.get("/api/models/sales/dimensions/channel/values")
+    assert res.status_code == 400
+    assert "not found in source" in res.json()["detail"]
+
+
 def test_visuals_roundtrip(client):
     created = client.post("/api/visuals", json={
         "name": "t", "model": "sales", "spec": {"query": {}, "chartType": "auto"}}).json()
