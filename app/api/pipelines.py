@@ -44,6 +44,14 @@ def _parse_or_400(text: str) -> pipelines_mod.Pipeline:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+def _forbid_if_locked(pipeline: pipelines_mod.Pipeline) -> None:
+    if pipeline.locked:
+        raise HTTPException(
+            status_code=403,
+            detail=f"pipeline '{pipeline.name}' is part of the built-in catalog and can't be edited",
+        )
+
+
 def _list_entry(pipeline: pipelines_mod.Pipeline) -> dict:
     latest = registry.pipeline_store.latest_for(pipeline.name)
     out = pipeline.to_public()
@@ -78,9 +86,11 @@ def reload_pipelines():
 
 @router.post("/pipelines", status_code=201)
 def create_pipeline(body: PipelineYamlIn, user: User = Depends(require_role("admin"))):
+    """Always creates a local pipeline (app/localpipelinestore.py) — the app
+    never writes into config.PIPELINES_DIR; that (empty-by-default) built-in
+    catalog only changes via a code change, same as create_model."""
     parsed = _parse_or_400(body.yaml)
-    path = config.PIPELINES_DIR / f"{parsed.name}.yaml"
-    if parsed.name in registry.pipelines or path.exists():
+    if parsed.name in registry.pipelines:
         raise HTTPException(status_code=409, detail=f"pipeline '{parsed.name}' already exists")
     for existing in registry.pipelines.values():
         if existing.target.path == parsed.target.path:
@@ -88,8 +98,7 @@ def create_pipeline(body: PipelineYamlIn, user: User = Depends(require_role("adm
                 status_code=409,
                 detail=f"target '{parsed.target.path}' is already owned by pipeline '{existing.name}'",
             )
-    config.PIPELINES_DIR.mkdir(parents=True, exist_ok=True)
-    path.write_text(body.yaml)
+    registry.local_pipeline_store.create(parsed.name, body.yaml)
     _reload_or_400()
     registry.auth_store.record_audit(
         "pipeline.create", user.display_name, actor_user_id=user.id, target=parsed.name
@@ -100,12 +109,14 @@ def create_pipeline(body: PipelineYamlIn, user: User = Depends(require_role("adm
 @router.get("/pipelines/{name}/yaml")
 def get_pipeline_yaml(name: str):
     pipeline = get_pipeline(name)
-    return {"name": name, "file": pipeline.origin.name, "yaml": pipeline.origin.read_text()}
+    return {"name": name, "file": pipeline.origin.name if pipeline.locked else None,
+            "yaml": registry.read_pipeline_text(pipeline)}
 
 
 @router.put("/pipelines/{name}/yaml")
 def put_pipeline_yaml(name: str, body: PipelineYamlIn, user: User = Depends(require_role("admin"))):
     pipeline = get_pipeline(name)
+    _forbid_if_locked(pipeline)
     parsed = _parse_or_400(body.yaml)
     if parsed.name != name:
         raise HTTPException(
@@ -118,7 +129,7 @@ def put_pipeline_yaml(name: str, body: PipelineYamlIn, user: User = Depends(requ
                 status_code=409,
                 detail=f"target '{parsed.target.path}' is already owned by pipeline '{existing.name}'",
             )
-    pipeline.origin.write_text(body.yaml)
+    registry.local_pipeline_store.update(name, body.yaml)
     _reload_or_400()
     registry.auth_store.record_audit(
         "pipeline.update", user.display_name, actor_user_id=user.id, target=name
@@ -129,15 +140,16 @@ def put_pipeline_yaml(name: str, body: PipelineYamlIn, user: User = Depends(requ
 @router.delete("/pipelines/{name}", status_code=204)
 def delete_pipeline(name: str, user: User = Depends(require_role("admin"))):
     pipeline = get_pipeline(name)
+    _forbid_if_locked(pipeline)
     if registry.pipeline_store.pending_for(name):
         raise HTTPException(
             status_code=409, detail=f"pipeline '{name}' has a run queued or running — wait for it to finish"
         )
-    # capture the matched model before this pipeline's file (and registry
+    # capture the matched model before this pipeline's row (and registry
     # entry) disappear — orphan-marking is a write triggered by this DELETE
     # itself, never deferred to a reload side effect
     model_name = pipelines_mod.match_target_model(pipeline, registry.models)
-    pipeline.origin.unlink()
+    registry.local_pipeline_store.delete(name)
     _reload_or_400()
     if model_name and model_name in registry.models:
         model = registry.models[model_name]
@@ -218,8 +230,7 @@ def put_layers(body: LayersIn, user: User = Depends(require_role("admin"))):
         )
         for entry in body.layers
     }
-    config.PIPELINES_DIR.mkdir(parents=True, exist_ok=True)
-    (config.PIPELINES_DIR / "layers.yaml").write_text(pipelines_mod.layers_to_yaml(layers))
+    registry.local_pipeline_store.set_layers_yaml(pipelines_mod.layers_to_yaml(layers))
     _reload_or_400()
     registry.auth_store.record_audit("layers.update", user.display_name, actor_user_id=user.id)
     return {"layers": [{"name": l.name, "label": l.label} for l in registry.layers.values()]}

@@ -19,8 +19,9 @@ _tmpdir = tempfile.mkdtemp(prefix="cash_intel_test_")
 os.environ["CI_S3_ENDPOINT"] = TEST_ENDPOINT          # also disables the embedded emulator
 os.environ["CI_DB_PATH"] = str(Path(_tmpdir) / "test.db")
 os.environ["CI_LOCAL_DATA_DIR"] = str(Path(_tmpdir) / "local_data")
-# the pipeline API writes created pipelines and layers.yaml to disk; without
-# this the suite leaves them in the repo's own (untracked) pipelines/
+# every reload_all() still checks this directory for a built-in pipeline
+# catalog (empty by default; pipelines created through the API now live in
+# the DB, not here) — keep it out of the repo's own (untracked) pipelines/
 os.environ["CI_PIPELINES_DIR"] = str(Path(_tmpdir) / "pipelines")
 
 PASSWORDS = {

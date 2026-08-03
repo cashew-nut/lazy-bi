@@ -62,6 +62,31 @@ def test_create_get_update_delete_roundtrip(client):
     assert not any(p["name"] == name for p in client.get("/api/pipelines").json())
 
 
+def test_create_persists_to_database_not_filesystem(client):
+    """The bug this guards against: a pipeline created through the API must
+    live in local_pipeline_store (SQLite), not as a file under
+    config.PIPELINES_DIR — a file there is lost on redeploy and isn't shared
+    across processes/instances."""
+    from app import config
+    from app.registry import registry
+
+    name = "test_api_db_backed"
+    yaml_text = _yaml(name, f"s3://cash-intel/pipeline_test/{name}")
+    try:
+        created = client.post("/api/pipelines", json={"yaml": yaml_text})
+        assert created.status_code == 201, created.text
+        assert created.json()["locked"] is False
+
+        assert not (config.PIPELINES_DIR / f"{name}.yaml").exists()
+        row = registry.local_pipeline_store.get(name)
+        assert row is not None
+        assert row["yaml"] == yaml_text
+        assert registry.pipelines[name].locked is False
+    finally:
+        client.delete(f"/api/pipelines/{name}")
+    assert registry.local_pipeline_store.get(name) is None
+
+
 def test_create_duplicate_name_conflict(client):
     name = "test_api_dup_name"
     yaml_text = _yaml(name, f"s3://cash-intel/pipeline_test/{name}")
@@ -428,6 +453,25 @@ def test_layers_crud_roundtrip(client):
         assert [l["name"] for l in layers] == ["bronze", "silver", "gold"]
         assert layers[0]["label"] == "Bronze"
         assert layers[1]["label"] == "Silver"  # auto-titled default
+    finally:
+        client.put("/api/lineage/layers",
+                   json={"layers": [{"name": l["name"], "label": l["label"]} for l in original]})
+
+
+def test_layers_persist_to_database_not_filesystem(client):
+    from app import config
+    from app.registry import registry
+
+    original = client.get("/api/lineage/layers").json()["layers"]
+    try:
+        assert client.put("/api/lineage/layers", json={"layers": [
+            {"name": "bronze", "label": "Bronze"},
+        ]}).status_code == 200
+        assert not (config.PIPELINES_DIR / "layers.yaml").exists()
+        assert not (config.PIPELINES_DIR / "layers.yml").exists()
+        db_yaml = registry.local_pipeline_store.get_layers_yaml()
+        assert db_yaml is not None
+        assert "bronze" in db_yaml
     finally:
         client.put("/api/lineage/layers",
                    json={"layers": [{"name": l["name"], "label": l["label"]} for l in original]})

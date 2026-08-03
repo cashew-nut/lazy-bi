@@ -76,12 +76,18 @@ class Pipeline:
     script: str = ""
     lineage: list[LineageEntry] = field(default_factory=list)
     origin: Optional[Path] = None  # yaml file the pipeline was loaded from
+    # True for a pipeline loaded from config.PIPELINES_DIR (a built-in
+    # catalog, empty by default); False for one persisted through the API,
+    # which lives in app/localpipelinestore.py instead — mirrors
+    # semantic.Model.locked.
+    locked: bool = True
 
     def to_public(self) -> dict:
         return {
             "name": self.name,
             "label": self.label,
             "description": self.description,
+            "locked": self.locked,
             "file": self.origin.name if self.origin else None,
             "sources": [
                 {"name": s.name, "format": s.format, "path": s.path, "layer": s.layer}
@@ -303,6 +309,15 @@ def _validate_unique_targets(pipelines: dict[str, "Pipeline"]) -> None:
         owner_of[path] = p.name
 
 
+def validate_pipeline_set(pipelines: dict[str, "Pipeline"], layers: dict[str, Layer]) -> None:
+    """The two set-wide checks every loaded pipeline collection must satisfy,
+    whatever mix of built-in (file) and local (DB) pipelines it's made of —
+    see app/registry.py's reload_all, which re-runs this after layering
+    local pipelines on top of the built-in catalog."""
+    _validate_layer_refs(pipelines, layers)
+    _validate_unique_targets(pipelines)
+
+
 def load_pipelines(directory: Path, layers: dict[str, Layer]) -> dict[str, Pipeline]:
     """Load every pipeline in `directory` (skipping layers.yaml), then
     cross-validate layer references and target-path uniqueness across the
@@ -327,23 +342,19 @@ def load_pipelines(directory: Path, layers: dict[str, Layer]) -> dict[str, Pipel
         pipeline.origin = path
         pipelines[pipeline.name] = pipeline
 
-    _validate_layer_refs(pipelines, layers)
-    _validate_unique_targets(pipelines)
+    validate_pipeline_set(pipelines, layers)
     return pipelines
 
 
-def load_layers(directory: Path) -> dict[str, Layer]:
-    """Load the optional, deployment-wide ordered layer list from
-    pipelines/layers.yaml (or .yml). Absent, empty, or comment-only ⇒ {}
-    (layers are simply unused everywhere — FR-020)."""
+def parse_layers_text(text: Optional[str]) -> dict[str, Layer]:
+    """Parse a layers.yaml document's text directly — the shared core of
+    load_layers (file-backed, built-in) and the DB-backed layers row
+    (app/localpipelinestore.py's pipeline_layers table). Absent, empty, or
+    comment-only ⇒ {} (layers are simply unused everywhere — FR-020)."""
     layers: dict[str, Layer] = {}
-    path = directory / "layers.yaml"
-    if not path.is_file():
-        path = directory / "layers.yml"
-    if not path.is_file():
+    if not text:
         return layers
-    with open(path) as fh:
-        raw = yaml.safe_load(fh)
+    raw = yaml.safe_load(text)
     if not raw:
         return layers
     for entry in raw.get("layers") or []:
@@ -356,6 +367,19 @@ def load_layers(directory: Path) -> dict[str, Layer]:
             raise PipelineError(f"layers.yaml: duplicate layer '{name}'")
         layers[name] = Layer(name=name, label=entry.get("label", name.replace("_", " ").title()))
     return layers
+
+
+def load_layers(directory: Path) -> dict[str, Layer]:
+    """Load the optional, deployment-wide ordered layer list from
+    pipelines/layers.yaml (or .yml) — the built-in catalog's layers, empty
+    by default. Absent, empty, or comment-only ⇒ {}."""
+    path = directory / "layers.yaml"
+    if not path.is_file():
+        path = directory / "layers.yml"
+    if not path.is_file():
+        return {}
+    with open(path) as fh:
+        return parse_layers_text(fh.read())
 
 
 def layers_to_yaml(layers: dict[str, Layer]) -> str:
