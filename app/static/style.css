@@ -423,6 +423,15 @@ main { flex: 1; min-width: 0; padding: 16px 20px; display: flex; flex-direction:
   display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
 }
 #param-toggle-bar:empty, #param-toggle-bar[hidden] { display: none; }
+
+/* filter editor, expanded inline below the query strip for whichever WHERE
+   pill is open — same .filter-row as the old sidebar's filter section, just
+   relocated (see renderFilterEditBar in builder.js) */
+.filter-edit-bar {
+  padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel-2);
+}
+.filter-edit-bar[hidden] { display: none; }
+.filter-edit-bar .filter-row { margin-bottom: 0; background: var(--bg); }
 .param-seg { display: flex; align-items: center; gap: 6px; }
 .param-seg .lbl { color: var(--ink-3); font-size: 11px; letter-spacing: 0.5px; }
 
@@ -493,6 +502,7 @@ main { flex: 1; min-width: 0; padding: 16px 20px; display: flex; flex-direction:
 .qs-pill.qs-measure { border: 1px solid color-mix(in srgb, var(--pink) 55%, transparent); background: color-mix(in srgb, var(--pink) 7%, transparent); }
 .qs-pill.qs-dim { border: 1px solid color-mix(in srgb, var(--neon) 55%, transparent); background: color-mix(in srgb, var(--neon) 7%, transparent); }
 .qs-pill.qs-filter, .qs-pill.qs-param { border: 1px solid var(--line); background: var(--panel-2); cursor: pointer; }
+.qs-pill.qs-filter.open { border-color: var(--neon); color: var(--ink); box-shadow: 0 0 0 1px color-mix(in srgb, var(--neon) 35%, transparent); }
 .qs-pill .qs-op { color: var(--warn); }
 .qs-pill .qs-grain {
   color: var(--ink-2); cursor: pointer; background: none; border: none;

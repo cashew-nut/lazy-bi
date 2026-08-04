@@ -554,17 +554,18 @@ function pillFilter(flt, idx) {
   rm.addEventListener("click", (e) => {
     e.stopPropagation();
     state.filters.splice(idx, 1);
-    closeAllPopovers();
+    if (openFilter === flt) openFilter = null;
     renderQueryStrip();
+    renderFilterEditBar();
     scheduleRun();
   });
-  const pill = el("span", { class: "qs-pill qs-filter" },
+  const pill = el("span", { class: "qs-pill qs-filter" + (flt === openFilter ? " open" : "") },
     (dim ? dim.label : flt.field) + " ",
     el("span", { class: "qs-op" }, filterOpLabel(flt.op)),
     " " + filterValueLabel(flt) + " ",
     rm);
   pill.dataset.filterIdx = String(idx);
-  pill.addEventListener("click", (e) => { if (e.target !== rm) openFilterPicker(pill, idx); });
+  pill.addEventListener("click", (e) => { if (e.target !== rm) toggleFilterEdit(flt); });
   return pill;
 }
 
@@ -586,42 +587,64 @@ function pillParam(p, idx) {
   return pill;
 }
 
-function openFilterPicker(anchorEl, idx) {
-  openQsPicker(anchorEl, "filter:" + idx, (pop) => {
-    const flt = state.filters[idx];
-    if (!flt) { closeAllPopovers(); return; }
-    const dim = dimByName(flt.field);
-    normalizeCategoricalOp(flt, dim);
-    const row = el("div", { class: "filter-row" });
-    const dimSel = el("select", {
-      onchange: (e) => { flt.field = e.target.value; resetFilterForField(flt, dimByName(flt.field)); renderQueryStrip(); scheduleRun(); refreshQsPicker(); },
-    });
-    for (const d of state.model.dimensions) dimSel.append(el("option", { value: d.name }, d.label));
-    dimSel.value = flt.field;
-    const opSel = el("select", {
-      class: "op",
-      onchange: (e) => { flt.op = e.target.value; flt.value = ""; flt.values = []; renderQueryStrip(); scheduleRun(); refreshQsPicker(); },
-    });
-    for (const [op, label] of opsForDim(dim)) opSel.append(el("option", { value: op }, label));
-    opSel.value = flt.op;
-    const rm = el("button", {
-      class: "rm",
-      onclick: () => { state.filters.splice(idx, 1); closeAllPopovers(); renderQueryStrip(); scheduleRun(); },
-    }, "✕");
-    row.append(el("div", { class: "top" }, dimSel, opSel, rm));
-    const srcModel = dim && !dim.spine ? state.model.name : null;
-    row.append(filterValueControl(flt, dim, srcModel, () => { renderQueryStrip(); scheduleRun(); }, () => refreshQsPicker()));
-    pop.append(row);
+// the filter currently expanded inline below the query strip (its editor
+// row), or null when none is — kept by reference rather than index so a
+// splice elsewhere in state.filters can't leave it pointing at the wrong
+// filter (see renderFilterEditBar's state.filters.includes() guard)
+let openFilter = null;
+
+function toggleFilterEdit(flt) {
+  openFilter = openFilter === flt ? null : flt;
+  renderQueryStrip();
+  renderFilterEditBar();
+}
+
+// filters get an always-in-flow inline editor (below the query strip, like
+// the old sidebar's filter rows) rather than a floating qs-picker: it's the
+// one editor dense enough — dim/op selects plus a searchable value list —
+// that a popover made feel like a modal, per design feedback
+function renderFilterEditBar() {
+  const bar = $("#filter-edit-bar");
+  if (!bar) return;
+  bar.innerHTML = "";
+  if (!openFilter || !state.filters.includes(openFilter)) {
+    openFilter = null;
+    bar.hidden = true;
+    return;
+  }
+  bar.hidden = false;
+  const flt = openFilter;
+  const dim = dimByName(flt.field);
+  normalizeCategoricalOp(flt, dim);
+  const row = el("div", { class: "filter-row" });
+  const dimSel = el("select", {
+    onchange: (e) => { flt.field = e.target.value; resetFilterForField(flt, dimByName(flt.field)); renderQueryStrip(); scheduleRun(); renderFilterEditBar(); },
   });
+  for (const d of state.model.dimensions) dimSel.append(el("option", { value: d.name }, d.label));
+  dimSel.value = flt.field;
+  const opSel = el("select", {
+    class: "op",
+    onchange: (e) => { flt.op = e.target.value; flt.value = ""; flt.values = []; renderQueryStrip(); scheduleRun(); renderFilterEditBar(); },
+  });
+  for (const [op, label] of opsForDim(dim)) opSel.append(el("option", { value: op }, label));
+  opSel.value = flt.op;
+  const rm = el("button", {
+    class: "rm",
+    onclick: () => { state.filters.splice(state.filters.indexOf(flt), 1); openFilter = null; renderQueryStrip(); renderFilterEditBar(); scheduleRun(); },
+  }, "✕");
+  row.append(el("div", { class: "top" }, dimSel, opSel, rm));
+  const srcModel = dim && !dim.spine ? state.model.name : null;
+  row.append(filterValueControl(flt, dim, srcModel, () => { renderQueryStrip(); scheduleRun(); }));
+  bar.append(row);
 }
 
 function addFilterAndEdit() {
   if (!state.model.dimensions.length) return;
-  state.filters.push({ field: state.model.dimensions[0].name, op: "eq", value: "", values: [] });
-  const idx = state.filters.length - 1;
+  const flt = { field: state.model.dimensions[0].name, op: "eq", value: "", values: [] };
+  state.filters.push(flt);
+  openFilter = flt;
   renderQueryStrip();
-  const pillEl = $("#query-strip").querySelector(`[data-filter-idx="${idx}"]`);
-  if (pillEl) openFilterPicker(pillEl, idx);
+  renderFilterEditBar();
 }
 
 // ── visual parameters ────────────────────────────────────────
@@ -1096,6 +1119,8 @@ export function syncBuilderUI() {
   syncDisplayBtn();
   syncSaveBadge();
   closeAllPopovers();
+  openFilter = null;
+  renderFilterEditBar();
   footerOpen = null;
   syncFooterRows();
 }
