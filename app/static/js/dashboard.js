@@ -252,7 +252,7 @@ export function renderDashFilters() {
       for (const [op, label] of opsForDim(dim)) opSel.append(el("option", { value: op }, label));
       opSel.value = flt.op;
       row.append(opSel);
-      row.append(filterValueControl(flt, dim, unionSrcModel(dim, flt.field), dashFiltersChanged, renderDashFilters));
+      row.append(filterValueControl(flt, dim, unionSrcModel(dim, flt.field), dashFiltersChanged));
       box.append(row);
     }
     return;
@@ -273,7 +273,7 @@ export function renderDashFilters() {
     opSel.value = flt.op;
     row.append(dimSel, opSel);
 
-    row.append(filterValueControl(flt, dim, unionSrcModel(dim, flt.field), dashFiltersChanged, renderDashFilters));
+    row.append(filterValueControl(flt, dim, unionSrcModel(dim, flt.field), dashFiltersChanged));
     row.append(el("button", { class: "rm", onclick: () => { view.filters.splice(idx, 1); dashFiltersChanged(); } }, "✕"));
     box.append(row);
   });
@@ -914,7 +914,7 @@ export function renderFocusFilters() {
     row.append(dimSel, opSel);
 
     const srcModel = dim && !dim.spine ? model.name : null;
-    row.append(filterValueControl(flt, dim, srcModel, focusChanged, renderFocusFilters));
+    row.append(filterValueControl(flt, dim, srcModel, focusChanged));
     row.append(el("button", { class: "rm", onclick: () => { focus.filters.splice(idx, 1); renderFocusFilters(); focusChanged(); } }, "✕"));
     box.append(row);
   });

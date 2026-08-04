@@ -170,6 +170,10 @@ export function multiSelectPicker(flt, options, onChange) {
 
   renderChips();
   wrap.append(chips, input, list);
+  // called once the distinct-value fetch below resolves — updates the
+  // option pool and re-renders in place, so it never disturbs whatever the
+  // user has already typed/focused (see filterValueControl)
+  wrap.setOptions = (newOptions) => { options = newOptions; renderList(); };
   return wrap;
 }
 
@@ -177,23 +181,36 @@ export function multiSelectPicker(flt, options, onChange) {
 // categorical/"in"/"not_in", timeValueControl for time dimensions, a plain
 // select for other enumerable (e.g. numeric) fields, else free text.
 // `srcModel` is the model to pull distinct values from (falsy if none, e.g.
-// a spine-only dimension).
-export function filterValueControl(flt, dim, srcModel, onChange, onListLoaded) {
+// a spine-only dimension). The distinct-value list for a field is usually
+// still loading when this control is first built; it self-updates via
+// setOptions()/fill() once fetchDimValues resolves, rather than asking the
+// caller to rebuild the control (which used to wipe out in-progress typing —
+// see fetchDimValues below).
+export function filterValueControl(flt, dim, srcModel, onChange) {
   const isTime = dim && dim.type === "time";
   const multi = flt.op === "in" || flt.op === "not_in";
   if (isTime && !multi && flt.op !== "contains") return timeValueControl(flt, onChange);
   const distinct = srcModel && valueCache[srcModel + ":" + flt.field];
   const haveList = Array.isArray(distinct) && distinct.length;
   if (multi) {
-    if (!haveList && srcModel) fetchDimValues(srcModel, flt.field, onListLoaded);
-    return multiSelectPicker(flt, haveList ? distinct : [], onChange);
+    const ctrl = multiSelectPicker(flt, haveList ? distinct : [], onChange);
+    if (!haveList && srcModel) {
+      fetchDimValues(srcModel, flt.field, () => ctrl.setOptions(valueCache[srcModel + ":" + flt.field] || []));
+    }
+    return ctrl;
   }
   if ((flt.op === "eq" || flt.op === "ne") && dim && !isTime) {
-    if (!haveList && srcModel) fetchDimValues(srcModel, flt.field, onListLoaded);
     const sel = el("select", { onchange: (e) => { flt.value = e.target.value; onChange(); } });
-    sel.append(el("option", { value: "" }, "— pick —"));
-    for (const v of (haveList ? distinct : [])) sel.append(el("option", { value: String(v) }, String(v)));
-    sel.value = flt.value || "";
+    const fill = (list) => {
+      sel.innerHTML = "";
+      sel.append(el("option", { value: "" }, "— pick —"));
+      for (const v of list) sel.append(el("option", { value: String(v) }, String(v)));
+      sel.value = flt.value || "";
+    };
+    fill(haveList ? distinct : []);
+    if (!haveList && srcModel) {
+      fetchDimValues(srcModel, flt.field, () => fill(valueCache[srcModel + ":" + flt.field] || []));
+    }
     return sel;
   }
   return el("input", {
