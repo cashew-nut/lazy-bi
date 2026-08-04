@@ -1,0 +1,8 @@
+name: analytics
+label: Analytics Agent
+description: >
+  Ask business questions in plain language against the platform's declared
+  semantic models and get back grounded, structured answers, over MCP.
+skills:
+  - ask_question
+  - list_models

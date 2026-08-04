@@ -5,11 +5,14 @@ own; every skill call is still gated by that skill's own `min_role` against
 the caller's real role (see app/skills.py), regardless of which agent's
 declaration listed it.
 
-Loaded once at startup by `Registry.init()` (app/registry.py), after the
-skill registry itself has been populated (app/skills_analytics.py's import
-side effect) — an agent referencing an unregistered skill name is a
-load-time error, not a silently-skipped entry, mirroring how app/semantic.py
-validates model YAML.
+Reloaded on every `Registry.reload_all()` (app/registry.py) — same as
+`registry.models`/`registry.pipelines` — so editing an agent's declared
+skill list and reloading changes what the MCP server exposes immediately
+(spec 017 User Story 3). The skill registry itself is only ever populated
+once, before the first reload (app/skills_analytics.py's import side
+effect, triggered from `Registry.init()`) — an agent referencing an
+unregistered skill name is a load-time error, not a silently-skipped
+entry, mirroring how app/semantic.py validates model YAML.
 """
 from __future__ import annotations
 

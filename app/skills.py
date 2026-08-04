@@ -32,12 +32,13 @@ from .auth import User
 SkillHandler = Callable[[User, dict], dict]
 
 # Only consulted when a rate-limited skill is blocked (see invoke_skill).
-# Lets a skill shape its own "blocked" result (e.g. ask_question's
-# outcome-discriminated envelope) instead of a generic one.
-BlockedFormatter = Callable[[str], dict]
+# Lets a skill shape its own "blocked" result from the reason plus the
+# original call args (e.g. ask_question echoes back a caller-supplied
+# conversation_id) instead of a generic one.
+BlockedFormatter = Callable[[str, dict], dict]
 
 
-def _default_blocked(reason: str) -> dict:
+def _default_blocked(reason: str, args: dict) -> dict:
     return {"error": reason}
 
 
@@ -145,7 +146,7 @@ def invoke_skill(skill: Skill, user: User, args: dict) -> dict:
         _audit(f"mcp_skill:{skill.name}:rate_limited", user,
                f"limit {config.MCP_RATE_LIMIT_PER_MIN}/min")
         formatter = skill.on_blocked or _default_blocked
-        return formatter("rate limit exceeded")
+        return formatter("rate limit exceeded", args)
 
     result = skill.handler(user, args)
     _audit(f"mcp_skill:{skill.name}", user, f"args={args!r}"[:300])

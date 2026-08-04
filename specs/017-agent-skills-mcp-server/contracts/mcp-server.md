@@ -65,7 +65,7 @@ conversational-analytics chat.
 **Output** (data-model.md's `ask_question output`):
 ```json
 {
-  "conversation_id": 42,
+  "conversation_id": 42,  // null only if blocked before any conversation was touched (not configured, rate limited)
   "question": { "role": "user", "question_text": "..." },
   "response": {
     "role": "assistant",

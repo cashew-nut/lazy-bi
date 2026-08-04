@@ -107,16 +107,14 @@ def _get_owned(conversation_id: int, user: User) -> dict:
 
 
 def _start_ask(conversation_id: int, user: User, question: str):
-    """Shared setup for ask() and ask_stream(): persist the user's turn and
-    assemble everything a Translator needs to answer it. The catalog carries
-    every stored model memory (learned synonyms merged into the declared
-    ones, notes as learned-fact lines) — the self-learning loop's read half."""
+    """Shared setup for ask() and ask_stream(): fetch+authorize the
+    conversation (chat.py's own job — nlq.start_ask() takes an already-owned
+    `conv` dict, since a raised HTTPException here is HTTP-specific), then
+    delegate the transport-agnostic rest (persist the user's turn, build the
+    catalog, compute prior-turn context) to the promoted app/nlq.py seam
+    also used by app/skills_analytics.py's ask_question (research.md R6)."""
     conv = _get_owned(conversation_id, user)
-    question_msg = registry.conversation_store.add_message(
-        conversation_id, "user", question_text=question)
-    catalog = nlq.build_catalog(registry.models, conv["model_scope"],
-                                memories=registry.memory_store.all_by_model())
-    prior_context = _prior_turns(conv)
+    question_msg, catalog, prior_context = nlq.start_ask(conv, question)
     translator = _translator_for(conv.get("llm_model"))
     return conv, question_msg, catalog, prior_context, translator
 
@@ -160,149 +158,6 @@ def delete_conversation(conversation_id: int, user: User = Depends(require_role(
         raise HTTPException(status_code=404, detail="conversation not found")
 
 
-def _prior_turns(conv: dict) -> list[PriorTurn]:
-    """Recent successfully-answered turns, as follow-up context (research.md
-    R5) — resolved structure only, never raw result rows. Declines and
-    clarifying questions aren't reusable context, so only outcome in
-    (answered, answered_empty) contributes a turn."""
-    turns = []
-    last_question = ""
-    for msg in conv["messages"]:
-        if msg["role"] == "user":
-            last_question = msg["question_text"] or ""
-        elif msg["outcome"] in ("answered", "answered_empty") and msg["resolved_query"]:
-            rq = msg["resolved_query"]
-            turns.append(PriorTurn(
-                question_text=last_question,
-                model=rq.get("model"), dimensions=rq.get("dimensions", []),
-                measures=rq.get("measures", []), filters=rq.get("filters", []),
-                sort=rq.get("sort"), limit=rq.get("limit"),
-                inline_measures=rq.get("inline_measures", []),
-            ))
-    return turns[-_PRIOR_CONTEXT_TURNS:]
-
-
-def _summarize(resolved: dict, result: dict) -> str:
-    """Templated (non-LLM) grounding summary — cheaper and faster than a
-    second model round trip, and trivially guaranteed to only ever describe
-    what `result` actually contains (T016)."""
-    if result["row_count"] == 0:
-        return "That query ran successfully but returned no matching data."
-    dim_cols = [c["name"] for c in result["columns"] if c["kind"] == "dimension"]
-    measure_cols = [c for c in result["columns"] if c["kind"] == "measure"]
-    if not dim_cols and result["row_count"] == 1:
-        row = result["rows"][0]
-        parts = [f"{c['label']}: {row.get(c['name'])}" for c in measure_cols]
-        return "; ".join(parts)
-    top = result["rows"][0]
-    headline = ", ".join(f"{c['label']}: {top.get(c['name'])}" for c in measure_cols)
-    return (f"Found {result['row_count']} row(s) broken down by "
-            f"{', '.join(dim_cols)}. Top row — {headline}.")
-
-
-def _handle_translator_error(conversation_id: int, user: User, question_msg: dict,
-                              question: str, exc: TranslatorError) -> dict:
-    store = registry.conversation_store
-    response_msg = store.add_message(
-        conversation_id, "assistant", outcome="error",
-        answer_text=f"the assistant is temporarily unavailable: {exc}",
-    )
-    registry.auth_store.record_audit(
-        "chat_ask", user.username, actor_user_id=user.id,
-        target=f"conversation:{conversation_id} outcome:error question:{question!r}",
-    )
-    return {"question": question_msg, "response": response_msg, "learned": []}
-
-
-def _persist_learned(conversation_id: int, user: User, decision: nlq.Decision) -> list[dict]:
-    """The self-learning loop's write half: store the decision's already
-    re-validated memories against their semantic models (never against the
-    user — created_by is audit attribution only) and audit-log each write.
-    MemoryStore.add returning None (duplicate / at cap) is a silent no-op,
-    so re-learning a known fact costs nothing and reports nothing."""
-    saved = []
-    for mem in decision.learned:
-        stored = registry.memory_store.add(
-            mem["model"], mem["kind"], mem["subject"], mem["content"],
-            source="chat", created_by=user.username, conversation_id=conversation_id,
-        )
-        if stored:
-            saved.append(stored)
-            registry.auth_store.record_audit(
-                "chat_memory", user.username, actor_user_id=user.id,
-                target=(f"conversation:{conversation_id} memory:{stored['id']} "
-                        f"model:{stored['model']} kind:{stored['kind']} "
-                        f"subject:{stored['subject']!r} content:{stored['content']!r}"),
-            )
-    return saved
-
-
-def _resolved_query_dict(decision) -> dict:
-    return {
-        "model": decision.model, "dimensions": decision.dimensions,
-        "measures": decision.measures, "filters": decision.filters,
-        "sort": decision.sort, "limit": decision.limit,
-        "inline_measures": decision.inline_measures,
-    }
-
-
-def _handle_decision(conversation_id: int, user: User, question_msg: dict,
-                      question: str, decision: nlq.Decision) -> dict:
-    """Persist `decision` as the assistant's turn (executing a ProposeQuery
-    against the live engine first) and audit-log the outcome. Shared by
-    ask() and ask_stream() — a decision is handled identically regardless of
-    whether it was reached via a streamed or a plain translate() call."""
-    store = registry.conversation_store
-    # persisted before the outcome branches: what this exchange taught about
-    # a model is independent of whether the query it accompanied succeeded
-    learned = _persist_learned(conversation_id, user, decision)
-    if isinstance(decision, nlq.Decline):
-        response_msg = store.add_message(
-            conversation_id, "assistant", outcome="declined", answer_text=decision.reason_text)
-        audit_target = f"conversation:{conversation_id} outcome:declined question:{question!r}"
-    elif isinstance(decision, nlq.AskClarification):
-        answer_text = decision.question_text
-        if decision.candidates:
-            answer_text += f" (options: {', '.join(decision.candidates)})"
-        response_msg = store.add_message(
-            conversation_id, "clarification", outcome="clarification", answer_text=answer_text)
-        audit_target = (f"conversation:{conversation_id} outcome:clarification "
-                         f"question:{question!r} candidates:{decision.candidates}")
-    elif isinstance(decision, nlq.ShowQuery):
-        resolved_query = _resolved_query_dict(decision)
-        response_msg = store.add_message(
-            conversation_id, "assistant", outcome="query_shown", resolved_query=resolved_query,
-            answer_text=f"Here's the query behind “{decision.question_text}”.",
-        )
-        audit_target = f"conversation:{conversation_id} outcome:query_shown question:{question!r}"
-    else:
-        model = registry.models[decision.model]
-        resolved_query = _resolved_query_dict(decision)
-        try:
-            result = engine.run_query(model, resolved_query)
-        except (semantic.ModelError, engine.QueryError) as exc:
-            response_msg = store.add_message(
-                conversation_id, "assistant", outcome="error", answer_text=f"query failed: {exc}")
-            registry.auth_store.record_audit(
-                "chat_ask", user.username, actor_user_id=user.id,
-                target=f"conversation:{conversation_id} outcome:error question:{question!r}",
-            )
-            return {"question": question_msg, "response": response_msg, "learned": learned}
-        outcome = "answered_empty" if result["row_count"] == 0 else "answered"
-        response_msg = store.add_message(
-            conversation_id, "assistant", outcome=outcome,
-            resolved_query=resolved_query, result=result,
-            answer_text=_summarize(resolved_query, result),
-        )
-        audit_target = (f"conversation:{conversation_id} outcome:{outcome} question:{question!r} "
-                         f"model:{decision.model} dimensions:{decision.dimensions} measures:{decision.measures}")
-
-    registry.auth_store.record_audit(
-        "chat_ask", user.username, actor_user_id=user.id, target=audit_target,
-    )
-    return {"question": question_msg, "response": response_msg, "learned": learned}
-
-
 @router.post("/conversations/{conversation_id}/ask", dependencies=[Depends(_require_enabled)])
 def ask(conversation_id: int, body: AskIn, user: User = Depends(require_role("viewer"))):
     conv, question_msg, catalog, prior_context, translator = _start_ask(
@@ -314,9 +169,9 @@ def ask(conversation_id: int, body: AskIn, user: User = Depends(require_role("vi
             scope=conv["model_scope"],
         )
     except TranslatorError as exc:
-        return _handle_translator_error(conversation_id, user, question_msg, body.question, exc)
+        return nlq.handle_translator_error(conversation_id, user, question_msg, body.question, exc)
 
-    return _handle_decision(conversation_id, user, question_msg, body.question, decision)
+    return nlq.handle_decision(conversation_id, user, question_msg, body.question, decision)
 
 
 def _default_pin_name(conv: dict, message_id: int) -> str:
@@ -431,9 +286,9 @@ def ask_stream(conversation_id: int, body: AskIn, user: User = Depends(require_r
                 elif item.kind == "tool_input":
                     yield _sse("tool_input", {"tool_input": item.tool_input})
         except TranslatorError as exc:
-            yield _sse("response", _handle_translator_error(conversation_id, user, question_msg, body.question, exc))
+            yield _sse("response", nlq.handle_translator_error(conversation_id, user, question_msg, body.question, exc))
             return
-        yield _sse("response", _handle_decision(conversation_id, user, question_msg, body.question, decision))
+        yield _sse("response", nlq.handle_decision(conversation_id, user, question_msg, body.question, decision))
 
     return StreamingResponse(
         gen(), media_type="text/event-stream",
@@ -512,7 +367,7 @@ def _persist_learned_panel(user: User, decision: nlq.Decision) -> list[dict]:
 
 
 def _panel_decision(user: User, question: str, decision: nlq.Decision) -> dict:
-    """Ephemeral twin of _handle_decision(): identical outcome branches and
+    """Ephemeral twin of nlq.handle_decision(): identical outcome branches and
     audit logging (target text prefixed 'panel' instead of naming a
     conversation id), but nothing is persisted to conversation_store."""
     question_msg = _panel_message("user", question_text=question)
@@ -527,14 +382,14 @@ def _panel_decision(user: User, question: str, decision: nlq.Decision) -> dict:
         response_msg = _panel_message("clarification", outcome="clarification", answer_text=answer_text)
         audit_target = f"panel outcome:clarification question:{question!r} candidates:{decision.candidates}"
     elif isinstance(decision, nlq.ShowQuery):
-        resolved_query = _resolved_query_dict(decision)
+        resolved_query = nlq.resolved_query_dict(decision)
         response_msg = _panel_message(
             "assistant", outcome="query_shown", resolved_query=resolved_query,
             answer_text=f"Here's the query behind “{decision.question_text}”.")
         audit_target = f"panel outcome:query_shown question:{question!r}"
     else:
         model = registry.models[decision.model]
-        resolved_query = _resolved_query_dict(decision)
+        resolved_query = nlq.resolved_query_dict(decision)
         try:
             result = engine.run_query(model, resolved_query)
         except (semantic.ModelError, engine.QueryError) as exc:
@@ -547,7 +402,7 @@ def _panel_decision(user: User, question: str, decision: nlq.Decision) -> dict:
         outcome = "answered_empty" if result["row_count"] == 0 else "answered"
         response_msg = _panel_message(
             "assistant", outcome=outcome, resolved_query=resolved_query, result=result,
-            answer_text=_summarize(resolved_query, result))
+            answer_text=nlq.summarize(resolved_query, result))
         audit_target = (f"panel outcome:{outcome} question:{question!r} "
                          f"model:{decision.model} dimensions:{decision.dimensions} measures:{decision.measures}")
 

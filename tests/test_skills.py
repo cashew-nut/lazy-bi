@@ -113,8 +113,8 @@ def test_invoke_skill_rate_limit_is_per_identity(rate_limited_skill, monkeypatch
 
 
 def test_invoke_skill_custom_on_blocked_formatter_is_used(anon_client, monkeypatch):
-    def formatter(reason: str) -> dict:
-        return {"outcome": "rate_limited", "reason": reason}
+    def formatter(reason: str, args: dict) -> dict:
+        return {"outcome": "rate_limited", "reason": reason, "echoed": args}
 
     skill = skills.Skill(
         name="_test_custom_blocked", description="", min_role="viewer",
@@ -125,7 +125,10 @@ def test_invoke_skill_custom_on_blocked_formatter_is_used(anon_client, monkeypat
     monkeypatch.setattr(skills, "rate_limiter", skills._RateLimiter(per_minute=0))
     try:
         user = _user("viewer", 90007)
-        result = skills.invoke_skill(skill, user, {})
-        assert result == {"outcome": "rate_limited", "reason": "rate limit exceeded"}
+        result = skills.invoke_skill(skill, user, {"conversation_id": 42})
+        assert result == {
+            "outcome": "rate_limited", "reason": "rate limit exceeded",
+            "echoed": {"conversation_id": 42},
+        }
     finally:
         skills.unregister_skill(skill.name)
