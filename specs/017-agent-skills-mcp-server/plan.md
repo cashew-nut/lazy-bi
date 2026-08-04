@@ -141,12 +141,18 @@ app/
 │                           #   registers one MCP tool per declared skill,
 │                           #   role-based tools/list filtering middleware,
 │                           #   exposes the ASGI app for mounting.
+├── skills_analytics.py      # NEW: concrete skill handlers (ask_question,
+│                           #   list_models) registered into app/skills.py's
+│                           #   registry at import time.
 ├── nlq.py                  # + promoted orchestration: start_ask(),
-│                           #   handle_decision() (question -> resolve ->
-│                           #   execute -> persist -> audit), moved here
-│                           #   from app/api/chat.py's private helpers so
-│                           #   both the HTTP route and the new
-│                           #   ask_question skill call the same function.
+│                           #   handle_decision(), handle_translator_error()
+│                           #   (question -> resolve -> execute -> persist
+│                           #   -> audit, and the TranslatorError path),
+│                           #   moved here from app/api/chat.py's private
+│                           #   helpers so both the HTTP route and the new
+│                           #   ask_question skill call the same functions —
+│                           #   including the not-configured/LLM-failure
+│                           #   paths, not just the happy path (research.md R6).
 ├── config.py                # + CI_MCP_RATE_LIMIT_PER_MIN env var
 ├── registry.py               # + agents registry (loaded at startup,
 │                           #   mirrors registry.models/registry.pipelines)

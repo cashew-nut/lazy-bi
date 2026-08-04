@@ -152,11 +152,25 @@ design intent — "Model-agnostic entry point future features ... can call
 directly" — this feature is exactly that promised second caller. The
 orchestration that today lives as `app/api/chat.py`'s private helpers
 (`_start_ask`, `_handle_decision`, `_persist_learned`, `_resolved_query_dict`,
-`_summarize`) is transport-agnostic already (plain functions taking a
-`User` and plain args, no `Request`/`Depends` coupling) — promoting them
-(dropping the leading underscore, moving into `app/nlq.py`) is a rename +
-move, not a rewrite, and both the existing HTTP route and the new
-`ask_question` skill call the same functions afterward.
+`_summarize`, and — the piece it's easy to overlook because it isn't
+called from inside either of the other two — `_handle_translator_error`)
+is transport-agnostic already (plain functions taking a `User` and plain
+args, no `Request`/`Depends` coupling) — promoting them (dropping the
+leading underscore, moving into `app/nlq.py`) is a rename + move, not a
+rewrite, and both the existing HTTP route and the new `ask_question` skill
+call the same functions afterward. The full shape a caller must reproduce
+is the route's own three-step structure, not just two of its three steps:
+`start_ask()` → `nlq.resolve()` (wrapped in `try/except TranslatorError:
+return handle_translator_error(...)`, exactly as `chat.py`'s `ask()` route
+does today) → `handle_decision()` on success. A caller that only chains
+`start_ask()` → `handle_decision()` and skips the middle step (or skips
+its error handling) reintroduces exactly the gap analysis found in this
+spec's own `/speckit-analyze` pass (finding A1): an unhandled
+`TranslatorError` — or a missing `config.LLM_ENABLED` check ahead of it,
+mirroring `chat.py`'s route-level `_require_enabled` gate, reimplemented
+skill-side since that gate itself is an HTTP-specific `HTTPException` and
+not promotable as-is — surfacing as a raw failure instead of the documented
+`outcome: "error"`.
 
 **Alternatives considered**: Exposing `propose_query`/`ask_clarification`/
 `decline`/`show_last_query` as four separate MCP tools — rejected, this

@@ -86,7 +86,13 @@ or freshly auto-created — so a follow-up call can pass it back for
 multi-turn context). `Message.outcome` is one of: `answered`,
 `answered_empty`, `clarification`, `query_shown`, `declined`, `error`,
 `rate_limited` (new — see research.md R3; not producible by the existing
-HTTP route, only by the new rate-limit gate ahead of the LLM call).
+HTTP route, only by the new rate-limit gate ahead of the LLM call) and
+`error` covers both an LLM call that actually failed (`TranslatorError`,
+via the promoted `handle_translator_error`) and the LLM backend being
+unconfigured at all (`config.LLM_ENABLED` false) — the skill handler checks
+the latter itself, before ever building a translator, since the existing
+HTTP route's equivalent gate (`_require_enabled`) is a FastAPI
+`Depends`/`HTTPException` and isn't reusable outside a route (research.md R6).
 
 ## `list_models` output (no new shape)
 

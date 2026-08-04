@@ -47,6 +47,14 @@ docker compose up
    `outcome: "declined"` with a plain-language reason — never raw data,
    never a fabricated answer.
 
+## LLM backend unavailable (covered by tests, not manual — see T018)
+
+7a. Restart the app with `CI_LLM_API_KEY` unset and call `ask_question`.
+    **Expect**: `outcome: "error"` immediately (same message class as the
+    existing chat 503), not a hang or an unhandled exception. Covered by
+    an automated test rather than this manual walkthrough since it
+    requires a second app instance/config — see tasks.md T018.
+
 ## Discovery (User Story 2)
 
 8. Call `tools/list` (or whatever your MCP client calls its "list tools"

@@ -38,17 +38,29 @@ conversational-analytics chat.
 **Behavior**:
 1. Rate-limit check (research.md R3) — a caller over `CI_MCP_RATE_LIMIT_PER_MIN`
    gets `outcome: "rate_limited"` immediately, no LLM call made.
-2. If `conversation_id` given, must belong to the calling identity (404
+2. LLM-configured check — if `config.LLM_ENABLED` is false (no
+   `CI_LLM_API_KEY`), returns `outcome: "error"` immediately, same message
+   class as the existing chat 503 ("conversational analytics is not
+   configured"), no translator ever constructed. This is the skill-side
+   equivalent of the HTTP route's `Depends(_require_enabled)` gate — not
+   reusable as-is (that gate raises an `HTTPException`), so it's
+   reimplemented as a plain check here rather than promoted.
+3. If `conversation_id` given, must belong to the calling identity (404
    equivalent — a typed error result — otherwise, exactly like
    `/api/conversations/{id}` today never leaking another user's
    conversation existence). If omitted, a new conversation is created
    for the caller.
-3. The question is resolved via the existing `app/nlq.py` translation core
+4. The question is resolved via the existing `app/nlq.py` translation core
    (unchanged: builds the live catalog, calls the configured LLM
    translator, re-validates any `propose_query` against the live semantic
-   model before executing it) and the outcome is persisted + audited
-   exactly as `POST /api/conversations/{id}/ask` already does today
-   (same promoted orchestration function, see plan.md).
+   model before executing it), reproducing the HTTP route's own three-step
+   structure — `start_ask()` → `nlq.resolve()` wrapped in
+   `try/except TranslatorError: return handle_translator_error(...)` → 
+   `handle_decision()` on success — so a real LLM-call failure (bad key,
+   network error, timeout) also resolves to `outcome: "error"` rather than
+   an unhandled exception, exactly as `POST /api/conversations/{id}/ask`
+   already does today (same promoted orchestration functions, see plan.md).
+   The outcome is persisted + audited identically either way.
 
 **Output** (data-model.md's `ask_question output`):
 ```json
