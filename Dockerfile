@@ -10,6 +10,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ app/
 COPY models/ models/
+COPY dimensions/ dimensions/
 COPY pipelines/ pipelines/
 
 # state lives outside the image: sqlite db + uploaded-dataset cache, both in
@@ -17,6 +18,7 @@ COPY pipelines/ pipelines/
 ENV CI_DB_PATH=/data/cash_intel.db \
     CI_LOCAL_DATA_DIR=/data/local_data \
     CI_MODELS_DIR=/srv/models \
+    CI_DIMENSIONS_DIR=/srv/dimensions \
     CI_PIPELINES_DIR=/srv/pipelines \
     PYTHONUNBUFFERED=1
 RUN mkdir /data

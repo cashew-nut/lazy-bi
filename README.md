@@ -39,6 +39,13 @@ semantic models are editable from the host (or the in-app editor); mount
 image runs a single uvicorn worker by design — the emulator is in-process and
 sqlite expects one writer. Scale out only against an external S3 endpoint.
 
+Conversational analytics, the Composer, and the sandbox coding agent are off
+until `CI_LLM_API_KEY` (an Anthropic API key) reaches the container — copy
+`.env.example` to `.env` and fill it in, or `export CI_LLM_API_KEY=sk-ant-...`
+before running `docker compose up`; `docker-compose.yml` passes it (and
+`CI_LLM_MODEL`) through automatically. See "Conversational analytics" below
+for what that enables and what it sends to the provider.
+
 **Local (no Docker):**
 
 ```bash

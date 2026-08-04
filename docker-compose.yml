@@ -7,17 +7,23 @@
 # Behind a TLS proxy, pass CI_COOKIE_SECURE=1 (and optionally
 # CI_SESSION_IDLE_DAYS / CI_SESSION_MAX_DAYS) via `environment:`.
 # Conversational analytics (specs/012-conversational-analytics/) is off
-# unless CI_LLM_API_KEY is set — pass it (and optionally CI_LLM_MODEL) via
-# `environment:` to enable it. See the README's "Conversational analytics"
-# section for exactly what that sends to the configured LLM provider.
+# unless CI_LLM_API_KEY (an Anthropic API key, "sk-ant-...") is set. Export it
+# in your shell, or put it in a .env file next to this compose file (copy
+# .env.example), and it's picked up below — no compose edits needed. See the
+# README's "Conversational analytics" section for exactly what that sends to
+# the configured LLM provider.
 services:
   app:
     build: .
     ports:
       - "8080:8080"
+    environment:
+      CI_LLM_API_KEY: ${CI_LLM_API_KEY:-}
+      CI_LLM_MODEL: ${CI_LLM_MODEL:-claude-sonnet-5}
     volumes:
       - app-data:/data              # sqlite: visuals, dashboards, users, sessions
       - ./models:/srv/models        # edit semantic models from the host, live
+      - ./dimensions:/srv/dimensions  # shared dimension bundles, editable live too
       - ./pipelines:/srv/pipelines  # pipeline definitions, editable live too
       - ./data_cache:/srv/data_cache:ro  # optional big datasets (app/load_taxi.py)
 
@@ -48,9 +54,12 @@ services:
       CI_S3_ENDPOINT: http://minio:9000   # disables the embedded emulator
       AWS_ACCESS_KEY_ID: cashintel
       AWS_SECRET_ACCESS_KEY: cashintel-secret
+      CI_LLM_API_KEY: ${CI_LLM_API_KEY:-}
+      CI_LLM_MODEL: ${CI_LLM_MODEL:-claude-sonnet-5}
     volumes:
       - app-data:/data
       - ./models:/srv/models
+      - ./dimensions:/srv/dimensions
       - ./pipelines:/srv/pipelines
       - ./data_cache:/srv/data_cache:ro
     depends_on:
