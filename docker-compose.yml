@@ -18,6 +18,7 @@ services:
     volumes:
       - app-data:/data              # sqlite: visuals, dashboards, users, sessions
       - ./models:/srv/models        # edit semantic models from the host, live
+      - ./dimensions:/srv/dimensions  # shared dimension bundles, editable live too
       - ./pipelines:/srv/pipelines  # pipeline definitions, editable live too
       - ./data_cache:/srv/data_cache:ro  # optional big datasets (app/load_taxi.py)
 
@@ -51,6 +52,7 @@ services:
     volumes:
       - app-data:/data
       - ./models:/srv/models
+      - ./dimensions:/srv/dimensions
       - ./pipelines:/srv/pipelines
       - ./data_cache:/srv/data_cache:ro
     depends_on:
