@@ -37,6 +37,10 @@ LOCAL_DATA_DIR = Path(os.environ.get("CI_LOCAL_DATA_DIR", PROJECT_ROOT / "local_
 # scripts; a run executes in its own subprocess, killed if it outruns its
 # timeout (runs are strictly serialized platform-wide, one at a time).
 PIPELINES_DIR = Path(os.environ.get("CI_PIPELINES_DIR", PROJECT_ROOT / "pipelines"))
+
+# Agents (specs/017-agent-skills-mcp-server/) — declared Agent/Skill bundles,
+# same "editable YAML directory" shape as MODELS_DIR/PIPELINES_DIR above.
+AGENTS_DIR = Path(os.environ.get("CI_AGENTS_DIR", PROJECT_ROOT / "agents"))
 PIPELINE_TIMEOUT_DEFAULT = 600
 PIPELINE_TIMEOUT_MAX = 3600
 
@@ -104,6 +108,13 @@ SANDBOX_AGENT_CELL_CHARS = 4000
 SANDBOX_AGENT_OUTPUT_CHARS = 800
 SANDBOX_AGENT_FILES = 150
 SANDBOX_AGENT_HISTORY_TURNS = 6
+
+# Agent/Skills MCP server (specs/017-agent-skills-mcp-server/) — per-identity
+# rate limit on skill invocations that call the LLM backend (ask_question),
+# so a single session/token can't drive unbounded Anthropic API cost/load
+# through the external /mcp surface (research.md R3). In-process only — no
+# shared store needed, matching the single-uvicorn-worker deployment model.
+MCP_RATE_LIMIT_PER_MIN = int(os.environ.get("CI_MCP_RATE_LIMIT_PER_MIN", "20"))
 
 
 def storage_options() -> dict:

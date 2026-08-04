@@ -24,8 +24,8 @@ Single-project FastAPI backend (existing layout) — `app/`, `agents/`, `tests/`
 
 **Purpose**: New dependency and config, no behavior yet.
 
-- [ ] T001 Add `fastmcp` to `requirements.txt` (research.md R1)
-- [ ] T002 [P] Add `CI_MCP_RATE_LIMIT_PER_MIN` (int, sane default e.g. `20`) to `app/config.py`, following the existing `CI_*` convention
+- [X] T001 Add `fastmcp` to `requirements.txt` (research.md R1)
+- [X] T002 [P] Add `CI_MCP_RATE_LIMIT_PER_MIN` (int, sane default e.g. `20`) to `app/config.py`, following the existing `CI_*` convention
 
 ---
 
@@ -35,16 +35,16 @@ Single-project FastAPI backend (existing layout) — `app/`, `agents/`, `tests/`
 
 **⚠️ CRITICAL**: No user story task can start until this phase is complete.
 
-- [ ] T003 Create the `Skill` dataclass (`name`, `description`, `min_role`, `input_schema`, `output_schema`, `rate_limited`, `handler`) and an in-process registry + `register_skill()` in `app/skills.py` (data-model.md)
-- [ ] T004 [P] Implement a per-identity in-process sliding-window rate limiter in `app/skills.py` (research.md R3 — no shared store, single-worker deployment)
-- [ ] T005 Implement `invoke_skill()` dispatch in `app/skills.py`: role check (reusing `app.auth.ROLE_ORDER`/`User.has_role`) → rate-limit check for `rate_limited` skills → call `handler(user, args)` → audit via `registry.auth_store.record_audit` for every outcome including role-denied and rate-limited (`action` = `mcp_skill:<name>` / `:denied` / `:rate_limited`) (depends on: T003, T004)
-- [ ] T006 [P] Create the `Agent` dataclass (`name`, `label`, `description`, `skills: list[str]`) and an `agents/*.yaml` loader with validation (an unknown skill name raises a clear load-time error, not a silent skip) in `app/agents.py` (data-model.md)
-- [ ] T007 Add `agents: dict[str, Agent]` to `app/registry.py`'s `Registry` and load it via `app/agents.py`'s loader inside `Registry.init()`, mirroring how `registry.models`/`registry.pipelines` already load (depends on: T006)
-- [ ] T008 Create `app/mcpserver.py`: build the `fastmcp.FastMCP` server instance; a server middleware that resolves the authenticated `User` from the shared ASGI request state (`get_http_request().state.user`) on every `on_call_tool`; dynamic tool registration sourced from the union of skills referenced by `registry.agents`, each tool's handler delegating to `skills.invoke_skill()` (depends on: T005, T007)
-- [ ] T009 Mount the MCP ASGI app at `/mcp` in `app/main.py`: widen `AuthMiddleware`'s guarded-path predicate from `/api`-only to also cover `/mcp` (no anonymous MCP handshake — same default-deny posture), and compose the MCP app's own lifespan into the existing `lifespan()` context manager rather than letting it run implicitly (research.md R2 — the documented mount-under-FastAPI pitfall) (depends on: T008)
-- [ ] T010 [P] Smoke-test the real mounted `/mcp` endpoint in `tests/test_mcp_server.py` via an ASGI `TestClient` (not `fastmcp`'s in-memory client — this must exercise the actual mount/lifespan wiring): an MCP `initialize` handshake succeeds with valid credentials, and an unauthenticated request is rejected before any protocol exchange (depends on: T009)
-- [ ] T011 [P] Unit tests for `invoke_skill()` in `tests/test_skills.py` — success, role-denied, and rate-limited paths, each asserting the corresponding audit entry, against a synthetic test-only skill (depends on: T005)
-- [ ] T012 [P] Unit tests for the `agents/*.yaml` loader in `tests/test_agents.py` — valid load, and the unknown-skill-reference error path (depends on: T006)
+- [X] T003 Create the `Skill` dataclass (`name`, `description`, `min_role`, `input_schema`, `output_schema`, `rate_limited`, `handler`) and an in-process registry + `register_skill()` in `app/skills.py` (data-model.md)
+- [X] T004 [P] Implement a per-identity in-process sliding-window rate limiter in `app/skills.py` (research.md R3 — no shared store, single-worker deployment)
+- [X] T005 Implement `invoke_skill()` dispatch in `app/skills.py`: role check (reusing `app.auth.ROLE_ORDER`/`User.has_role`) → rate-limit check for `rate_limited` skills → call `handler(user, args)` → audit via `registry.auth_store.record_audit` for every outcome including role-denied and rate-limited (`action` = `mcp_skill:<name>` / `:denied` / `:rate_limited`) (depends on: T003, T004)
+- [X] T006 [P] Create the `Agent` dataclass (`name`, `label`, `description`, `skills: list[str]`) and an `agents/*.yaml` loader with validation (an unknown skill name raises a clear load-time error, not a silent skip) in `app/agents.py` (data-model.md)
+- [X] T007 Add `agents: dict[str, Agent]` to `app/registry.py`'s `Registry` and load it via `app/agents.py`'s loader inside `Registry.init()`, mirroring how `registry.models`/`registry.pipelines` already load (depends on: T006)
+- [X] T008 Create `app/mcpserver.py`: build the `fastmcp.FastMCP` server instance; a server middleware that resolves the authenticated `User` from the shared ASGI request state (`get_http_request().state.user`) on every `on_call_tool`; dynamic tool registration sourced from the union of skills referenced by `registry.agents`, each tool's handler delegating to `skills.invoke_skill()` (depends on: T005, T007)
+- [X] T009 Mount the MCP ASGI app at `/mcp` in `app/main.py`: widen `AuthMiddleware`'s guarded-path predicate from `/api`-only to also cover `/mcp` (no anonymous MCP handshake — same default-deny posture), and compose the MCP app's own lifespan into the existing `lifespan()` context manager rather than letting it run implicitly (research.md R2 — the documented mount-under-FastAPI pitfall) (depends on: T008)
+- [X] T010 [P] Smoke-test the real mounted `/mcp` endpoint in `tests/test_mcp_server.py` via an ASGI `TestClient` (not `fastmcp`'s in-memory client — this must exercise the actual mount/lifespan wiring): an MCP `initialize` handshake succeeds with valid credentials, and an unauthenticated request is rejected before any protocol exchange (depends on: T009)
+- [X] T011 [P] Unit tests for `invoke_skill()` in `tests/test_skills.py` — success, role-denied, and rate-limited paths, each asserting the corresponding audit entry, against a synthetic test-only skill (depends on: T005)
+- [X] T012 [P] Unit tests for the `agents/*.yaml` loader in `tests/test_agents.py` — valid load, and the unknown-skill-reference error path (depends on: T006)
 
 **Checkpoint**: `/mcp` is mounted, authenticated, and dispatches through the shared Skill/Agent framework with zero real skills registered yet — proven by T010-T012 before any user-story-specific code exists.
 
@@ -95,7 +95,7 @@ Single-project FastAPI backend (existing layout) — `app/`, `agents/`, `tests/`
 
 ### Implementation for User Story 3
 
-- [ ] T024 [US3] `tests/test_agents.py`: register two synthetic test-only skills (same fixture pattern as T011/T023 — no dependency on the real `ask_question`/`list_models`), declare a fixture `agents/*.yaml` (not the shipped `analytics.yaml`) referencing both, remove one from its declared list, reload via `app/agents.py`'s loader + `Registry`, and assert the MCP server's exposed tool set (`tools/list`) changes accordingly with no code change — independent of US1/US2 landing first (depends on: T007, T009)
+- [X] T024 [US3] `tests/test_agents.py`: register two synthetic test-only skills (same fixture pattern as T011/T023 — no dependency on the real `ask_question`/`list_models`), declare a fixture `agents/*.yaml` (not the shipped `analytics.yaml`) referencing both, remove one from its declared list, reload via `app/agents.py`'s loader + `Registry`, and assert the MCP server's exposed tool set (`tools/list`) changes accordingly with no code change — independent of US1/US2 landing first (depends on: T007, T009)
 - [ ] T025 [US3] Document the Agent/Skill/MCP framework in `README.md`: the `agents/*.yaml` declaration format, the two shipped skills (`ask_question`, `list_models`), how an external client connects to `/mcp` and authenticates, and `CI_MCP_RATE_LIMIT_PER_MIN` — per the constitution's "update README as part of the feature, not a follow-up" (depends on: T016, T021)
 
 **Checkpoint**: All three user stories independently functional — spec.md's full scope delivered.
