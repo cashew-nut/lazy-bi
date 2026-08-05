@@ -92,7 +92,7 @@ def dataset_schema(path: str, format: str = "parquet"):
     if format not in semantic.SOURCE_FORMATS:
         raise HTTPException(status_code=400, detail=f"unsupported source format '{format}'")
     try:
-        schema = engine.scan_source(semantic.Source(path=path, format=format)).collect_schema()
+        schema = engine.source_schema(semantic.Source(path=path, format=format))
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"source not reachable: {exc}")
     return {"columns": [{"name": n, "dtype": str(t)} for n, t in schema.items()]}
@@ -165,7 +165,7 @@ async def upload_local_dataset(name: str = Form(...), files: list[UploadFile] = 
         path, fmt = uploaded[0]["path"], uploaded[0]["format"]
 
     try:
-        schema = engine.scan_source(semantic.Source(path=path, format=fmt)).collect_schema()
+        schema = engine.source_schema(semantic.Source(path=path, format=fmt))
         columns = [{"name": n, "dtype": str(t)} for n, t in schema.items()]
     except Exception:
         columns = None
