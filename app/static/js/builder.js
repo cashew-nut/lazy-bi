@@ -828,9 +828,7 @@ export function renderQueryStrip() {
 
   appendGroup(strip, "WHERE", state.filters.map((flt, idx) => pillFilter(flt, idx)), addFilterAndEdit, true);
 
-  if (state.parameters.length) {
-    appendGroup(strip, "WITH", state.parameters.map((p, idx) => pillParam(p, idx)), openParamAddPicker, true);
-  }
+  appendGroup(strip, "WITH", state.parameters.map((p, idx) => pillParam(p, idx)), openParamAddPicker, true);
 
   collapseQueryStripOverflow(strip);
   syncAutoBtn();
