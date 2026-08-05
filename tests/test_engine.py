@@ -185,7 +185,7 @@ dimensions:
 measures:
   - {{name: n, expr: count()}}
 """)
-        return semantic.resolve_imports(model, {"two_cal": bundle})
+        return semantic.resolve_model(model, {"two_cal": bundle})
 
     return build
 
@@ -500,7 +500,7 @@ measures: [{{name: total, expr: sum(amount)}}]
 dimension_imports:
   - {{bundle: test_geo, anchor_dataset: regions, on: region, how: {how}}}
 """)
-        semantic.resolve_imports(model, {"test_geo": bundle})
+        semantic.resolve_model(model, {"test_geo": bundle})
         return model
 
     return make_model
@@ -568,7 +568,7 @@ dimensions:
 measures:
   - {{name: n, expr: sum(event_count)}}
 """)
-    return semantic.resolve_imports(model, {"renamed_key_cal": bundle})
+    return semantic.resolve_model(model, {"renamed_key_cal": bundle})
 
 
 def test_renamed_equality_import_key_stays_queryable(renamed_key_import):

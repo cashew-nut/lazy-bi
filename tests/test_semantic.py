@@ -286,7 +286,7 @@ def test_import_resolves_transitively_by_default():
     model = semantic.parse_model_text(
         FACT + "dimension_imports:\n  - {bundle: geo, anchor_dataset: regions, on: region}\n"
     )
-    semantic.resolve_imports(model, {"geo": bundle})
+    semantic.resolve_model(model, {"geo": bundle})
     assert {"region", "territory", "territory_name"} <= set(model.dimensions)
 
 
@@ -296,7 +296,7 @@ def test_import_subset_excludes_unlisted_datasets():
         FACT + "dimension_imports:\n"
         "  - {bundle: geo, anchor_dataset: regions, on: region, datasets: [regions]}\n"
     )
-    semantic.resolve_imports(model, {"geo": bundle})
+    semantic.resolve_model(model, {"geo": bundle})
     assert "territory" in model.dimensions
     assert "territory_name" not in model.dimensions
 
@@ -310,8 +310,8 @@ def test_import_subset_omitted_matches_explicit_whole_bundle():
         FACT + "dimension_imports:\n"
         "  - {bundle: geo, anchor_dataset: regions, on: region, datasets: [regions, territories]}\n"
     )
-    semantic.resolve_imports(whole_default, {"geo": bundle})
-    semantic.resolve_imports(whole_explicit, {"geo": bundle})
+    semantic.resolve_model(whole_default, {"geo": bundle})
+    semantic.resolve_model(whole_explicit, {"geo": bundle})
     assert set(whole_default.dimensions) == set(whole_explicit.dimensions)
 
 
@@ -322,7 +322,7 @@ def test_import_subset_rejects_unknown_dataset():
         "  - {bundle: geo, anchor_dataset: regions, on: region, datasets: [nope]}\n"
     )
     with pytest.raises(semantic.ModelError, match="nope"):
-        semantic.resolve_imports(model, {"geo": bundle})
+        semantic.resolve_model(model, {"geo": bundle})
 
 
 def test_import_unknown_bundle_rejected():
@@ -330,7 +330,7 @@ def test_import_unknown_bundle_rejected():
         FACT + "dimension_imports:\n  - {bundle: nope, anchor_dataset: x, on: region}\n"
     )
     with pytest.raises(semantic.ModelError, match="nope"):
-        semantic.resolve_imports(model, {})
+        semantic.resolve_model(model, {})
 
 
 def test_import_unknown_anchor_rejected():
@@ -339,7 +339,7 @@ def test_import_unknown_anchor_rejected():
         FACT + "dimension_imports:\n  - {bundle: geo, anchor_dataset: nope, on: region}\n"
     )
     with pytest.raises(semantic.ModelError, match="nope"):
-        semantic.resolve_imports(model, {"geo": bundle})
+        semantic.resolve_model(model, {"geo": bundle})
 
 
 def test_native_dimension_shadows_imported():
@@ -348,7 +348,7 @@ def test_native_dimension_shadows_imported():
         FACT + "dimension_imports:\n  - {bundle: geo, anchor_dataset: regions, on: region}\n"
         "dimensions:\n  - {name: region, label: My Own Region}\n"
     )
-    semantic.resolve_imports(model, {"geo": bundle})
+    semantic.resolve_model(model, {"geo": bundle})
     assert model.dimensions["region"].label == "My Own Region"
 
 
@@ -367,7 +367,7 @@ def test_two_imports_with_colliding_dimension_rejected():
         "  - {bundle: b, anchor_dataset: y, on: k}\n"
     )
     with pytest.raises(semantic.ModelError, match="shared"):
-        semantic.resolve_imports(model, {"a": bundle_a, "b": bundle_b})
+        semantic.resolve_model(model, {"a": bundle_a, "b": bundle_b})
 
 
 # --- Interval (`how: between`) imports: disconnected calendar tables --------
@@ -391,7 +391,7 @@ BETWEEN_IMPORT = (
 
 def test_interval_import_parses_and_contributes_dimensions():
     model = semantic.parse_model_text(FACT + BETWEEN_IMPORT)
-    semantic.resolve_imports(model, {"cal": semantic.parse_bundle_text(CAL_BUNDLE)})
+    semantic.resolve_model(model, {"cal": semantic.parse_bundle_text(CAL_BUNDLE)})
     imp = model.imports[0]
     assert imp.is_interval and imp.how == "between"
     assert imp.left_on == ["start_date", "end_date"] and imp.right_on == ["date"]
@@ -499,7 +499,7 @@ def test_import_naming_an_unconnected_dataset_is_rejected():
         "  - {bundle: geo, anchor_dataset: regions, on: region, datasets: [regions, days]}\n"
     )
     with pytest.raises(semantic.ModelError, match="no chain of joins connects"):
-        semantic.resolve_imports(model, {"geo": mixed})
+        semantic.resolve_model(model, {"geo": mixed})
 
 
 def test_one_bundle_can_be_imported_by_key_and_by_interval():
@@ -517,7 +517,7 @@ def test_one_bundle_can_be_imported_by_key_and_by_interval():
         "  - {bundle: geo, anchor_dataset: days, how: between, "
         "left_on: [start_date, end_date], right_on: date, datasets: [days]}\n"
     )
-    semantic.resolve_imports(model, {"geo": mixed})
+    semantic.resolve_model(model, {"geo": mixed})
     assert {"region", "territory_name", "as_of"} <= set(model.dimensions)
     assert [b.import_spec.is_interval for b in model.import_bindings] == [False, True]
 

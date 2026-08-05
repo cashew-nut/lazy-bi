@@ -206,23 +206,24 @@ function renderModelsList() {
   if (!models.length) { box.append(el("div", { class: "empty-note" }, "no matches")); return; }
   for (const m of models) {
     const st = lastDatasetStats[m.name] || { files: 0, bytes: 0 };
-    // a multi-fact model has no source of its own: it reads no bucket objects,
-    // and the guided form (which edits one fact table) can't open it — so it
-    // describes itself by its facts and goes straight to the yaml editor
-    const composite = m.kind === "composite";
-    const title = composite
-      ? `multi-fact · ${m.facts.map((f) => f.model).join(" + ")}`
-      : `${m.path}\n${st.files} file${st.files === 1 ? "" : "s"} · ${fmtBytes(st.bytes)}`;
-    const meta = composite
-      ? `${m.facts.length} facts · ${m.dimensions.length} shared dims · ${m.measures.length} measures`
+    // a model whose datasets aren't all related to each other holds several
+    // fact tables; it has no single source of its own, so it describes itself
+    // by them instead of by a path
+    const parts = m.parts || [];
+    const multi = parts.length > 1;
+    const title = (multi
+      ? parts.map((p) => `${p.name}: ${p.path || "—"}`).join("\n")
+      : m.path)
+      + `\n${st.files} file${st.files === 1 ? "" : "s"} · ${fmtBytes(st.bytes)}`;
+    const meta = multi
+      ? `${m.dimensions.length} shared dims · ${m.measures.length} measures`
       : `${m.dimensions.length} dims · ${m.measures.length} measures`;
     const row = el("div", { class: "mk-row clickable", title },
       el("span", { class: "nm" }, m.label),
-      ...(composite ? [el("span", { class: "mk-tag" }, "multi-fact")] : []),
+      ...(multi ? [el("span", { class: "mk-tag" }, `${parts.length} fact tables`)] : []),
       el("span", { class: "mk-meta" }, meta),
       ...(!m.locked && isAdmin() ? [modelDeleteBtn(m)] : []));
-    row.addEventListener("click", () => navigate(
-      composite ? paths.modellingModelYaml(m.name) : paths.modellingModel(m.name)));
+    row.addEventListener("click", () => navigate(paths.modellingModel(m.name)));
     box.append(row);
   }
 }
@@ -301,20 +302,11 @@ export function openCreateChooser(bundles = state.bundles) {
 
   const fact = el("div", { class: "cc-option" },
     el("div", { class: "cc-name" }, "FACT MODEL"),
-    el("div", { class: "cc-desc" }, "A dataset you measure — orders, shipments, spend. Declares dimensions "
-      + "and measures; queried from Studio, dashboards and Chat."),
+    el("div", { class: "cc-desc" }, "Datasets you measure — orders, shipments, spend. Declares dimensions "
+      + "and measures; queried from Studio, dashboards and Chat. Add as many datasets as you need and "
+      + "relate the ones that belong together: any you leave unrelated stay separate fact tables, read "
+      + "on the dimensions they share rather than joined."),
     factStart);
-
-  // a multi-fact model has no source to pick, so it starts in the yaml editor
-  // (which seeds the `facts:` template) rather than the guided form
-  const mkMulti = el("button", { class: "btn alt" }, "+ CREATE MULTI-FACT MODEL");
-  mkMulti.addEventListener("click", () => go(paths.modellingNewModelYaml()));
-  const multi = el("div", { class: "cc-option" },
-    el("div", { class: "cc-name" }, "MULTI-FACT MODEL"),
-    el("div", { class: "cc-desc" }, "Several fact models read on one axis — spend, revenue and actives on "
-      + "the same chart. They are never joined to each other: each is queried on its own and the results "
-      + "merge on the dimensions they share, so no measure inflates."),
-    el("div", { class: "cc-start" }, mkMulti));
 
   const mkCommon = el("button", { class: "btn alt" }, "+ CREATE COMMON MODEL");
   mkCommon.addEventListener("click", () => go(paths.modellingNewBundle()));
@@ -328,7 +320,7 @@ export function openCreateChooser(bundles = state.bundles) {
     el("div", { class: "chart-head" },
       el("span", { class: "editor-file" }, "create"),
       el("span", { style: "flex:1" }), close),
-    el("div", { class: "cc-body" }, fact, multi, common)));
+    el("div", { class: "cc-body" }, fact, common)));
   overlay.hidden = false;
   overlay.onclick = (e) => { if (e.target === overlay) closeCreateChooser(); };
 }

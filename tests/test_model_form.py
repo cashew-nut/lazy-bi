@@ -15,17 +15,26 @@ def _sales_spec():
     return semantic.model_to_spec(semantic.parse_model_text(text))
 
 
+def _dataset(spec, name):
+    return next(d for d in spec["datasets"] if d["name"] == name)
+
+
 def test_spec_yaml_round_trip_is_semantically_lossless():
+    """sales.yaml is written the terse `source:`/`joins:` way; the form
+    rewrites it as datasets + relations, and nothing about the model changes."""
     spec = _sales_spec()
     reparsed = semantic.parse_model_text(semantic.spec_to_yaml(spec))
     original = semantic.parse_model_text(open("models/sales.yaml").read())
     assert list(reparsed.dimensions) == list(original.dimensions)
     assert [m.expr_source for m in reparsed.measures.values()] == \
         [m.expr_source for m in original.measures.values()]
+    assert list(reparsed.datasets) == list(original.datasets)
     assert [(j.name, j.left_on, j.right_on, j.how) for j in reparsed.joins] == \
         [(j.name, j.left_on, j.right_on, j.how) for j in original.joins]
-    assert [(i.bundle, i.anchor_dataset, i.left_on, i.right_on) for i in reparsed.imports] == \
-        [(i.bundle, i.anchor_dataset, i.left_on, i.right_on) for i in original.imports]
+    assert [(i.bundle, i.from_dataset, i.anchor_dataset, i.left_on, i.right_on)
+            for i in reparsed.imports] == \
+        [(i.bundle, i.from_dataset, i.anchor_dataset, i.left_on, i.right_on)
+         for i in original.imports]
 
 
 def test_spec_to_yaml_collapses_matching_keys_to_on():
@@ -44,12 +53,13 @@ def test_spec_to_yaml_emits_differing_relationship_columns():
     """The redesign's core case: relationship columns that do NOT share a name
     must survive as left_on/right_on."""
     spec = _sales_spec()
-    spec["joins"][0]["left_on"] = ["product"]
-    spec["joins"][0]["right_on"] = ["sku"]
+    relation = _dataset(spec, "sales")["joins"][0]
+    relation["left_on"] = ["product"]
+    relation["right_on"] = ["sku"]
     text = semantic.spec_to_yaml(spec)
     parsed = semantic.parse_model_text(text)
-    assert parsed.joins[0].left_on == ["product"]
-    assert parsed.joins[0].right_on == ["sku"]
+    assert parsed.datasets["sales"].joins[0].left_on == ["product"]
+    assert parsed.datasets["sales"].joins[0].right_on == ["sku"]
 
 
 def test_spec_preserves_spine_and_geo():
@@ -79,15 +89,18 @@ def test_model_spec_endpoint(client):
     body = res.json()
     assert body["file"] == "sales.yaml"
     spec = body["spec"]
-    assert spec["source"]["path"].endswith("sales/*.parquet")
-    assert spec["joins"][0] == {
-        "name": "products", "path": "s3://cash-intel/ref/products.csv",
-        "format": "csv", "left_on": ["product"], "right_on": ["product"], "how": "left",
-    }
+    # the file says `source:` + one `joins:` entry; the form sees two datasets
+    # and the relation between them
+    assert [d["name"] for d in spec["datasets"]] == ["sales", "products"]
+    assert _dataset(spec, "sales")["source"]["path"].endswith("sales/*.parquet")
+    assert _dataset(spec, "sales")["joins"][0] == {
+        "to": "products", "left_on": ["product"], "right_on": ["product"], "how": "left"}
+    assert _dataset(spec, "products")["source"]["path"] == "s3://cash-intel/ref/products.csv"
     imp = spec["dimension_imports"][0]
-    assert (imp["bundle"], imp["anchor_dataset"]) == ("geography", "regions")
+    assert (imp["bundle"], imp["from_dataset"], imp["anchor_dataset"]) == \
+        ("geography", "sales", "regions")
     # native dimensions only — imported region/territory dims live in the bundle
-    assert "region" not in [d["name"] for d in spec["dimensions"]]
+    assert "region" not in [d["name"] for d in _dataset(spec, "sales")["dimensions"]]
 
 
 def test_generate_returns_valid_yaml_and_columns(client):
@@ -115,24 +128,29 @@ def test_generate_reports_bad_spec_with_yaml(client):
 
 def test_generate_join_needs_relationship_columns(client):
     spec = client.get("/api/models/sales/spec").json()["spec"]
-    spec["joins"][0]["left_on"] = []
-    spec["joins"][0]["right_on"] = []
+    relation = _dataset(spec, "sales")["joins"][0]
+    relation["left_on"] = []
+    relation["right_on"] = []
     body = client.post("/api/models/generate", json=spec).json()
     assert body["ok"] is False
     assert "left_on" in body["error"] or "'on'" in body["error"]
 
 
 def test_form_save_flow_creates_model_with_unmatched_key_names(client):
-    """End-to-end backend path of the wizard: spec (differing join column
+    """End-to-end backend path of the wizard: spec (differing relation column
     names) -> generate -> POST /models -> queryable -> delete."""
     spec = {
         "name": "form_smoke", "label": "Form Smoke", "description": "",
-        "source": {"path": "s3://cash-intel/marketing/spend.parquet", "format": "parquet"},
-        "joins": [], "dimension_imports": [],
-        "dimensions": [{"name": "channel", "column": "channel", "label": "Channel",
-                        "type": "categorical", "description": "", "spine": None, "geo": None}],
-        "measures": [{"name": "rows", "expr": "count()", "label": "Rows",
-                      "format": "number", "description": ""}],
+        "dimension_imports": [],
+        "datasets": [{
+            "name": "spend",
+            "source": {"path": "s3://cash-intel/marketing/spend.parquet", "format": "parquet"},
+            "joins": [],
+            "dimensions": [{"name": "channel", "column": "channel", "label": "Channel",
+                            "type": "categorical", "description": "", "spine": None, "geo": None}],
+            "measures": [{"name": "rows", "expr": "count()", "label": "Rows",
+                          "format": "number", "description": ""}],
+        }],
     }
     gen = client.post("/api/models/generate", json=spec).json()
     assert gen["ok"] is True
@@ -146,6 +164,57 @@ def test_form_save_flow_creates_model_with_unmatched_key_names(client):
         assert q.status_code == 200 and q.json()["rows"]
     finally:
         assert client.delete("/api/models/form_smoke").status_code == 204
+
+
+def test_form_save_flow_creates_two_unrelated_fact_tables(client):
+    """The shape the redesign exists for: one model, two fact tables that
+    relate to the same common model and to nothing else — readable on the
+    axis that common model provides, and on nothing either of them lacks."""
+    dimension = lambda name: {"name": name, "column": name, "label": name.title(),
+                              "type": "categorical", "description": "",
+                              "spine": None, "geo": None, "synonyms": []}
+    spec = {
+        "name": "pair_smoke", "label": "Pair Smoke", "description": "",
+        "datasets": [
+            {"name": "orders",
+             "source": {"path": "s3://cash-intel/sales/*.parquet", "format": "parquet"},
+             "joins": [], "dimensions": [dimension("region"), dimension("channel")],
+             "measures": [{"name": "order_lines", "expr": "count()", "label": "Order Lines",
+                           "format": "number", "description": ""}]},
+            {"name": "spend",
+             "source": {"path": "s3://cash-intel/marketing/*.parquet", "format": "parquet"},
+             "joins": [], "dimensions": [dimension("region")],
+             "measures": [{"name": "ad_spend", "expr": "sum(spend)", "label": "Ad Spend",
+                           "format": "currency", "description": ""}]},
+        ],
+        "dimension_imports": [
+            {"bundle": "calendar", "from_dataset": "orders", "anchor_dataset": "days",
+             "left_on": ["order_date"], "right_on": ["date"], "datasets": None},
+            {"bundle": "calendar", "from_dataset": "spend", "anchor_dataset": "days",
+             "left_on": ["month"], "right_on": ["date"], "datasets": None},
+        ],
+    }
+    gen = client.post("/api/models/generate", json=spec).json()
+    assert gen["ok"] is True, gen.get("error")
+    assert gen["model"]["kind"] == "composite"
+    assert [p["name"] for p in gen["parts"]] == ["orders", "spend"]
+    # region is declared on both; the calendar is imported into both — so both
+    # survive the conform, and channel (orders only) does not
+    assert "region" in gen["shared_dimensions"]
+    assert "calendar_quarter" in gen["shared_dimensions"]
+    assert "channel" not in gen["shared_dimensions"]
+
+    assert client.post("/api/models", json={"yaml": gen["yaml"]}).status_code == 201
+    try:
+        q = client.post("/api/query", json={
+            "model": "pair_smoke", "dimensions": [{"name": "calendar_quarter"}],
+            "measures": ["order_lines", "ad_spend"], "filters": [], "limit": 50,
+        })
+        assert q.status_code == 200, q.text
+        rows = q.json()["rows"]
+        assert rows and any(r["order_lines"] and r["ad_spend"] for r in rows)
+    finally:
+        assert client.delete("/api/models/pair_smoke").status_code == 204
 
 
 def test_spec_round_trip_preserves_interval_import(client):
@@ -166,16 +235,19 @@ def test_form_save_flow_creates_model_with_interval_import(client):
     whose only relation to the calendar is the window each of its rows covers."""
     spec = {
         "name": "interval_smoke", "label": "Interval Smoke", "description": "",
-        "source": {"path": "s3://cash-intel/subscriptions/*.parquet", "format": "parquet"},
-        "joins": [],
+        "datasets": [{
+            "name": "subs",
+            "source": {"path": "s3://cash-intel/subscriptions/*.parquet", "format": "parquet"},
+            "joins": [],
+            "dimensions": [{"name": "plan", "column": "plan", "label": "Plan",
+                            "type": "categorical", "description": "", "spine": None, "geo": None}],
+            "measures": [{"name": "actives", "expr": "count_distinct(customer_id)",
+                          "label": "Actives", "format": "number", "description": ""}],
+        }],
         "dimension_imports": [{
             "bundle": "calendar", "anchor_dataset": "days", "how": "between",
             "left_on": ["start_date", "end_date"], "right_on": ["date"], "datasets": None,
         }],
-        "dimensions": [{"name": "plan", "column": "plan", "label": "Plan",
-                        "type": "categorical", "description": "", "spine": None, "geo": None}],
-        "measures": [{"name": "actives", "expr": "count_distinct(customer_id)", "label": "Actives",
-                      "format": "number", "description": ""}],
     }
     gen = client.post("/api/models/generate", json=spec).json()
     assert gen["ok"] is True
@@ -234,7 +306,8 @@ def test_dataset_schema_bad_format_is_400(client):
 
 def test_subscriptions_spec_includes_frame(client):
     spec = client.get("/api/models/subscriptions/spec").json()["spec"]
-    framed = next(m for m in spec["measures"] if m["name"] == "median_tenure_days")
+    framed = next(m for m in _dataset(spec, "subscriptions")["measures"]
+                  if m["name"] == "median_tenure_days")
     assert framed["frame"] and "group_by" in framed["frame"]
     assert framed["frame_emits"] == ["churn_month"]
 
@@ -257,10 +330,10 @@ def test_subscriptions_generate_round_trips_frame(client):
 #    drop any field — like synonyms — it doesn't know about) ─────────────
 
 def test_sales_spec_includes_dimension_and_measure_synonyms(client):
-    spec = client.get("/api/models/sales/spec").json()["spec"]
-    order_date = next(d for d in spec["dimensions"] if d["name"] == "order_date")
+    sales = _dataset(client.get("/api/models/sales/spec").json()["spec"], "sales")
+    order_date = next(d for d in sales["dimensions"] if d["name"] == "order_date")
     assert set(order_date["synonyms"]) == {"date", "purchase date"}
-    revenue = next(m for m in spec["measures"] if m["name"] == "revenue")
+    revenue = next(m for m in sales["measures"] if m["name"] == "revenue")
     assert set(revenue["synonyms"]) == {"sales", "turnover", "income"}
 
 
@@ -283,12 +356,16 @@ def test_generate_without_synonyms_key_still_works(client):
     — synonyms is optional, not required."""
     spec = {
         "name": "form_smoke_no_synonyms", "label": "", "description": "",
-        "source": {"path": "s3://cash-intel/marketing/spend.parquet", "format": "parquet"},
-        "joins": [], "dimension_imports": [],
-        "dimensions": [{"name": "channel", "column": "channel", "label": "Channel",
-                        "type": "categorical", "description": "", "spine": None, "geo": None}],
-        "measures": [{"name": "rows", "expr": "count()", "label": "Rows",
-                      "format": "number", "description": ""}],
+        "dimension_imports": [],
+        "datasets": [{
+            "name": "spend",
+            "source": {"path": "s3://cash-intel/marketing/spend.parquet", "format": "parquet"},
+            "joins": [],
+            "dimensions": [{"name": "channel", "column": "channel", "label": "Channel",
+                            "type": "categorical", "description": "", "spine": None, "geo": None}],
+            "measures": [{"name": "rows", "expr": "count()", "label": "Rows",
+                          "format": "number", "description": ""}],
+        }],
     }
     body = client.post("/api/models/generate", json=spec).json()
     assert body["ok"] is True, body.get("error")
@@ -365,21 +442,31 @@ def test_new_model_opens_the_form_not_the_editor(client):
     stays reachable separately."""
     main = client.get("/static/js/main.js").text
     assert '$("#mk-new-model").addEventListener("click", () => openCreateChooser())' in main
-    modelling_src = client.get("/static/js/modelling.js").text
-    assert "go(paths.modellingNewModel())" in modelling_src            # blank fact model
-    assert "go(paths.modellingNewModel(), b.name)" in modelling_src    # seeded from a common model
-    assert "go(paths.modellingNewBundle())" in modelling_src           # common dimension model
+    modelling = client.get("/static/js/modelling.js").text
+    assert "go(paths.modellingNewModel())" in modelling            # blank fact model
+    assert "go(paths.modellingNewModel(), b.name)" in modelling    # seeded from a common model
+    assert "go(paths.modellingNewBundle())" in modelling           # common dimension model
     router = client.get("/static/js/router.js").text
     assert 'modellingNewModel: () => "/modelling/model/new"' in router
     assert 'return hooks.openModelForm && hooks.openModelForm(isNew ? null : name);' in router
-    modelling = client.get("/static/js/modelling.js").text
-    assert "paths.modellingModel(m.name)" in modelling                  # card click -> guided form
-    # ...except a multi-fact model, which has no single fact table for the
-    # guided form to edit and so goes straight to yaml (see test_multifact.py)
-    assert "composite ? paths.modellingModelYaml(m.name)" in modelling
-    assert "go(paths.modellingNewModelYaml())" in modelling             # + MULTI-FACT MODEL
+    # every model card opens the guided form — including one holding several
+    # fact tables, which is just datasets the form didn't relate to each other
+    assert "navigate(paths.modellingModel(m.name))" in modelling
+    assert "paths.modellingModelYaml" not in modelling
     modelform_src = client.get("/static/js/modelform.js").text
     assert '$("#mf-yaml").addEventListener("click", editAsYaml)' in modelform_src   # { } yaml editing reachable from the form itself
+
+
+def test_the_form_names_the_fact_tables_the_relations_produce(client):
+    """The redesign's central affordance: the RELATIONS section says how many
+    separate fact tables the current relations add up to, so "these two aren't
+    related to each other" is a visible choice rather than a silent one."""
+    modelform = client.get("/static/js/modelform.js").text
+    assert "renderFactTableSummary" in modelform
+    assert "separate fact tables" in modelform
+    # ...and the sections themselves mirror the common-model form's shape
+    assert '{ id: "datasets", label: "DATASETS" }' in modelform
+    assert '{ id: "relations", label: "RELATIONS" }' in modelform
 
 
 # ── bundle form backend (guided common-model authoring) ─────────

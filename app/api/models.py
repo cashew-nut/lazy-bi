@@ -72,17 +72,28 @@ class MeasureSpec(BaseModel):
     synonyms: list[str] = []
 
 
-class JoinSpec(BaseModel):
-    name: str
-    path: str
-    format: str = "parquet"
+class RelationSpec(BaseModel):
+    """A relation from one of the model's datasets to a sibling dataset."""
+    to: str
     left_on: list[str] = []
     right_on: list[str] = []
     how: str = "left"
 
 
+class DatasetSpec(BaseModel):
+    """One table the model reads: its source, what it declares, and how it
+    relates to the model's other datasets. Datasets that relate to nothing
+    else are separate fact tables — see semantic.ModelPart."""
+    name: str
+    source: SourceSpec
+    joins: list[RelationSpec] = []
+    dimensions: list[DimensionSpec] = []
+    measures: list[MeasureSpec] = []
+
+
 class ImportSpec(BaseModel):
     bundle: str
+    from_dataset: str = ""    # which of this model's datasets relates to the bundle
     anchor_dataset: str
     left_on: list[str] = []
     right_on: list[str] = []
@@ -98,11 +109,8 @@ class ModelSpec(BaseModel):
     name: str
     label: str = ""
     description: str = ""
-    source: SourceSpec
-    joins: list[JoinSpec] = []
+    datasets: list[DatasetSpec] = []
     dimension_imports: list[ImportSpec] = []
-    dimensions: list[DimensionSpec] = []
-    measures: list[MeasureSpec] = []
 
 
 class MeasureIn(BaseModel):
@@ -133,12 +141,10 @@ def _reload_or_400() -> None:
 
 
 def _resolve(model: semantic.Model) -> semantic.Model:
-    """Merge a freshly-parsed model's imported dimensions, then — for a
-    multi-fact model — its facts' shared catalog, both against what's
-    currently loaded. Raises semantic.ModelError."""
-    semantic.resolve_imports(model, registry.dimension_bundles)
-    semantic.resolve_facts(model, registry.models)
-    return model
+    """Split a freshly-parsed model into its fact tables and merge in each
+    one's imported dimensions, against the bundles currently loaded. Raises
+    semantic.ModelError."""
+    return semantic.resolve_model(model, registry.dimension_bundles)
 
 
 def _parse_or_400(text: str) -> semantic.Model:
@@ -168,24 +174,36 @@ def _model_out(parsed: semantic.Model) -> dict:
         "model": {"name": parsed.name, "label": parsed.label,
                   "kind": "composite" if parsed.is_composite else "fact",
                   "dimensions": len(parsed.dimensions), "measures": len(parsed.measures)},
+        "parts": [
+            {"name": p.name, "datasets": list(p.datasets),
+             "dimensions": list(p.model.dimensions), "measures": list(p.model.measures)}
+            for p in parsed.parts
+        ],
+        # what every fact table can be grouped by at once — the same list as
+        # `dimensions` for a single-part model, and the interesting one when
+        # there are several: which dimensions survived the conform
+        "shared_dimensions": list(parsed.dimensions),
     }
-    if parsed.is_composite:
-        # no source of its own to introspect; what the editor wants to see is
-        # which dimensions actually survived the conform
-        out["columns"] = None
-        out["facts"] = [
-            {"alias": b.alias, "model": b.model.name,
-             "measures": len(b.model.measures)}
-            for b in parsed.fact_bindings
-        ]
-        out["shared_dimensions"] = list(parsed.dimensions)
-        return out
-    try:
-        schema = engine.scan(parsed).collect_schema()
-        out["columns"] = [{"name": n, "dtype": str(t)} for n, t in schema.items()]
-    except Exception as exc:
-        out["columns"] = None
-        out["schema_error"] = f"source not reachable: {exc}"
+    # post-join columns per fact table, keyed by part — the form resolves a
+    # dimension's dtype and a measure's completion pool against the part that
+    # owns it, so a model holding several tables introspects all of them
+    columns: dict[str, list[dict]] = {}
+    errors = []
+    for part in parsed.parts:
+        try:
+            schema = engine.scan(part.model).collect_schema()
+        except Exception as exc:
+            errors.append(f"{part.name}: {exc}")
+            continue
+        columns[part.name] = [{"name": n, "dtype": str(t)} for n, t in schema.items()]
+    out["part_columns"] = columns
+    # `columns` stays the flat union every existing caller reads
+    seen: set[str] = set()
+    flat = [c for cols in columns.values() for c in cols
+            if not (c["name"] in seen or seen.add(c["name"]))]
+    out["columns"] = flat if columns else None
+    if errors:
+        out["schema_error"] = "source not reachable: " + "; ".join(errors)
     return out
 
 
@@ -234,7 +252,7 @@ def get_model_spec(name: str):
     try:
         parsed = semantic.parse_model_text(_read_model_text(model))
         spec = semantic.model_to_spec(parsed)
-    except semantic.ModelError as exc:  # bad stored state, or a multi-fact model
+    except semantic.ModelError as exc:  # bad stored state
         raise HTTPException(status_code=400, detail=str(exc))
     return {"name": name, "file": model.origin.name if model.locked else None,
             "locked": model.locked, "spec": spec}
@@ -341,18 +359,58 @@ def check_measure(body: MeasureCheckIn):
 
 
 def _single_fact_or_400(name: str) -> semantic.Model:
-    """A measure belongs to one fact table. A multi-fact model only borrows its
-    facts' measures, so authoring one here would write a `measures:` block the
-    parser then rejects — say which model to edit instead."""
+    """A measure belongs to one fact table, and the measure lab names a model
+    rather than a table — so it only authors against a model that has just
+    one. With several, which one the expression is scoped to is the whole
+    question, and the guided form (which edits measures per dataset) is where
+    to answer it."""
     model = get_model(name)
     if model.is_composite:
         raise HTTPException(
             status_code=400,
-            detail=f"'{name}' is a multi-fact model — its measures belong to the facts it lists ("
-                   f"{', '.join(b.model.name for b in model.fact_bindings)}); add or edit the "
-                   f"measure on one of those",
+            detail=f"'{name}' holds {len(model.parts)} unrelated fact tables ("
+                   f"{', '.join(p.name for p in model.parts)}) — a measure belongs to one of them, "
+                   f"so add or edit it on that dataset in the model form",
         )
     return model
+
+
+def _apply_measure(model: semantic.Model, text: str, name: str,
+                   entry: Optional[dict]) -> str:
+    """`text` with measure `name` added, replaced (`entry`) or removed (None).
+
+    A file written the terse `source:` way carries its measures in one
+    top-level block, and is edited in place so its comments survive — that is
+    the shape every hand-written model in models/ uses. A `datasets:`-shape
+    file nests each measure block inside its dataset entry; those are
+    re-rendered from the spec instead, which is what the guided form that
+    generates them does on every save anyway."""
+    if any(line.rstrip() == "measures:" for line in text.split("\n")):
+        if entry is None:
+            return semantic.remove_measure_yaml(text, name)
+        return (semantic.replace_measure_yaml(text, name, entry) if name in model.measures
+                else semantic.append_measure_yaml(text, entry))
+    spec = semantic.model_to_spec(semantic.parse_model_text(text))
+    # an existing measure is rewritten where it already lives (a fact table can
+    # span several related datasets); a new one lands on the root
+    target = next((d for d in spec["datasets"]
+                   if any(x["name"] == name for x in d["measures"])), None)
+    if target is None:
+        owner = model.parts[0].name
+        target = next((d for d in spec["datasets"] if d["name"] == owner), None)
+    if target is None:
+        raise HTTPException(status_code=500, detail=f"model '{model.name}' has no dataset to hold '{name}'")
+    measures = list(target["measures"])
+    at = next((i for i, m in enumerate(measures) if m["name"] == name), None)
+    if entry is None:
+        if at is not None:
+            measures.pop(at)
+    elif at is None:
+        measures.append(entry)
+    else:
+        measures[at] = entry
+    target["measures"] = measures
+    return semantic.spec_to_yaml(spec)
 
 
 def _validate_measure_body(model: semantic.Model, m: MeasureIn) -> None:
@@ -435,7 +493,7 @@ def add_measure(name: str, m: MeasureIn, user: User = Depends(require_role("auth
     _validate_measure_body(model, m)
 
     entry = _measure_entry(m)
-    new_text = semantic.append_measure_yaml(_read_model_text(model), entry)
+    new_text = _apply_measure(model, _read_model_text(model), m.name, entry)
     parsed = _parse_or_400(new_text)  # belt and braces before persisting
     if m.name not in parsed.measures:
         raise HTTPException(status_code=500, detail="failed to place the measure in the yaml")
@@ -461,7 +519,7 @@ def update_measure(name: str, measure_name: str, m: MeasureIn,
     _validate_measure_body(model, m)
 
     entry = _measure_entry(m)
-    new_text = semantic.replace_measure_yaml(_read_model_text(model), measure_name, entry)
+    new_text = _apply_measure(model, _read_model_text(model), measure_name, entry)
     parsed = _parse_or_400(new_text)  # belt and braces before persisting
     if measure_name not in parsed.measures:
         raise HTTPException(status_code=500, detail="failed to place the measure in the yaml")
@@ -480,7 +538,7 @@ def delete_measure(name: str, measure_name: str,
     model = _single_fact_or_400(name)
     if measure_name not in model.measures:
         raise HTTPException(status_code=404, detail=f"unknown measure '{measure_name}' on model '{name}'")
-    new_text = semantic.remove_measure_yaml(_read_model_text(model), measure_name)
+    new_text = _apply_measure(model, _read_model_text(model), measure_name, None)
     _parse_or_400(new_text)  # belt and braces before persisting
     registry.write_model_text(model, new_text)
     _reload_or_400()

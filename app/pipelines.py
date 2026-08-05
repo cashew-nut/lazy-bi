@@ -16,6 +16,8 @@ from typing import Optional
 
 import yaml
 
+from . import semantic
+
 SOURCE_FORMATS = ("parquet", "csv", "delta", "iceberg")
 TARGET_FORMATS = ("delta", "parquet")  # iceberg is read-only — no write path yet
 MATERIALIZATION_MODES = ("replace", "upsert")
@@ -417,19 +419,17 @@ def validate_lineage(lineage: list[LineageEntry], output_schema: list[dict]) -> 
 
 
 def match_target_model(pipeline: Pipeline, models: dict) -> Optional[str]:
-    """The name of the loaded model (if any) whose source scans this
-    pipeline's target: delta targets match by exact path; parquet targets
-    match when the model's source glob fnmatches the target's object key."""
+    """The name of the loaded model (if any) one of whose fact tables scans
+    this pipeline's target: delta targets match by exact path; parquet targets
+    match when the fact table's source glob fnmatches the target's object key."""
     target = pipeline.target
     for name, model in models.items():
-        if model.is_composite:
-            continue  # borrows its facts' data; scans no target of its own
-        src = model.source
-        if target.format == "delta":
-            if src.format == "delta" and src.path.rstrip("/") == target.path.rstrip("/"):
+        for src in semantic.fact_sources(model):
+            if target.format == "delta":
+                if src.format == "delta" and src.path.rstrip("/") == target.path.rstrip("/"):
+                    return name
+            elif src.format == "parquet" and fnmatch.fnmatch(target.path, src.path):
                 return name
-        elif src.format == "parquet" and fnmatch.fnmatch(target.path, src.path):
-            return name
     return None
 
 

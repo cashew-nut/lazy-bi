@@ -188,6 +188,11 @@ A measure reduces to one value per group — ratios of aggregates,
 Expressions are validated at load time; edit a YAML and hit
 `POST /api/models/reload` (or restart) to pick it up.
 
+`source:` + `joins:` above is the terse spelling of the single-table case. The
+general shape is [`datasets:`](#several-fact-tables-in-one-model) — every table
+the model reads, plus the relations between them — and the two parse into the
+same thing, so a model written either way behaves identically.
+
 ### The safe measure DSL
 
 A measure is **not** arbitrary Python. It's a small, allowlisted expression
@@ -586,8 +591,8 @@ name rather than the bundle's own column name, so a bundle is free to have a
 **A `how: left` import is only joined into queries that read one of its
 dimensions.** It can only add columns, so a query using none of them gets the
 same answer without paying for it — which is what lets a model import a
-calendar purely to [conform with its
-neighbours](#multi-fact-models-several-fact-tables-on-one-axis) without
+calendar purely to [conform its fact
+tables](#several-fact-tables-in-one-model) without
 slowing down every query that has nothing to do with dates. `how: inner` also
 *filters* the model's rows, so it is always applied. (The corollary, shared
 with [`how: between`](#calendar-tables-how-between): a measure expression can
@@ -608,117 +613,148 @@ directly — and one that's currently imported can't be deleted until its
 importers drop it. Endpoints mirror the model API under `/api/dimensions`
 (list, validate, create, `{name}/yaml` GET/PUT, delete, reload).
 
-### Multi-fact models (several fact tables on one axis)
+### Several fact tables in one model
 
-A dimension bundle solves "these models share a dimension". It does not solve
-"put these models' measures on the same chart". Marketing spend, sales revenue
-and active subscriptions live in three files with no key between them, and a
-single-source model can only ever measure one of them.
+A model's datasets do not have to be related to each other.
 
-A model that declares `facts:` instead of `source:` measures all of them:
+`source:` + `joins:` describes one fact table and its lookups. The general
+shape is `datasets:` — every table the model reads, plus the relations between
+them — and **each connected group of them is a fact table in its own right**:
 
 ```yaml
-# models/commercial_overview.yaml
+# models/commercial_overview.yaml (abridged)
 name: commercial_overview
 label: Commercial Overview
-facts:
-  - model: marketing
-  - model: sales
-  - model: subscriptions
-    alias: subs
+
+datasets:
+  - name: orders
+    source: { format: parquet, path: s3://cash-intel/sales/*.parquet }
+    dimensions: [{ name: region }, { name: channel }]
+    measures:   [{ name: revenue, expr: sum(unit_price * quantity) }]
+
+  - name: spend                       # related to nothing above it
+    source: { format: parquet, path: s3://cash-intel/marketing/*.parquet }
+    dimensions: [{ name: region }, { name: channel }]
+    measures:   [{ name: ad_spend, expr: sum(spend) }]
+
+dimension_imports:                    # ...but both related to one calendar
+  - bundle: calendar
+    from_dataset: orders
+    anchor_dataset: days
+    left_on: order_date
+    right_on: date
+  - bundle: calendar
+    from_dataset: spend
+    anchor_dataset: days
+    on: month                         # (right_on: date on the bundle side)
 ```
 
 ```
-calendar_date  marketing.spend  sales.revenue  subs.active_customers
-2025-01-01          241,880.55    3,918,204.10                  1,204
-2025-02-01          238,014.02    3,655,901.44                  1,231
+calendar_date  ad_spend      revenue
+2025-01-01     241,880.55    3,918,204.10
+2025-02-01     238,014.02    3,655,901.44
 ```
 
-That list is the whole file — a multi-fact model declares nothing else.
+`orders` and `spend` share no key and are never joined. Each is scanned on its
+own at the grain the query asked for, and the per-table *results* are merged on
+the dimensions they share. This is the only shape that works: joining the two
+would pair every order with every spend row for its month and inflate both
+sides. Running them separately and merging the aggregates leaves every measure
+at the grain of its own table, so asking for one measure or five returns
+identical numbers for each.
 
-**The facts are never joined to each other.** Each is queried on its own at the
-grain the query asked for, and the per-fact *results* are merged on the
-dimensions they share. This is the only shape that works: joining the fact
-tables would pair every order with every spend row for its month and inflate
-both sides. Running them separately and merging the aggregates leaves every
-measure at the grain of its own table, so asking for one measure or five
-returns identical numbers for each.
+`source:`/`joins:` is exactly this with one dataset (named after the model) and
+one relation per join entry — there is no second concept, and a model written
+either way parses into the same datasets, relations and fact tables.
 
-**Conformance is declared on the fact, not here.** Two facts share a dimension
-when they call it by the same name, and importing the same
-[dimension bundle](#common-dimensional-models-shared-dimensions) into two fact
-models is what makes them do that. All three models above import `calendar`, so
-all three already call the axis `calendar_date` — the multi-fact model gets it
-for free and has nothing to say about it. Same for `region`: `sales` imports it
-from the `geography` bundle, the other two declare it natively.
+**A relation is what merges two datasets into one fact table.** Declare
+`joins: [{to: products, on: product}]` on `orders` and the two become one
+scan, with `products`' columns available to `orders`' dimensions and measures.
+Leave them unrelated and they stay separate. Nothing is implicit: the shape of
+the relation graph *is* the shape of the model.
 
-The point of putting it on the fact is that it's true of the fact regardless of
-who reads it. Declaring "sales' date axis is `order_date`" once means *every*
-model that ever conforms against sales gets it, and the fact model is where a
-reviewer sees it.
+**Conformance is declared per fact table.** Two of them share a dimension when
+they call it by the same name — either because both declare one (`region`
+above), or because both import the same [common dimensional
+model](#common-dimensional-models-shared-dimensions), which is what
+`from_dataset:` on an import is for: it says which fact table the bundle
+relates to, and importing one bundle into two of them is what puts them on a
+single axis. How each gets there is its own business, and the three tables in
+`models/commercial_overview.yaml` use three different mechanisms without
+caring:
 
-How each fact then reaches that shared axis is its own business, and the three
-above use three different mechanisms without caring:
-
-| fact | import | how it gets there |
+| dataset | import | how it gets there |
 | --- | --- | --- |
-| `sales` | `left_on: order_date` | an event date, one row per order |
-| `marketing` | `left_on: month` | already monthly, lands on each month start |
+| `orders` | `left_on: order_date` | an event date, one row per order |
+| `spend` | `on: month` | already monthly, lands on each month start |
 | `subs` | [`how: between`](#calendar-tables-how-between) | an interval join — a subscription counts in every period it was open for |
 
-A spine dimension works here too. Whatever a fact does to answer "group me by
-time", it does before the merge.
+A spine dimension works here too. Whatever a fact table does to answer "group
+me by time", it does before the merge.
 
-**Only dimensions every fact offers are groupable** — the intersection, not the
-union. `channel` is on sales and marketing but not subscriptions: there is no
-honest subscriptions number to put on a row labelled "net ads".
+**Only dimensions every fact table offers are groupable** — the intersection,
+not the union. If `channel` is on orders and spend but not subscriptions,
+there is no honest subscriptions number to put on a row labelled "net ads".
 
-**That intersection follows the query, not the model.** Only the facts a query
-names a measure from are read, so only those have to conform. Asking for
-`sales.revenue` and `marketing.spend` *can* be grouped by `channel`, because
-subscriptions contributes no row to that result:
+**That intersection follows the query, not the model.** Only the fact tables a
+query names a measure from are read, so only those have to conform. Asking for
+`revenue` and `ad_spend` *can* be grouped by `channel`, because subscriptions
+contributes no row to that result:
 
 ```jsonc
-{"dimensions": ["channel"], "measures": ["sales.revenue", "marketing.spend"]}   // fine
-{"dimensions": ["channel"], "measures": ["sales.revenue", "subs.mrr"]}          // refused
+{"dimensions": ["channel"], "measures": ["revenue", "ad_spend"]}   // fine
+{"dimensions": ["channel"], "measures": ["revenue", "mrr"]}        // refused
 ```
 
-So one multi-fact model covers every combination of its facts, rather than
-needing one per pair. A query naming a single fact's measures conforms with
-itself and can be grouped by anything that fact has. Grouping or filtering by a
-dimension one of the *read* facts lacks is a query error that names the fact
+So one model covers every combination of its fact tables, rather than needing
+one per pair. A query naming a single table's measures conforms with itself and
+can be grouped by anything that table has. Grouping or filtering by a dimension
+one of the *read* tables lacks is a query error that names the table
 responsible — the actionable part being which measure to drop.
 
 `model.dimensions` — what the builder opens on, and what `/api/models` reports
-— stays the all-facts intersection: the catalog that is safe whatever you go on
-to ask for.
+— stays the all-tables intersection: the catalog that is safe whatever you go
+on to ask for.
 
-**Measures are prefixed by fact** (`sales.revenue`, `marketing.spend`) because
-two facts can easily both have a measure called `orders`. `alias:` renames the
-prefix; it defaults to the fact model's name.
+**Measures keep their own names** (`revenue`, `ad_spend`) and have to be unique
+across the whole model — a query names a measure without saying which table it
+came from. Dimension names are the opposite: repeating one across fact tables
+is how they conform, and only a repeat *within* one fact table is a clash.
 
 Other things worth knowing:
 
-- A bucket only one fact has rows for keeps its row and leaves the others null
-  — "this fact has nothing here", which is what happened. Charts draw a gap;
-  zero would be a number nobody measured.
-- Only the facts a query names a measure from are read at all. A query asking
-  for `sales.revenue` alone never touches the other two files.
+- A bucket only one fact table has rows for keeps its row and leaves the
+  others null — "this table has nothing here", which is what happened. Charts
+  draw a gap; zero would be a number nobody measured.
+- Only the fact tables a query names a measure from are read at all. A query
+  asking for `revenue` alone never touches the other files.
 - Sorting and the row limit apply *after* the merge, so a limit can't drop a
-  bucket another fact still has rows for.
-- Facts don't nest — list the fact models directly.
-- A multi-fact model declares nothing else: no source, joins, dimensions,
-  measures or imports of its own. Those belong to the facts, and a load-time
-  error says so rather than silently ignoring them.
-- Two facts that disagree on a dimension's *type* — one calling `when` a time
-  dimension, the other a category — is a load-time error, checked over every
-  pair rather than only over the all-facts intersection.
+  bucket another table still has rows for.
+- A dataset related to nothing else *and* declaring no measures is a load-time
+  error: it is a fact table with nothing to measure, and its only effect would
+  be to narrow what the model's real fact tables can be grouped by. Relate it,
+  or give it a measure.
+- Two fact tables that disagree on a dimension's *type* — one calling `when` a
+  time dimension, the other a category — is a load-time error, checked over
+  every pair rather than only over the all-tables intersection.
+- Inline (visual-scoped) measures need one frame to evaluate against, so a
+  model with several fact tables doesn't take them; declare the measure on the
+  dataset it belongs to.
 
-**In the app**: *+ CREATE MULTI-FACT MODEL* in the Modelling workspace's create
-chooser. It has no single source to pick, so it edits as YAML rather than
-through the guided form; the list marks it `multi-fact` and shows its facts.
-Everywhere else it behaves like any other model — Studio, dashboards,
+**In the app**: the model form is the same general design as the common-model
+form — step one (**DATASETS**) adds the tables and imports any common models,
+step two (**RELATIONS**) says how they relate. RELATIONS names the fact tables
+the current relations add up to, and lists what all of them can be grouped by,
+so "these two aren't related to each other" is a visible choice rather than a
+silent one. Dimensions and measures are then declared per dataset, which is
+what scopes a measure to one fact table. The list marks a model holding several
+of them. Everywhere else it behaves like any other model — Studio, dashboards,
 cross-filtering, Chat.
+
+> Replaces the earlier `facts:` shape, in which a model listed *other models*
+> as its fact tables. A `facts:` key is now a load-time error naming this
+> section: the same analysis is one model with several datasets, authored in
+> the form rather than by hand.
 
 ### Performance (13M-row fact table)
 
@@ -833,8 +869,8 @@ file remains the sole executable source of truth, the table is the audit log.
 The 7 models under `models/` and both bundles under `dimensions/`
 (`geography.yaml`, `calendar.yaml`) are the built-in demo catalog — curated to
 be the minimal set that exercises every core-engine capability (a lazy read of
-each supported format, a shared dimension bundle, single- and multi-fact
-models, a `frame:` expression, point-in-time range joins) plus one large fact
+each supported format, a shared dimension bundle, models with one and with
+several fact tables, a `frame:` expression, point-in-time range joins) plus one large fact
 table for a performance benchmark. `GET /api/models` and `GET /api/dimensions`
 report each one `"locked": true`. Structural changes — `POST /api/models`/
 `POST /api/dimensions` under an existing name, `PUT /api/models/{m}/yaml`/`PUT

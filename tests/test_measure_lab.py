@@ -114,3 +114,57 @@ def test_save_measure_to_model(client):
         assert q.status_code == 200 and q.json()["rows"][0]["avg_price"] > 0
     finally:
         client.delete("/api/models/lab_probe")
+
+
+def test_save_measure_to_a_datasets_shape_model(client):
+    """A model written the general way carries its measures inside a dataset
+    entry rather than in one top-level block, so the lab's create/update/delete
+    goes through the spec instead of the comment-preserving text surgery. The
+    endpoint contract is the same either way."""
+    yaml_text = (
+        "name: lab_ds_probe\n"
+        "datasets:\n"
+        "  - name: orders\n"
+        "    source: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
+        "    dimensions:\n      - name: region\n"
+        "    measures:\n      - name: rows\n        expr: count()\n"
+    )
+    assert client.post("/api/models", json={"yaml": yaml_text}).status_code == 201
+    try:
+        res = client.post("/api/models/lab_ds_probe/measures", json={
+            "name": "avg_price", "expr": "mean(unit_price)",
+            "label": "Avg Price", "format": "currency"})
+        assert res.status_code == 201, res.text
+        # ...and it landed on the dataset, not in a stray top-level block the
+        # parser would silently ignore
+        text = client.get("/api/models/lab_ds_probe/yaml").json()["yaml"]
+        assert "\nmeasures:" not in text
+        assert "avg_price" in text
+
+        q = client.post("/api/query", json={
+            "model": "lab_ds_probe", "dimensions": [], "measures": ["avg_price", "rows"]})
+        assert q.status_code == 200 and q.json()["rows"][0]["avg_price"] > 0
+
+        upd = client.put("/api/models/lab_ds_probe/measures/avg_price", json={
+            "name": "avg_price", "expr": "mean(unit_cost)", "label": "Avg Cost", "format": "currency"})
+        assert upd.status_code == 200
+        assert next(m for m in upd.json()["measures"] if m["name"] == "avg_price")["label"] == "Avg Cost"
+        # the sibling measure is untouched by the rewrite
+        assert {m["name"] for m in upd.json()["measures"]} == {"rows", "avg_price"}
+
+        assert client.delete("/api/models/lab_ds_probe/measures/avg_price").status_code == 204
+        after = client.get("/api/models").json()
+        probe = next(m for m in after if m["name"] == "lab_ds_probe")
+        assert [m["name"] for m in probe["measures"]] == ["rows"]
+    finally:
+        client.delete("/api/models/lab_ds_probe")
+
+
+def test_the_measure_lab_declines_a_model_with_several_fact_tables(client):
+    """A measure belongs to one fact table, and the lab names a model — so it
+    says which datasets to choose between rather than guessing."""
+    res = client.post("/api/models/commercial_overview/measures", json={
+        "name": "x", "expr": "count()"})
+    assert res.status_code == 400
+    assert "3 unrelated fact tables" in res.json()["detail"]
+    assert "orders, spend, subs" in res.json()["detail"]
