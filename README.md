@@ -123,6 +123,12 @@ app/
   sandbox_agent.py     the sandbox coding agent's LLM seam: notebook context, polars prompt, lineage tool
   sandboxstore.py      sqlite persistence: saved sandbox notebooks
   iceberg_util.py      catalog-free iceberg reads: resolve + scan a table's current snapshot
+  skills.py            Skill abstraction + registry + invoke_skill() dispatch (role check,
+                       rate limit, audit) — see "Agents & MCP server" below
+  agents.py            Agent abstraction + agents/*.yaml loader
+  skills_analytics.py  the analytics agent's skills: ask_question, list_models
+  mcpserver.py         the MCP server mounted at /mcp — tools/list and tools/call
+                       synthesized live from the skill/agent registries on every request
   emulator.py, s3.py, seed.py, load_taxi.py
   api/                 one router per resource: auth, users (+tokens), models,
                        dimensions, datasets, query, visuals, dashboards
@@ -137,6 +143,7 @@ app/
 models/*.yaml          semantic models (the editable contract)
 dimensions/*.yaml      dimension bundles shared across models (see below)
 pipelines/*.yaml       hosted polars transformation scripts (see below); layers.yaml
+agents/*.yaml          declared Agents — name + description + which skills they expose (see below)
 tests/                 pytest: semantic, engine, store, API, pipelines
 Dockerfile, docker-compose.yml
 ```
@@ -1367,6 +1374,60 @@ builder uses) are also sent, so the assistant can generate the
 natural-language answer text. Nothing is sent to any third party unless
 `CI_LLM_API_KEY` is configured — there is no separate feature flag to
 forget, the key's presence is the flag.
+
+## Agents & MCP server
+
+specs/017-agent-skills-mcp-server/ generalizes conversational analytics'
+tool-calling pattern into two reusable concepts, and exposes them to
+external MCP clients (Claude Desktop, Claude Code, or any other MCP-capable
+agent host) — not just the browser's own CHAT surface.
+
+- **Skill** (`app/skills.py`): a named, typed, role-gated capability with a
+  handler — `min_role` (viewer/author/admin), a JSON Schema input/output
+  shape, and whether it's rate-limited. Every skill call goes through one
+  dispatch path, `invoke_skill()`: role check → rate limit (if applicable)
+  → the handler → an audit log entry (`mcp_skill:<name>`, or
+  `:denied`/`:rate_limited` for a blocked attempt) — so a future skill gets
+  those guarantees without reimplementing them.
+- **Agent** (`app/agents.py`, `agents/*.yaml`): a named, described bundle of
+  skill names, declared in YAML the same way a model is declared in
+  `models/*.yaml`. An agent carries no privilege of its own — it's purely a
+  discoverable grouping; every skill call is still gated by that skill's
+  own `min_role` against the caller's real role, and a skill only counts as
+  *exposed* while some loaded agent currently references it. Editing an
+  agent's `skills:` list and reloading changes what's exposed immediately,
+  with no code change.
+
+The shipped **analytics agent** (`agents/analytics.yaml`) exposes two
+skills, both **viewer**-tier:
+
+| Skill | Rate-limited | What it does |
+|---|---|---|
+| `ask_question` | yes | Ask a business question in plain language; wraps the exact same question → resolve → execute → persist → audit path conversational analytics' CHAT surface uses (`app/nlq.py`) — a call and a browser chat turn against the same `conversation_id` share one history. |
+| `list_models` | no | The same models/dimensions/measures catalog `ask_question` is grounded on — discovery before asking. |
+
+**Connecting**: the MCP server is mounted at `/mcp` (Streamable HTTP,
+stateless) alongside the REST API, in the same deployment — not a separate
+process. It authenticates exactly like `/api`: a session cookie or, for a
+non-browser MCP client, a per-user `Authorization: Bearer cipat_...` token
+(**Account → tokens**, the same mechanism scripts already use — see
+"Authoring model measures" above). There is no anonymous MCP handshake —
+even `initialize` requires valid credentials — and `tools/list` only ever
+returns the skills a connection's authenticated role can actually invoke
+(a viewer never sees an author/admin-only tool at all, not merely gets
+refused calling one).
+
+**Rate limiting**: `ask_question` calls the same LLM backend conversational
+analytics does, so it's gated by a per-identity, in-process limit —
+`CI_MCP_RATE_LIMIT_PER_MIN` (default `20`). A caller past the limit gets
+`outcome: "rate_limited"` immediately, no LLM call made.
+
+**Scope, deliberately**: this feature is read/query-only — `ask_question`
+and `list_models` never save, trigger, or author anything — and the
+sandbox coding agent (admin-only, unsandboxed code execution) does not
+join the MCP surface at all. Extending either would be a new feature that
+explicitly reopens the constitution's trusted-config boundary principle,
+not a side effect of this one.
 
 ## Notebooks & the Composer
 

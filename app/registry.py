@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from . import agents as agents_mod
 from . import config, pipelines as pipelines_mod, semantic
 from .authstore import AuthStore
 from .conversationstore import ConversationStore
@@ -24,6 +25,7 @@ class Registry:
         self.dimension_bundles: dict[str, semantic.DimensionBundle] = {}
         self.pipelines: dict[str, pipelines_mod.Pipeline] = {}
         self.layers: dict[str, pipelines_mod.Layer] = {}
+        self.agents: dict[str, agents_mod.Agent] = {}
         self.store: Optional[VisualStore] = None
         self.auth_store: Optional[AuthStore] = None
         self.conversation_store: Optional[ConversationStore] = None
@@ -48,6 +50,14 @@ class Registry:
         self.local_model_store = LocalModelStore(config.DB_PATH)
         self.local_bundle_store = LocalBundleStore(config.DB_PATH)
         self.local_pipeline_store = LocalPipelineStore(config.DB_PATH)
+        # One-time side effect: importing app/skills_analytics.py registers
+        # its skills (ask_question, list_models) into app/skills.py's
+        # registry. Must happen before the first reload_all() below, since
+        # load_agents() validates agents/*.yaml's skill references against
+        # that registry. A local import (not a module-level one) — skills
+        # are code, not reloadable state, so this only ever needs to run
+        # once per process, unlike reload_all()'s YAML re-reads.
+        from . import skills_analytics  # noqa: F401
         self.reload_all()
 
     def reload_all(self) -> None:
@@ -133,6 +143,11 @@ class Registry:
                     # ref, target collision) — drop just it, same tolerance
                     # as the parse failure above
                     del self.pipelines[local.name]
+        # agents/*.yaml — reloaded every pass (unlike the one-time skill
+        # registration in init() above) so editing an agent's declared skill
+        # list and reloading changes what the MCP server exposes, with no
+        # code change (spec 017 User Story 3).
+        self.agents = agents_mod.load_agents(config.AGENTS_DIR)
 
     def read_model_text(self, model: semantic.Model) -> str:
         if model.locked:

@@ -16,12 +16,19 @@ from dataclasses import dataclass, field, replace
 from typing import Iterator, Optional, Union
 
 from . import engine, measure_dsl, memorystore, semantic
+from .auth import User
 from .llm import ModelCatalogEntry, PriorTurn, RawToolCall, StreamEvent, Translator, TranslatorError
+from .registry import registry
 
 __all__ = [
     "ProposeQuery", "AskClarification", "Decline", "ShowQuery", "Decision",
     "build_catalog", "resolve", "resolve_streaming",
+    "prior_turns", "start_ask", "summarize", "handle_translator_error",
+    "persist_learned", "resolved_query_dict", "handle_decision",
 ]
+
+# How many prior turns feed into follow-up context (research.md R5, spec 012).
+_PRIOR_CONTEXT_TURNS = 5
 
 # Every Decision below carries `learned`: chat-learned model memories the
 # LLM attached to its tool call, already re-validated by _validate_memories
@@ -477,3 +484,176 @@ def resolve_streaming(
         yield Decline("the assistant did not return a usable response.")
         return
     yield _dispatch(raw, catalog, prior_context, models, scope)
+
+
+# ── Orchestration promoted from app/api/chat.py's private helpers
+# (specs/017-agent-skills-mcp-server/research.md R6): question -> resolve ->
+# execute -> persist -> audit. Reused by both the HTTP chat route
+# (app/api/chat.py) and the ask_question skill (app/skills_analytics.py),
+# so there is one implementation, not two. Conversation *lookup and
+# ownership* stays each caller's own job (chat.py's _get_owned raises
+# HTTPException; the skill handler returns its own typed not-found result)
+# — everything below takes an already-fetched, already-owned `conv` dict or
+# a bare `conversation_id`, and is otherwise transport-agnostic.
+
+def prior_turns(conv: dict) -> list[PriorTurn]:
+    """Recent successfully-answered turns, as follow-up context (research.md
+    R5, spec 012) — resolved structure only, never raw result rows. Declines
+    and clarifying questions aren't reusable context, so only outcome in
+    (answered, answered_empty) contributes a turn."""
+    turns = []
+    last_question = ""
+    for msg in conv["messages"]:
+        if msg["role"] == "user":
+            last_question = msg["question_text"] or ""
+        elif msg["outcome"] in ("answered", "answered_empty") and msg["resolved_query"]:
+            rq = msg["resolved_query"]
+            turns.append(PriorTurn(
+                question_text=last_question,
+                model=rq.get("model"), dimensions=rq.get("dimensions", []),
+                measures=rq.get("measures", []), filters=rq.get("filters", []),
+                sort=rq.get("sort"), limit=rq.get("limit"),
+                inline_measures=rq.get("inline_measures", []),
+            ))
+    return turns[-_PRIOR_CONTEXT_TURNS:]
+
+
+def start_ask(conv: dict, question: str) -> tuple[dict, list[ModelCatalogEntry], list[PriorTurn]]:
+    """Persist the user's turn and assemble everything resolve()/
+    resolve_streaming() need to answer it — the catalog carries every
+    stored model memory (learned synonyms merged into the declared ones,
+    notes as learned-fact lines), the self-learning loop's read half.
+    Picking a Translator instance is deliberately left to the caller —
+    chat.py's per-conversation llm_model selection isn't part of this
+    shared seam (app/skills_analytics.py's ask_question always uses the
+    single default translator, an intentionally narrower MVP scope)."""
+    question_msg = registry.conversation_store.add_message(
+        conv["id"], "user", question_text=question)
+    catalog = build_catalog(registry.models, conv["model_scope"],
+                             memories=registry.memory_store.all_by_model())
+    return question_msg, catalog, prior_turns(conv)
+
+
+def summarize(resolved: dict, result: dict) -> str:
+    """Templated (non-LLM) grounding summary — cheaper and faster than a
+    second model round trip, and trivially guaranteed to only ever describe
+    what `result` actually contains."""
+    if result["row_count"] == 0:
+        return "That query ran successfully but returned no matching data."
+    dim_cols = [c["name"] for c in result["columns"] if c["kind"] == "dimension"]
+    measure_cols = [c for c in result["columns"] if c["kind"] == "measure"]
+    if not dim_cols and result["row_count"] == 1:
+        row = result["rows"][0]
+        parts = [f"{c['label']}: {row.get(c['name'])}" for c in measure_cols]
+        return "; ".join(parts)
+    top = result["rows"][0]
+    headline = ", ".join(f"{c['label']}: {top.get(c['name'])}" for c in measure_cols)
+    return (f"Found {result['row_count']} row(s) broken down by "
+            f"{', '.join(dim_cols)}. Top row — {headline}.")
+
+
+def handle_translator_error(conversation_id: int, user: User, question_msg: dict,
+                             question: str, exc: TranslatorError) -> dict:
+    """The LLM call itself failed (network/timeout/API error) — persisted
+    and audited as outcome "error", same as any other answer outcome. Easy
+    to miss when reusing this orchestration (it isn't called from inside
+    either start_ask() or handle_decision(), only from around the separate
+    resolve()/resolve_streaming() call in between them) — see research.md R6."""
+    response_msg = registry.conversation_store.add_message(
+        conversation_id, "assistant", outcome="error",
+        answer_text=f"the assistant is temporarily unavailable: {exc}",
+    )
+    registry.auth_store.record_audit(
+        "chat_ask", user.username, actor_user_id=user.id,
+        target=f"conversation:{conversation_id} outcome:error question:{question!r}",
+    )
+    return {"question": question_msg, "response": response_msg, "learned": []}
+
+
+def persist_learned(conversation_id: int, user: User, decision: Decision) -> list[dict]:
+    """The self-learning loop's write half: store the decision's already
+    re-validated memories against their semantic models (never against the
+    user — created_by is audit attribution only) and audit-log each write.
+    MemoryStore.add returning None (duplicate / at cap) is a silent no-op,
+    so re-learning a known fact costs nothing and reports nothing."""
+    saved = []
+    for mem in decision.learned:
+        stored = registry.memory_store.add(
+            mem["model"], mem["kind"], mem["subject"], mem["content"],
+            source="chat", created_by=user.username, conversation_id=conversation_id,
+        )
+        if stored:
+            saved.append(stored)
+            registry.auth_store.record_audit(
+                "chat_memory", user.username, actor_user_id=user.id,
+                target=(f"conversation:{conversation_id} memory:{stored['id']} "
+                        f"model:{stored['model']} kind:{stored['kind']} "
+                        f"subject:{stored['subject']!r} content:{stored['content']!r}"),
+            )
+    return saved
+
+
+def resolved_query_dict(decision) -> dict:
+    return {
+        "model": decision.model, "dimensions": decision.dimensions,
+        "measures": decision.measures, "filters": decision.filters,
+        "sort": decision.sort, "limit": decision.limit,
+        "inline_measures": decision.inline_measures,
+    }
+
+
+def handle_decision(conversation_id: int, user: User, question_msg: dict,
+                     question: str, decision: Decision) -> dict:
+    """Persist `decision` as the assistant's turn (executing a ProposeQuery
+    against the live engine first) and audit-log the outcome — shared by
+    every caller of resolve()/resolve_streaming(), regardless of how the
+    Decision was reached or over which transport."""
+    store = registry.conversation_store
+    # persisted before the outcome branches: what this exchange taught about
+    # a model is independent of whether the query it accompanied succeeded
+    learned = persist_learned(conversation_id, user, decision)
+    if isinstance(decision, Decline):
+        response_msg = store.add_message(
+            conversation_id, "assistant", outcome="declined", answer_text=decision.reason_text)
+        audit_target = f"conversation:{conversation_id} outcome:declined question:{question!r}"
+    elif isinstance(decision, AskClarification):
+        answer_text = decision.question_text
+        if decision.candidates:
+            answer_text += f" (options: {', '.join(decision.candidates)})"
+        response_msg = store.add_message(
+            conversation_id, "clarification", outcome="clarification", answer_text=answer_text)
+        audit_target = (f"conversation:{conversation_id} outcome:clarification "
+                         f"question:{question!r} candidates:{decision.candidates}")
+    elif isinstance(decision, ShowQuery):
+        resolved_query = resolved_query_dict(decision)
+        response_msg = store.add_message(
+            conversation_id, "assistant", outcome="query_shown", resolved_query=resolved_query,
+            answer_text=f"Here's the query behind “{decision.question_text}”.",
+        )
+        audit_target = f"conversation:{conversation_id} outcome:query_shown question:{question!r}"
+    else:
+        model = registry.models[decision.model]
+        resolved_query = resolved_query_dict(decision)
+        try:
+            result = engine.run_query(model, resolved_query)
+        except (semantic.ModelError, engine.QueryError) as exc:
+            response_msg = store.add_message(
+                conversation_id, "assistant", outcome="error", answer_text=f"query failed: {exc}")
+            registry.auth_store.record_audit(
+                "chat_ask", user.username, actor_user_id=user.id,
+                target=f"conversation:{conversation_id} outcome:error question:{question!r}",
+            )
+            return {"question": question_msg, "response": response_msg, "learned": learned}
+        outcome = "answered_empty" if result["row_count"] == 0 else "answered"
+        response_msg = store.add_message(
+            conversation_id, "assistant", outcome=outcome,
+            resolved_query=resolved_query, result=result,
+            answer_text=summarize(resolved_query, result),
+        )
+        audit_target = (f"conversation:{conversation_id} outcome:{outcome} question:{question!r} "
+                         f"model:{decision.model} dimensions:{decision.dimensions} measures:{decision.measures}")
+
+    registry.auth_store.record_audit(
+        "chat_ask", user.username, actor_user_id=user.id, target=audit_target,
+    )
+    return {"question": question_msg, "response": response_msg, "learned": learned}
