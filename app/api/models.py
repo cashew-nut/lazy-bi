@@ -290,7 +290,7 @@ def model_schema(name: str):
     completion list."""
     model = get_model(name)
     try:
-        schema = engine.scan(model).collect_schema()
+        schema = engine.scan_schema(model)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"source not reachable: {exc}")
     return {"columns": [{"name": n, "dtype": str(t)} for n, t in schema.items()]}
@@ -387,7 +387,7 @@ def _validate_measure_body(model: semantic.Model, m: MeasureIn) -> None:
             schema = set(model.measures)
         else:
             try:
-                schema = engine.scan(model).collect_schema()
+                schema = engine.scan_schema(model)
             except Exception as exc:
                 raise HTTPException(status_code=400, detail=f"source not reachable: {exc}")
         try:

@@ -55,6 +55,17 @@ SANDBOX_ROW_LIMIT = 200
 # Hard cap on rows returned to the browser
 MAX_ROWS = 10_000
 
+# Read-only S3 lookup cache (app/cache.py) — schema introspection and
+# spine-dimension bounds are re-derived from S3 far more often than the
+# backing data actually changes (every query re-resolves its own schema,
+# every editor keystroke re-checks a source's columns). Entries self-expire
+# rather than being trusted indefinitely, since this process has no way to
+# know when new data lands; registry.reload_all() also clears the cache
+# outright on every model/bundle edit, since that changes what a path
+# resolves to, not just its data.
+SCHEMA_CACHE_TTL = float(os.environ.get("CI_SCHEMA_CACHE_TTL", "30"))
+BOUNDS_CACHE_TTL = float(os.environ.get("CI_BOUNDS_CACHE_TTL", "30"))
+
 # Instant cross-filter extracts (specs/016-instant-cross-filter/) — the
 # per-tile size cap that decides whether a dashboard tile gets the
 # round-trip-free treatment or silently stays on today's live query path.

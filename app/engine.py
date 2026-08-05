@@ -15,8 +15,8 @@ from typing import Any, Optional
 
 import polars as pl
 
-from . import config, iceberg_util, measure_dsl, semantic
-from .semantic import ImportBinding, Model, ModelError, Source, TIME_GRAINS, compile_frame
+from . import cache, config, iceberg_util, measure_dsl, semantic
+from .semantic import Dimension, ImportBinding, Model, ModelError, Source, TIME_GRAINS, compile_frame
 
 FILTER_OPS = {"eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in", "contains"}
 
@@ -114,6 +114,18 @@ def scan_source(source: Source) -> pl.LazyFrame:
     """Public: lazily scan a single source (no joins). Used by the dimension
     bundle editor to introspect one dataset's own columns."""
     return _scan_source(source)
+
+
+def source_schema(source: Source) -> pl.Schema:
+    """Cached column schema for one source (its own, unjoined) — the
+    footer-only read source introspection needs (dataset picker, dimension
+    bundle editor), without re-hitting S3 for it on every keystroke. Keyed
+    on the source's own path+format, exactly what determines the answer, so
+    it's safe to share across every caller, mid-edit or not — unlike a
+    model or bundle name, a source path never means two different things at
+    once."""
+    key = ("source_schema", source.path, source.format)
+    return cache.get_or_set(key, config.SCHEMA_CACHE_TTL, lambda: _scan_source(source).collect_schema())
 
 
 def _scan_bundle(binding: ImportBinding) -> pl.LazyFrame:
@@ -379,6 +391,50 @@ def scan(model: Model, dimensions: Optional[dict] = None) -> pl.LazyFrame:
     return lf
 
 
+def _model_cache_key(model: Model) -> tuple:
+    """Cache-key component identifying this exact Model object, not just its
+    name — a model name isn't a stable identity while it's being edited (the
+    guided form/YAML editor re-parses a fresh, unregistered Model on every
+    keystroke, sometimes reusing an existing model's own name before it's
+    ever saved), so anything cached under the name alone could leak a
+    not-yet-saved edit's schema to an unrelated caller, or hand the editor
+    back a stale one. Folding in id(model) means only repeat calls against
+    the very same object — e.g. the registry's live model, kept alive in
+    registry.models until the next reload_all() — ever hit the cache; a
+    fresh reparse always misses and computes its own true answer."""
+    return (model.name, id(model))
+
+
+def scan_schema(model: Model, dimensions: Optional[dict] = None) -> pl.Schema:
+    """Cached column schema for scan(model, dimensions) — same "which joins
+    are in play" rules as scan() (see its docstring), just memoized so the
+    model/measure editors and every query's own schema lookup (_run_single
+    below) don't each re-resolve the whole join plan's schema from S3."""
+    key = ("scan_schema", _model_cache_key(model),
+           None if dimensions is None else tuple(sorted(dimensions)))
+    return cache.get_or_set(key, config.SCHEMA_CACHE_TTL, lambda: scan(model, dimensions).collect_schema())
+
+
+def _spine_bounds(
+    model: Model, dims_in_play: dict, filters: list, sdim: Dimension, lf: pl.LazyFrame,
+) -> tuple:
+    """Cached (min start, max end) over `lf`'s spine columns — the natural
+    window an unbounded spine query (no explicit date filter) falls back
+    to. `lf` at this point already reflects every filter and optional join
+    that shapes its row set, so those — not just the model and spine
+    dimension — are exactly what have to key the cache; leaving one out
+    would risk serving one query's bounds to a differently-filtered one.
+    The source data itself is the one input this can't see change, hence
+    the short TTL rather than trusting the entry forever."""
+    key = ("spine_bounds", _model_cache_key(model), sdim.name,
+           tuple(sorted(dims_in_play)), json.dumps(filters, sort_keys=True, default=str))
+    row = cache.get_or_set(key, config.BOUNDS_CACHE_TTL, lambda: lf.select(
+        pl.col(sdim.spine.start).min().alias("lo"),
+        pl.col(sdim.spine.end).max().alias("hi"),
+    ).collect())
+    return row["lo"][0], row["hi"][0]
+
+
 def _interval_binding_for(model: Model, dimension: str) -> Optional[ImportBinding]:
     """The interval import owning `dimension`, if any — lets callers that only
     want the imported side's own values read it without the fan-out join."""
@@ -591,8 +647,9 @@ def _run_single(model: Model, query: dict, row_cap: Optional[int] = None) -> tup
     aggregation path. Returns the collected frame and its column metadata;
     run_query wraps it, and _run_composite calls it once per fact."""
     resolved_params = resolve_parameter_values(query.get("parameters") or [], query.get("parameter_values") or {})
-    lf = scan(model, _referenced_dimensions(query))
-    schema = lf.collect_schema()
+    dims_in_play = _referenced_dimensions(query)
+    lf = scan(model, dims_in_play)
+    schema = scan_schema(model, dims_in_play)
 
     # split filters into spine-dimension filters and plain column filters
     spine_filters, plain_filters = [], []
@@ -654,12 +711,8 @@ def _run_single(model: Model, query: dict, row_cap: Optional[int] = None) -> tup
         sdim, grain = spine_entry
         lo, hi = spine_lo, spine_hi
         if lo is None or hi is None:
-            bounds = lf.select(
-                pl.col(sdim.spine.start).min().alias("lo"),
-                pl.col(sdim.spine.end).max().alias("hi"),
-            ).collect()
-            lo = lo or bounds["lo"][0]
-            data_hi = bounds["hi"][0]
+            data_lo, data_hi = _spine_bounds(model, dims_in_play, query.get("filters") or [], sdim, lf)
+            lo = lo or data_lo
             hi = hi or min(data_hi or date.today(), date.today())
         if lo is None or hi < lo:
             raise QueryError("no rows in the timeline window")

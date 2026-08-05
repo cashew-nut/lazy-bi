@@ -664,6 +664,34 @@ def test_local_model_survives_reload(client):
         client.delete("/api/models/local_reload_probe")
 
 
+def test_model_schema_reflects_source_change_immediately(client):
+    """Regression guard: GET .../schema is now served through
+    engine.scan_schema's cache (app/engine.py, app/cache.py). Editing a
+    model's source must not leave the editor reading a stale, pre-edit
+    schema until the cache's TTL happens to expire — registry.reload_all()
+    clears the cache synchronously on every edit specifically so this can't
+    happen."""
+    y1 = ("name: schema_cache_probe\n"
+          "source: {format: csv, path: s3://cash-intel/ref/products.csv}\n"
+          "dimensions:\n  - name: product\nmeasures:\n  - name: rows\n    expr: count()\n")
+    assert client.post("/api/models", json={"yaml": y1}).status_code == 201
+    try:
+        cols = {c["name"] for c in client.get("/api/models/schema_cache_probe/schema").json()["columns"]}
+        assert "supplier" in cols and "region" not in cols
+
+        y2 = ("name: schema_cache_probe\n"
+              "source: {format: csv, path: s3://cash-intel/ref/regions.csv}\n"
+              "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: count()\n")
+        assert client.put("/api/models/schema_cache_probe/yaml", json={"yaml": y2}).status_code == 200
+
+        # same model name, brand new source — must reflect regions.csv now,
+        # not a cache entry left behind by products.csv
+        cols = {c["name"] for c in client.get("/api/models/schema_cache_probe/schema").json()["columns"]}
+        assert "region" in cols and "supplier" not in cols
+    finally:
+        client.delete("/api/models/schema_cache_probe")
+
+
 def test_renamed_local_model_delete_and_recreate_under_old_name(client):
     """Regression: LocalModelStore keyed a row by the name a model was
     created under, and put_model_yaml only rewrote the row's yaml, never its

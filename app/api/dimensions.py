@@ -89,7 +89,7 @@ def _bundle_datasets_out(parsed: semantic.DimensionBundle) -> list[dict]:
         entry = {"name": ds.name, "dimensions": len(ds.dimensions),
                  "joins": [j.to for j in ds.joins]}
         try:
-            schema = engine.scan_source(ds.source).collect_schema()
+            schema = engine.source_schema(ds.source)
             entry["columns"] = [{"name": n, "dtype": str(t)} for n, t in schema.items()]
         except Exception as exc:
             entry["columns"] = None

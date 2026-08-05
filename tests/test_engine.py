@@ -7,7 +7,7 @@ from datetime import date, timedelta
 import polars as pl
 import pytest
 
-from app import config, engine, s3, semantic
+from app import cache, config, engine, s3, semantic
 
 
 def run(models, model, **query):
@@ -1054,3 +1054,108 @@ def test_query_with_string_param_in_comparison(models):
         parameter_values={"target_channel": "retail"},
     )
     assert r["rows"]
+
+
+# --- Schema/bounds caching (app/cache.py) ----------------------------------
+# engine.source_schema/scan_schema and _run_single's spine-bounds lookup all
+# sit on app/cache.py's TTL cache instead of re-resolving straight from S3
+# every time. These count real _scan_source calls through a thin monkeypatch
+# rather than asserting on wall-clock speed, so they're deterministic.
+
+def _count_scan_source_calls(monkeypatch):
+    calls = []
+    real = engine._scan_source
+
+    def counting(source):
+        calls.append(1)
+        return real(source)
+
+    monkeypatch.setattr(engine, "_scan_source", counting)
+    return calls
+
+
+def test_source_schema_reuses_cached_result_for_same_source(seeded, monkeypatch):
+    cache.clear()
+    calls = _count_scan_source_calls(monkeypatch)
+    source = semantic.Source(path="s3://cash-intel/ref/products.csv", format="csv")
+
+    first = engine.source_schema(source)
+    engine.source_schema(source)
+    engine.source_schema(semantic.Source(path="s3://cash-intel/ref/products.csv", format="csv"))
+    assert len(calls) == 1  # same (path, format) every time, even via a fresh Source object
+    assert "supplier" in first
+
+
+def test_source_schema_cache_keyed_on_path_and_format(seeded, monkeypatch):
+    cache.clear()
+    calls = _count_scan_source_calls(monkeypatch)
+    engine.source_schema(semantic.Source(path="s3://cash-intel/ref/products.csv", format="csv"))
+    engine.source_schema(semantic.Source(path="s3://cash-intel/ref/regions.csv", format="csv"))
+    assert len(calls) == 2  # a different path is a genuine cache miss
+
+
+def test_scan_schema_reuses_cached_result_for_same_model(models, monkeypatch):
+    cache.clear()
+    calls = _count_scan_source_calls(monkeypatch)
+    model = models["sales"]
+
+    first = engine.scan_schema(model)
+    after_first = len(calls)
+    assert after_first > 0  # sales joins several ref tables — real work happened
+
+    engine.scan_schema(model)
+    assert len(calls) == after_first  # identical call added nothing
+
+    uncached = engine.scan(model).collect_schema()
+    assert first == uncached  # the cache never changes the actual answer
+
+
+def test_scan_schema_cache_keyed_on_dimensions_argument(models, monkeypatch):
+    cache.clear()
+    calls = _count_scan_source_calls(monkeypatch)
+    model = models["sales"]
+
+    engine.scan_schema(model, {"region": None})
+    after_first = len(calls)
+    engine.scan_schema(model, None)  # "everything" is a different plan than one dimension
+    assert len(calls) > after_first
+
+
+def test_scan_schema_does_not_cross_pollute_same_named_models(seeded, monkeypatch):
+    """A guided-editor reparse of a model's YAML produces a brand new Model
+    object that happens to share an existing model's name. Caching that
+    under the bare name would either leak the in-progress edit's schema to
+    the real model's readers, or hand the editor back a stale cached answer
+    for a source it just changed — see engine._model_cache_key."""
+    cache.clear()
+    text = (config.MODELS_DIR / "sales.yaml").read_text()
+    model_a = semantic.parse_model_text(text)
+    model_b = semantic.parse_model_text(text)
+    assert model_a is not model_b and model_a.name == model_b.name == "sales"
+
+    calls = _count_scan_source_calls(monkeypatch)
+    engine.scan_schema(model_a)
+    a_calls = len(calls)
+    calls.clear()
+    engine.scan_schema(model_b)
+    assert len(calls) == a_calls  # model_b did its own real work, not a hand-me-down from model_a
+
+
+def test_unbounded_spine_query_reuses_cached_bounds_on_repeat(models, monkeypatch):
+    """subscriptions' active_at spine, queried with no date filter, falls
+    back to the data's own min/max (engine._spine_bounds) — an identical
+    repeat query should skip both the schema resolution and that bounds
+    collect, leaving only the live per-query scan (never cached, since it
+    has to reflect the query's actual result)."""
+    cache.clear()
+    calls = _count_scan_source_calls(monkeypatch)
+    query = {"dimensions": [{"name": "active_at", "grain": "1mo"}], "measures": ["active_customers"]}
+
+    first = run(models, "subscriptions", **query)
+    cold = len(calls)
+    calls.clear()
+    second = run(models, "subscriptions", **query)
+    warm = len(calls)
+
+    assert first["rows"] == second["rows"]  # caching must never change the result
+    assert 0 < warm < cold
