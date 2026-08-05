@@ -479,8 +479,9 @@ function renderDatasets(main) {
 function renderBundlePicker(main) {
   main.append(el("div", { class: "sec-title", style: "margin-top:18px" }, "Common models"));
   main.append(note("shared dimensions declared once in a common dimension model — geography, calendars, "
-    + "hierarchies. Import one here; relate it to one of your datasets under RELATIONS. Imported "
-    + "dimensions are read-only: they're managed in the common model, so every importer stays consistent."));
+    + "hierarchies. Import one here; relate it under RELATIONS — to one dataset, or to a dataset in "
+    + "each fact table. Imported dimensions are read-only: they're managed in the common model, so "
+    + "every importer stays consistent."));
   if (!state.bundles.length) {
     main.append(note("none yet — create a common dimension model from the Modelling workspace first"));
     return;
@@ -499,6 +500,7 @@ function renderBundlePicker(main) {
       markDirty();
       render();
       await anchorSchema(next);
+      settleGuess(next);
       render();
     });
     card.append(el("div", { class: "mf-card-head" },
@@ -612,8 +614,8 @@ async function addDataset(ds) {
 
 function renderRels(main) {
   main.append(el("div", { class: "sec-title" }, "Relations"));
-  main.append(note("how this model's datasets relate — to each other, and to the common models you "
-    + "imported. Column pairs don't need matching names, and nothing has to be related to everything: "
+  main.append(note("how this model's datasets relate — to each other, and to the common models it "
+    + "draws on. Column pairs don't need matching names, and nothing has to be related to everything: "
     + "what you leave unrelated stays a fact table of its own."));
   renderFactTableSummary(main);
 
@@ -634,16 +636,67 @@ function renderRels(main) {
     main.append(add);
   }
 
-  main.append(el("div", { class: "sec-title", style: "margin-top:18px" }, "To the common models you imported"));
-  if (!form.imports.length) {
-    main.append(note("none imported — pick one under DATASETS"));
-    return;
-  }
+  main.append(el("div", { class: "sec-title", style: "margin-top:18px" }, "To the common models"));
   for (const imp of form.imports) {
     const b = state.bundles.find((x) => x.name === imp.bundle);
     if (!b) continue;
     main.append(el("div", { class: "mf-card" }, ...importControls(b, imp)));
   }
+  renderAddImport(main);
+}
+
+/* Relating another dataset to a common model belongs here, beside the relations
+   themselves — pick the common model and which of this model's datasets it
+   hangs off, and the relation lands above with its own column pairs. Relating
+   one common model to two fact tables is what conforms them, so it must not
+   mean a trip back to DATASETS to import the same thing twice. */
+function renderAddImport(main) {
+  if (!state.bundles.length) {
+    main.append(note("no common models exist yet — create one from the Modelling workspace and it "
+      + "becomes relatable here"));
+    return;
+  }
+  if (!form.datasets.length) {
+    main.append(note("add a dataset first (DATASETS section)"));
+    return;
+  }
+  const bundleSel = el("select", {},
+    ...state.bundles.map((b) => el("option", { value: b.name }, b.label)));
+  const fromSel = el("select", {},
+    ...form.datasets.map((d) => el("option", { value: d.name }, d.name)));
+  const suggest = () => { fromSel.value = factTableWithout(bundleSel.value); };
+  suggest();
+  bundleSel.addEventListener("change", suggest);
+  const add = el("button", { class: "ghost" }, "+ ADD RELATION");
+  add.addEventListener("click", async () => {
+    const b = state.bundles.find((x) => x.name === bundleSel.value);
+    const anchor = b?.datasets[0];
+    if (!anchor) return;
+    const imp = newImport(b, anchor, fromSel.value);
+    form.imports.push(imp);
+    markDirty();
+    render();
+    await anchorSchema(imp);
+    settleGuess(imp);
+    render();
+  });
+  main.append(el("div", { class: "mf-anchor-row" },
+    el("span", { class: "field-label" }, "RELATE"), bundleSel,
+    el("span", { class: "mf-link" }, "⇄"), fromSel, add));
+  main.append(note("relate the same common model to a dataset in each fact table and they can be "
+    + "grouped together by its dimensions. A second relation to a dataset that already has one is "
+    + "fine too — reference data on a key, say, and a calendar on a date range."));
+}
+
+/* Which dataset a fresh relation should point at by default: the first fact
+   table this common model hasn't reached, since wanting it in a second one is
+   the reason to add another. */
+function factTableWithout(bundleName) {
+  const related = new Set(form.imports.filter((i) => i.bundle === bundleName).map((i) => i.from));
+  for (const group of components()) {
+    if (!group.some((d) => related.has(d.name))) return group[0].name;
+  }
+  return form.datasets[0].name;
 }
 
 /* The heart of the redesign, said plainly: what the current relations add up
@@ -664,8 +717,8 @@ function renderFactTableSummary(main) {
     + groups.map((g) => g.map((d) => d.name).join(" + ")).join("  |  "));
   main.append(box, note("these are never joined to each other — each answers the query on its own and "
     + "the results merge on the dimensions they share, so no measure inflates. They can only be grouped "
-    + "by dimensions all of them offer, which is what importing the same common model into each buys "
-    + "you (a name they all declare natively works too)."));
+    + "by dimensions all of them offer, which is what relating the same common model to each buys you "
+    + "(a name they all declare natively works too)."));
   const shared = generated?.shared_dimensions;
   if (shared) {
     const chips = el("div", { class: "mf-locked-dims" },
@@ -715,14 +768,34 @@ function datasetRelCard(r, idx) {
 // default relation guess for a freshly-imported bundle: its anchor's first
 // declared dimension, mirrored on the model side when a column name matches
 function guessPair(anchorDs, fromName) {
-  const right = anchorDs.dimensions[0] || "";
+  let right = anchorDs.dimensions[0] || "";
+  // a bundle's dimension names needn't be its column names (they're often
+  // prefixed), and the relation is on columns — once the anchor's schema is
+  // known, only guess a name it actually has
+  const theirs = colsOf(anchorDs);
+  if (theirs && !theirs.some((c) => c.name === right)) right = "";
   const mine = fromName ? columnsFor(fromName) : [];
-  const left = mine.some((c) => c.name === right) ? right : "";
+  const left = right && mine.some((c) => c.name === right) ? right : "";
   return { left, right };
 }
 
-const newImport = (b, anchorDs) => {
-  const from = form.datasets.length ? form.datasets[0].name : "";
+/* The anchor's schema arrives after the import does, so re-take the guess once
+   it lands — a dimension name that turns out not to be a column would fail at
+   query time. Only ever narrows the guess, so a value the user has already
+   chosen from the loaded schema survives. */
+function settleGuess(imp) {
+  const anchorDs = bundleDataset(imp.bundle, imp.anchor);
+  const cols = anchorDs && colsOf(anchorDs);
+  if (!cols) return;
+  for (const p of imp.pairs) {
+    if (!p.right || cols.some((c) => c.name === p.right)) continue;
+    if (p.left === p.right) p.left = "";   // the mirrored half of the same guess
+    p.right = "";
+  }
+}
+
+const newImport = (b, anchorDs, fromName) => {
+  const from = fromName || (form.datasets.length ? form.datasets[0].name : "");
   return {
     bundle: b.name, from, anchor: anchorDs.name, datasets: null, how: "left",
     pairs: [guessPair(anchorDs, from)], interval: { start: "", end: "", point: "" }, match: "overlap",
@@ -795,6 +868,7 @@ function importControls(b, imp) {
     imp.interval = { ...imp.interval, point: "" };
     markDirty();
     await anchorSchema(imp);
+    settleGuess(imp);
     render();
   });
   const rm = el("button", { class: "rm", title: "drop this import" }, "✕");

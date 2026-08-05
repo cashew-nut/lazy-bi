@@ -1391,6 +1391,9 @@ input.mf-join-name { width: 180px; flex: none; }
 .mf-anchor-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
 .mf-anchor-row select { width: auto; }
 .mf-anchor-row .rm { margin-left: auto; flex: none; }
+/* an add button that belongs to the row's own pickers, not to the whole
+   section — the bare .ghost rule is full-width */
+.mf-anchor-row button.ghost { width: auto; flex: none; }
 /* second and later relations to the same bundle stack in one card */
 .mf-anchor-row.mf-rel-sep { border-top: 1px solid var(--line); padding-top: 14px; margin-top: 16px; }
 .mf-subset { display: flex; align-items: center; gap: 6px; margin-top: 10px; flex-wrap: wrap; }

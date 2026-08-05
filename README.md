@@ -746,7 +746,10 @@ form — step one (**DATASETS**) adds the tables and imports any common models,
 step two (**RELATIONS**) says how they relate. RELATIONS names the fact tables
 the current relations add up to, and lists what all of them can be grouped by,
 so "these two aren't related to each other" is a visible choice rather than a
-silent one. Dimensions and measures are then declared per dataset, which is
+silent one. Relating one common model to a *second* fact table — the move that
+conforms them — is done there too, by picking the common model and the dataset
+it hangs off; it is a relation, not a second import. Dimensions and measures
+are then declared per dataset, which is
 what scopes a measure to one fact table. The list marks a model holding several
 of them. Everywhere else it behaves like any other model — Studio, dashboards,
 cross-filtering, Chat.

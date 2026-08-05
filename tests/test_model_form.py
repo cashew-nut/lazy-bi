@@ -469,6 +469,36 @@ def test_the_form_names_the_fact_tables_the_relations_produce(client):
     assert '{ id: "relations", label: "RELATIONS" }' in modelform
 
 
+def test_relations_section_can_relate_a_common_model_on_its_own(client):
+    """Relating a second fact table to a common model belongs in RELATIONS.
+    Before, the only route was back to DATASETS to import the same common
+    model a second time — which reads as duplication rather than as the
+    conformance it actually is, and left this section with no control at all
+    until you had."""
+    modelform = client.get("/static/js/modelform.js").text
+    assert "renderAddImport(main)" in modelform
+    assert "+ ADD RELATION" in modelform
+    # the control names its own target dataset, starting on a fact table this
+    # common model hasn't reached yet
+    assert "function factTableWithout(bundleName)" in modelform
+    assert "fromSel.value = factTableWithout(bundleSel.value)" in modelform
+    # and it is offered even when DATASETS imported nothing
+    assert "none imported — pick one under DATASETS" not in modelform
+
+
+def test_a_guessed_import_key_is_dropped_when_it_is_not_a_column(client):
+    """A common model's dimension names needn't be its column names (they're
+    often prefixed), but the relation is on columns. Every fresh guess is
+    re-taken once the anchor's schema lands, so a name that isn't a column is
+    dropped here rather than saved and failed at query time."""
+    modelform = client.get("/static/js/modelform.js").text
+    assert "function settleGuess(imp)" in modelform
+    assert "await anchorSchema(next);\n      settleGuess(next);" in modelform
+    # the add-a-relation control and the anchor-dataset switch, the other two
+    # places a guess is made before the schema is known
+    assert modelform.count("await anchorSchema(imp);\n    settleGuess(imp);") == 2
+
+
 # ── bundle form backend (guided common-model authoring) ─────────
 
 def _geography_spec():
