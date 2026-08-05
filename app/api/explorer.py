@@ -34,13 +34,12 @@ def explorer():
         "bucket": config.BUCKET,
         "endpoint": config.S3_ENDPOINT,
         "files": files,
-        # a multi-fact model reads no objects of its own — its facts appear
-        # here in their own right, so listing it too would double-count
         "models": [
-            {"name": m.name, "label": m.label, "format": m.source.format, "path": m.source.path,
-             "joins": [{"name": j.name, "path": j.source.path, "format": j.source.format} for j in m.joins],
+            {"name": m.name, "label": m.label,
+             "datasets": [{"name": n, "path": ds.source.path, "format": ds.source.format}
+                          for n, ds in m.datasets.items()],
              **per_model[m.name]}
-            for m in registry.models.values() if not m.is_composite
+            for m in registry.models.values()
         ],
     }
 

@@ -61,9 +61,10 @@ class Registry:
         self.reload_all()
 
     def reload_all(self) -> None:
-        """Reload dimension bundles, then models, then resolve each model's
-        imports against the freshly-loaded bundles — bundles must load first
-        since models validate their imports against them. Layers then
+        """Reload dimension bundles, then models, then resolve each model
+        (its fact tables and their imports) against the freshly-loaded
+        bundles — bundles must load first since models validate their imports
+        against them. Layers then
         pipelines follow the same shape: layers must load first since
         pipelines validate their layer references against them. Pipelines
         load after models since target->model matching (lineage) needs
@@ -94,7 +95,7 @@ class Registry:
                 self.models[local.name] = local
         for name, model in list(self.models.items()):
             try:
-                semantic.resolve_imports(model, self.dimension_bundles)
+                semantic.resolve_model(model, self.dimension_bundles)
             except semantic.ModelError:
                 # a built-in model failing to resolve is a real codebase bug —
                 # fail loudly. A *local* model can go stale on its own (e.g. it
@@ -102,16 +103,6 @@ class Registry:
                 # without anyone touching it, so drop just that one instead of
                 # taking the whole app down; it'll keep failing until whoever
                 # owns it fixes or deletes it.
-                if model.locked:
-                    raise
-                del self.models[name]
-        # facts resolve in a second pass: a multi-fact model conforms on its
-        # facts' *imported* dimensions too, so every model's imports must
-        # already be merged in before any of them is read as a fact
-        for name, model in list(self.models.items()):
-            try:
-                semantic.resolve_facts(model, self.models)
-            except semantic.ModelError:
                 if model.locked:
                     raise
                 del self.models[name]

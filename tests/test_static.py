@@ -94,7 +94,7 @@ def test_param_suggestion_gated_on_caller_supplying_parameters(client):
     modelform = client.get("/static/js/modelform.js").text
     # neither passes a 4th (parameters) argument to dslItems
     assert "dslItems(ctx, editor.columns, after)" in editor or "dslItems(pctx, editor.columns, after)" in editor
-    assert "dslItems(ctx, exprColumns(), after)" in modelform
+    assert "dslItems(ctx, exprColumns(owner), after)" in modelform
 
 
 def test_chat_pin_button_is_author_gated(client):

@@ -35,16 +35,6 @@ source:
 #     anchor_dataset: regions
 #     on: region
 
-# To read several fact models on one axis instead, replace source/dimensions/
-# measures below with a facts: list — nothing else. They are never joined to
-# each other: each is queried on its own and the results merge on the
-# dimensions they all share, so no measure inflates. Facts conform on the
-# dimensions they already call by the same name, which is what importing the
-# same bundle into each of them gets you.
-# facts:
-#   - model: marketing
-#   - model: sales
-
 dimensions:
   - name: some_column
   # - name: created_at
@@ -54,6 +44,25 @@ measures:
   - name: rows
     label: Row Count
     expr: count()
+
+# source/joins above is shorthand for the single-table case. To read several
+# tables, list them under datasets: instead — each with its own source,
+# dimensions and measures, and joins: to whichever siblings it relates to.
+# Datasets you don't relate to each other are separate fact tables: they are
+# never joined, each answers the query on its own, and the results merge on
+# the dimensions they share (import the same common model into each, with
+# from_dataset:, to conform them).
+# datasets:
+#   - name: orders
+#     source: {format: parquet, path: s3://cash-intel/sales/*.parquet}
+#     joins:
+#       - to: products
+#         on: product
+#     dimensions: [{name: channel}]
+#     measures: [{name: revenue, expr: sum(unit_price * quantity)}]
+#   - name: products
+#     source: {format: csv, path: s3://cash-intel/ref/products.csv}
+#     dimensions: [{name: supplier}]
 `;
 
 const NEW_BUNDLE_TEMPLATE = `# new common dimensional model — SAVE writes dimensions/<name>.yaml
@@ -168,15 +177,15 @@ const COLUMN_KEYS = new Set(["column", "on", "left_on", "right_on", "start", "en
 // server round trip is still the only real arbiter of a valid document.
 const SCHEMAS = {
   model: {
-    // `facts` is the alternative to `source`: a multi-fact model lists other
-    // models instead of a file, and borrows their measures
-    top: ["name", "label", "description", "source", "facts", "joins", "dimension_imports", "dimensions", "measures"],
+    // `datasets` is the general shape (every table the model reads, plus the
+    // relations between them); `source`/`joins` is shorthand for one table
+    top: ["name", "label", "description", "datasets", "source", "joins", "dimension_imports", "dimensions", "measures"],
+    datasets: ["name", "source", "joins", "dimensions", "measures"],
     source: ["format", "path"],
-    facts: ["model", "alias"],
-    joins: ["name", "on", "left_on", "right_on", "how"],
-    dimension_imports: ["bundle", "anchor_dataset", "on", "left_on", "right_on", "how", "match", "datasets"],
+    joins: ["name", "to", "on", "left_on", "right_on", "how"],
+    dimension_imports: ["bundle", "from_dataset", "anchor_dataset", "on", "left_on", "right_on", "how", "match", "datasets"],
     dimensions: ["name", "column", "label", "type", "grain", "description", "spine", "geo", "synonyms"],
-    measures: ["name", "label", "expr", "format", "description"],
+    measures: ["name", "label", "expr", "format", "description", "frame", "frame_emits", "synonyms"],
     spine: ["start", "end", "match"],
     geo: ["lat", "lon"],
   },

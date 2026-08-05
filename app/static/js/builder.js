@@ -83,10 +83,11 @@ export async function run() {
     const result = await api("/api/query", { method: "POST", body: buildQuery() });
     if (token !== state.queryToken) return; // stale response
     state.result = result;
-    // a multi-fact model scans no path of its own — it runs one scan per fact
-    // and merges the results, so name the facts instead
-    const via = state.model.kind === "composite"
-      ? `${state.model.facts.length} facts <span class="path">${state.model.facts.map((f) => f.model).join(" + ")}</span>`
+    // a model holding several fact tables scans no single path — it runs one
+    // scan per table and merges the results, so name the tables instead
+    const parts = state.model.parts || [];
+    const via = parts.length > 1
+      ? `${parts.length} fact tables <span class="path">${parts.map((p) => p.name).join(" + ")}</span>`
       : `lazy scan <span class="path">${state.model.path}</span>`;
     setMeta(`${result.row_count} rows · <span class="ms">${result.elapsed_ms}ms</span> · ${via}`);
     renderBuilderViz();
@@ -202,8 +203,9 @@ export function openDashPickMenu() {
 // ── model switcher (zone A) ──────────────────────────────────
 
 function modelSourceLine(model) {
-  if (model.kind === "composite") {
-    return `${model.facts.length} fact${model.facts.length === 1 ? "" : "s"} · ${model.facts.map((f) => f.label || f.model).join(" + ")}`;
+  const parts = model.parts || [];
+  if (parts.length > 1) {
+    return `${parts.length} fact tables · ${parts.map((p) => p.name).join(" + ")}`;
   }
   return model.path || "";
 }

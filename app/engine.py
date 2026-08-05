@@ -174,7 +174,7 @@ def _scan_bundle(binding: ImportBinding) -> pl.LazyFrame:
             remaining.discard(ds_name)
             progressed = True
         if not progressed:
-            # resolve_imports() computes `included` via the same reachability
+            # _resolve_part_imports() computes `included` via the same reachability
             # rules, so everything in it must connect back to the anchor
             raise ModelError(
                 f"dimension bundle '{bundle.name}': internal error resolving join "
@@ -352,8 +352,9 @@ def scan(model: Model, dimensions: Optional[dict] = None) -> pl.LazyFrame:
     """
     if model.is_composite:
         raise QueryError(
-            f"'{model.name}' is a multi-fact model — it has no single source to scan; "
-            f"each of its facts is scanned on its own (see _run_composite)"
+            f"'{model.name}' holds {len(model.parts)} unrelated fact tables "
+            f"({', '.join(p.name for p in model.parts)}) — there is no single frame to scan; "
+            f"each part is scanned on its own (see _run_parts)"
         )
     lf = _scan_source(model.source)
     for join in model.joins:
@@ -610,7 +611,7 @@ def run_query_frame(model: Model, query: dict, row_cap: Optional[int] = None) ->
     limit; see app/extract.py.
     """
     started = time.perf_counter()
-    runner = _run_composite if model.is_composite else _run_single
+    runner = _run_parts if model.is_composite else _run_single
     df, columns = runner(model, query, row_cap) if row_cap else runner(model, query)
     return df, columns, round((time.perf_counter() - started) * 1000, 1)
 
@@ -632,9 +633,9 @@ def run_query(model: Model, query: dict) -> dict:
     A `how: between` dimension import answers the same kind of question from a
     real date table instead — see scan() and _join_interval.
 
-    A multi-fact model has no source of its own: the same query is answered by
-    running one of these per fact and merging the results on the dimensions
-    they share — see _run_composite.
+    A model holding several unrelated fact tables has no source of its own:
+    the same query is answered by running one of these per part and merging the
+    results on the dimensions they share — see _run_parts.
     """
     df, columns, elapsed_ms = run_query_frame(model, query)
     # write_json serializes dates/decimals to JSON-safe values for us
@@ -961,9 +962,9 @@ def _run_single(model: Model, query: dict, row_cap: Optional[int] = None) -> tup
 
 
 # ---------------------------------------------------------------------------
-# Multi-fact models: "drill across" several unrelated fact tables.
+# Several fact tables in one model: "drill across" the dimensions they share.
 #
-# The facts are never joined to each other. Each is queried on its own at the
+# The parts are never joined to each other. Each is queried on its own at the
 # same grain, over the dimensions they all share, and the results are merged on
 # those dimension columns afterwards. Joining the fact tables directly — even
 # via a shared date — would give every row of one fact a copy of every matching
@@ -971,16 +972,17 @@ def _run_single(model: Model, query: dict, row_cap: Optional[int] = None) -> tup
 # and merging the *aggregates* is the only shape that keeps each measure's
 # grain intact.
 #
-# A bucket that only one fact has rows for keeps the row and leaves the other
-# facts' measures null. That is deliberate: null reads as "this fact has
+# A bucket that only one part has rows for keeps the row and leaves the other
+# parts' measures null. That is deliberate: null reads as "this fact table has
 # nothing here", which is what happened, whereas zero would be a number nobody
 # measured. Charts draw it as a gap.
 # ---------------------------------------------------------------------------
 
 def _align_join_key(df: pl.DataFrame, columns: list[str]) -> pl.DataFrame:
-    """Normalize the dtypes the per-fact results are merged on, so two facts
-    that store the same shared dimension differently still line up: a timestamp
-    column meets a date one at date, a categorical meets a string at string."""
+    """Normalize the dtypes the per-part results are merged on, so two fact
+    tables that store the same shared dimension differently still line up: a
+    timestamp column meets a date one at date, a categorical meets a string at
+    string."""
     casts = []
     for name in columns:
         dtype = df.schema[name]
@@ -991,34 +993,34 @@ def _align_join_key(df: pl.DataFrame, columns: list[str]) -> pl.DataFrame:
     return df.with_columns(casts) if casts else df
 
 
-def _not_shared(bindings: list, shared: dict, name: str, what: str) -> QueryError:
-    """Why `name` can't be used across the facts this query reads, naming the
-    fact that lacks it — the actionable half is which measure to drop."""
-    missing = [b.alias for b in bindings if name not in b.model.dimensions]
+def _not_shared(parts: list, shared: dict, name: str, what: str) -> QueryError:
+    """Why `name` can't be used across the fact tables this query reads, naming
+    the one that lacks it — the actionable half is which measure to drop."""
+    missing = [p.name for p in parts if name not in p.model.dimensions]
     culprit = (
         f"'{missing[0]}' doesn't offer it" if len(missing) == 1
         else f"{', '.join(repr(a) for a in missing)} don't offer it"
     )
     return QueryError(
-        f"'{name}' is not shared by the facts this query reads ({', '.join(b.alias for b in bindings)}) "
-        f"— {culprit}, so there is no honest value to put in its column. {what} across these facts: "
-        f"{', '.join(shared) or 'none'}"
+        f"'{name}' is not shared by the fact tables this query reads "
+        f"({', '.join(p.name for p in parts)}) — {culprit}, so there is no honest value to put in "
+        f"its column. {what} across these fact tables: {', '.join(shared) or 'none'}"
     )
 
 
-def _composite_dimensions(
-    query: dict, bindings: list, shared: dict,
+def _merged_dimensions(
+    query: dict, parts: list, shared: dict,
 ) -> list[tuple[str, Optional[str]]]:
     """The query's requested dimensions as (shared name, grain), validated
-    against `shared` — the dimensions common to the facts this query actually
-    reads, which is a superset of the model's all-facts catalog."""
+    against `shared` — the dimensions common to the fact tables this query
+    actually reads, which is a superset of the model's all-parts catalog."""
     entries: list[tuple[str, Optional[str]]] = []
     for entry in query.get("dimensions") or []:
         if isinstance(entry, str):
             entry = {"name": entry}
         name = entry.get("name")
         if name not in shared:
-            raise _not_shared(bindings, shared, name, "Groupable")
+            raise _not_shared(parts, shared, name, "Groupable")
         grain = entry.get("grain")
         if grain and grain not in TIME_GRAINS:
             raise QueryError(f"unsupported grain '{grain}'")
@@ -1026,61 +1028,61 @@ def _composite_dimensions(
     return entries
 
 
-def _run_composite(model: Model, query: dict, row_cap: Optional[int] = None) -> tuple[pl.DataFrame, list[dict]]:
-    """Answer a query against a multi-fact model: one _run_single per fact that
-    contributes a measure, merged on the shared dimensions."""
+def _run_parts(model: Model, query: dict, row_cap: Optional[int] = None) -> tuple[pl.DataFrame, list[dict]]:
+    """Answer a query against a model holding several unrelated fact tables:
+    one _run_single per part that contributes a measure, merged on the shared
+    dimensions."""
     if query.get("inline_measures"):
         raise QueryError(
-            f"multi-fact model '{model.name}' doesn't take inline measures — an expression has "
-            f"to be scoped to one fact table, so add it to the fact model it belongs to"
+            f"'{model.name}' holds several unrelated fact tables and doesn't take inline "
+            f"measures — an expression has to be scoped to one of them, so declare it on the "
+            f"dataset it belongs to"
         )
     measure_names = list(query.get("measures") or [])
     if not measure_names:
         raise QueryError("query needs at least one measure")
 
-    wanted: dict[str, list[str]] = {}   # fact alias -> that fact's own measure names
+    wanted: dict[str, list[str]] = {}   # part name -> the measures asked of it
     for name in measure_names:
         try:
-            binding, own = semantic.split_measure(model, name)
+            owner = semantic.part_for_measure(model, name)
         except ModelError as exc:
             raise QueryError(str(exc)) from exc
-        wanted.setdefault(binding.alias, []).append(own)
+        wanted.setdefault(owner.name, []).append(name)
 
-    # only the facts this query names a measure from are read, so only those
-    # have to conform: a dimension the others lack never reaches a result row
-    bindings = [b for b in model.fact_bindings if wanted.get(b.alias)]
-    shared = semantic.shared_dimensions(bindings)
+    # only the fact tables this query names a measure from are read, so only
+    # those have to conform: a dimension the others lack never reaches a row
+    parts = [p for p in model.parts if wanted.get(p.name)]
+    shared = semantic.shared_dimensions(parts)
 
-    dim_entries = _composite_dimensions(query, bindings, shared)
+    dim_entries = _merged_dimensions(query, parts, shared)
     dim_names = [name for name, _ in dim_entries]
 
     filters = list(query.get("filters") or [])
     for spec in filters:
         if spec.get("field") not in shared:
-            raise _not_shared(bindings, shared, spec.get("field"), "Filterable")
+            raise _not_shared(parts, shared, spec.get("field"), "Filterable")
 
     out: Optional[pl.DataFrame] = None
-    for binding in bindings:
-        own_measures = wanted[binding.alias]
-        part, _ = _run_single(binding.model, {
+    for part in parts:
+        own_measures = wanted[part.name]
+        frame, _ = _run_single(part.model, {
             "dimensions": [{"name": name, "grain": grain} for name, grain in dim_entries],
             "measures": own_measures,
             "filters": filters,
-            # merge first, then sort and cut: a per-fact limit would drop
-            # buckets another fact still has rows for
+            # merge first, then sort and cut: a per-part limit would drop
+            # buckets another fact table still has rows for
             "limit": row_cap or config.MAX_ROWS,
             "parameters": query.get("parameters"),
             "parameter_values": query.get("parameter_values"),
         }, row_cap)
-        qualified = {m: f"{binding.alias}{semantic.MEASURE_SEP}{m}" for m in own_measures}
-        part = part.rename(qualified).select([*dim_names, *qualified.values()])
-        part = _align_join_key(part, dim_names)
+        frame = _align_join_key(frame.select([*dim_names, *own_measures]), dim_names)
         if out is None:
-            out = part
+            out = frame
         elif dim_names:
-            out = out.join(part, on=dim_names, how="full", coalesce=True, nulls_equal=True)
+            out = out.join(frame, on=dim_names, how="full", coalesce=True, nulls_equal=True)
         else:
-            out = out.join(part, how="cross")   # grand totals: one row each side
+            out = out.join(frame, how="cross")   # grand totals: one row each side
 
     out = out.select([*dim_names, *measure_names])
 
@@ -1098,13 +1100,14 @@ def _run_composite(model: Model, query: dict, row_cap: Optional[int] = None) -> 
             out = out.sort(measure_names[0], descending=True, nulls_last=True)
 
     out = out.head(min(int(query.get("limit") or 1000), row_cap or config.MAX_ROWS))
+    owner_of = {m: p.name for p in parts for m in wanted[p.name]}
     columns = [
         {"name": name, "label": shared[name].label, "kind": "dimension",
          "type": shared[name].type}
         for name in dim_names
     ] + [
         {"name": m, "label": model.measure(m).label, "kind": "measure",
-         "format": model.measure(m).format, "fact": m.partition(semantic.MEASURE_SEP)[0]}
+         "format": model.measure(m).format, "fact": owner_of[m]}
         for m in measure_names
     ]
     return out, columns
@@ -1113,12 +1116,13 @@ def _run_composite(model: Model, query: dict, row_cap: Optional[int] = None) -> 
 def dimension_values(model: Model, dimension: str, limit: int = 100) -> list:
     dim = model.dimension(dimension)
     if model.is_composite:
-        # a shared dimension means the same thing to every fact, so any of them
-        # can supply its members; take the first that isn't a generated timeline
-        for binding in model.fact_bindings:
-            if binding.model.dimension(dimension).spine:
+        # a shared dimension means the same thing to every fact table, so any
+        # of them can supply its members; take the first that isn't a
+        # generated timeline
+        for part in model.parts:
+            if part.model.dimension(dimension).spine:
                 continue
-            return dimension_values(binding.model, dimension, limit)
+            return dimension_values(part.model, dimension, limit)
         raise QueryError(f"'{dimension}' is a generated timeline; filter it with date ranges instead")
     if dim.spine:
         raise QueryError(f"'{dimension}' is a generated timeline; filter it with date ranges instead")

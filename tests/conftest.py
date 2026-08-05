@@ -63,9 +63,7 @@ def models(seeded):
     bundles = semantic.load_dimension_bundles(config.DIMENSIONS_DIR)
     loaded = semantic.load_models(config.MODELS_DIR)
     for model in loaded.values():
-        semantic.resolve_imports(model, bundles)
-    for model in loaded.values():
-        semantic.resolve_facts(model, loaded)
+        semantic.resolve_model(model, bundles)
     return loaded
 
 

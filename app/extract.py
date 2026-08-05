@@ -95,8 +95,8 @@ def _fans_out(model: Model, name: str) -> bool:
     both make a local roll-up double-count, so an extract never carries one.
     """
     if model.is_composite:
-        for binding in model.fact_bindings:
-            if name in binding.model.dimensions and _fans_out(binding.model, name):
+        for part in model.parts:
+            if name in part.model.dimensions and _fans_out(part.model, name):
                 return True
         return False
     dim = model.dimensions.get(name)
@@ -106,19 +106,19 @@ def _fans_out(model: Model, name: str) -> bool:
 
 
 def _dimension(model: Model, name: str):
-    """The Dimension object behind a name, for either a fact or a composite
-    model (whose shared dimensions live on its facts)."""
+    """The Dimension object behind a name, whether the model has one fact
+    table or several (whose shared dimensions live on the parts)."""
     if not model.is_composite:
         return model.dimensions.get(name)
-    for binding in model.fact_bindings:
-        if name in binding.model.dimensions:
-            return binding.model.dimensions[name]
+    for part in model.parts:
+        if name in part.model.dimensions:
+            return part.model.dimensions[name]
     return None
 
 
 def _measure_meta(model: Model, name: str, inline: dict) -> dict:
     """Display metadata for one requested measure, in the same shape
-    engine._run_single/_run_composite put on a /query response — the chart
+    engine._run_single/_run_parts put on a /query response — the chart
     renderers read `columns` identically either way (FR-005)."""
     if name in inline:
         spec = inline[name]
@@ -127,7 +127,7 @@ def _measure_meta(model: Model, name: str, inline: dict) -> dict:
     meas = model.measure(name)
     meta = {"name": name, "label": meas.label, "kind": "measure", "format": meas.format}
     if model.is_composite:
-        meta["fact"] = name.partition(semantic.MEASURE_SEP)[0]
+        meta["fact"] = semantic.part_for_measure(model, name).name
     return meta
 
 
@@ -251,13 +251,13 @@ def plan(model: Model, query: dict, cross_dimensions: list,
                 "extract without changing its value"
             )
         if model.is_composite and (len(plan_["components"]) != 1 or plan_["formula"] != {"ref": 0}):
-            # a composite model answers each fact separately and takes no
-            # inline measures (engine._run_composite) — so its measures go in
-            # as themselves, and only a measure that *is* one whole additive
+            # a model with several fact tables answers each separately and
+            # takes no inline measures (engine._run_parts) — so its measures go
+            # in as themselves, and only a measure that *is* one whole additive
             # aggregate can be rolled up
             raise NotInstantable(
-                f"measure '{name}' would need to be broken into parts, which a multi-fact "
-                "model can't do (its facts are queried separately)"
+                f"measure '{name}' would need to be broken into components, which a model with "
+                "several fact tables can't do (each is queried separately)"
             )
         used = []
         for comp in plan_["components"]:

@@ -75,12 +75,11 @@ def list_datasets():
         "bytes": sum(o["size"] for o in objects),
         "datasets": datasets,
         "models": [
-            {"name": m.name, "label": m.label, "format": m.source.format, "path": m.source.path,
-             "joins": [{"name": j.name, "path": j.source.path, "format": j.source.format} for j in m.joins],
+            {"name": m.name, "label": m.label,
+             "datasets": [{"name": n, "path": ds.source.path, "format": ds.source.format}
+                          for n, ds in m.datasets.items()],
              **per_model[m.name]}
-            # a multi-fact model reads no objects of its own — its facts are
-            # listed here in their own right
-            for m in registry.models.values() if not m.is_composite
+            for m in registry.models.values()
         ],
     }
 

@@ -45,9 +45,6 @@ IMPORT_JOIN_KINDS = ("left", "inner", "between")
 #   period_start  counted only where it was already open on the period's first day
 #   period_end    counted only where it was still open on the period's last day
 MATCH_MODES = ("overlap", "period_start", "period_end")
-# separator between a fact's alias and one of its measures in a multi-fact
-# model's catalog ("marketing.spend") — see FactRef and resolve_facts
-MEASURE_SEP = "."
 _IDENTIFIER = re.compile(r"^[a-z_][a-z0-9_]*$")
 
 
@@ -126,8 +123,12 @@ class Join:
 
 @dataclass
 class DatasetJoin:
-    """A join from one Dataset to a sibling Dataset in the same
-    DimensionBundle (as opposed to Join, which targets a raw Source)."""
+    """A relation from one Dataset to a sibling Dataset in the same model or
+    dimension bundle (as opposed to Join, which targets a raw Source).
+
+    Declared on one side, read from both: the graph these edges form is
+    undirected, and which end a scan starts from depends on where it enters
+    (a bundle's anchor dataset, a model part's root fact table)."""
     to: str
     left_on: list[str]
     right_on: list[str]
@@ -209,13 +210,18 @@ class Measure:
 
 @dataclass
 class Dataset:
-    """A single source + the dimensions it exposes, living inside a
-    DimensionBundle - the bundle-scoped equivalent of a Model, minus
-    measures (common dimensional models declare no measures)."""
+    """A single source, the dimensions it exposes, and its relations to
+    sibling datasets — the unit both a Model and a DimensionBundle are built
+    out of.
+
+    A bundle's datasets never declare measures (a common dimensional model has
+    none to declare); a model's may, and a measure is what makes its dataset a
+    *fact* table rather than a lookup one."""
     name: str
     source: Source
     dimensions: dict[str, Dimension] = field(default_factory=dict)
     joins: list[DatasetJoin] = field(default_factory=list)
+    measures: dict[str, Measure] = field(default_factory=dict)
 
 
 @dataclass
@@ -242,9 +248,16 @@ class DimensionBundle:
 
 @dataclass
 class Import:
-    """A Model's reference to a DimensionBundle: an anchor (how the model's
-    own source connects to one dataset in the bundle) plus an optional
-    subset of the bundle's datasets to include (default: all of them).
+    """A Model's reference to a DimensionBundle: which of the model's own
+    datasets relates to it (`from_dataset`), which of the bundle's datasets
+    that relation lands on (`anchor_dataset`), and an optional subset of the
+    bundle's datasets to include (default: all of them).
+
+    `from_dataset` decides which *part* of the model the bundle joins into —
+    two fact tables in one model can each import the same bundle, which is
+    exactly what conforms them (see resolve_model). Its keys are read from the
+    whole part, so `left_on` may name a column of any dataset joined to
+    `from_dataset`, not only that dataset's own.
 
     `how: between` makes it an *interval* import instead of an equality one:
     left_on is a [start, end] column pair on the model and right_on a single
@@ -256,6 +269,7 @@ class Import:
     anchor_dataset: str
     left_on: list[str]
     right_on: list[str]
+    from_dataset: str = ""    # "" until resolve_model defaults it to the sole part's root
     how: str = "left"
     datasets: Optional[list[str]] = None  # None = whole bundle
     # interval imports only: which reporting periods a model row counts in —
@@ -271,7 +285,7 @@ class Import:
 @dataclass
 class ImportBinding:
     """Resolved, engine-facing form of an Import - computed once at
-    load/hot-reload time by resolve_imports(), not part of the YAML shape."""
+    load/hot-reload time by _resolve_part_imports(), not part of the YAML shape."""
     import_spec: Import
     bundle: DimensionBundle
     included_datasets: list[str]           # BFS-reachable from anchor_dataset, subset-filtered
@@ -279,31 +293,27 @@ class ImportBinding:
 
 
 @dataclass
-class FactRef:
-    """One fact table inside a multi-fact model: a reference to another Model.
+class ModelPart:
+    """One connected component of a model's dataset graph: a fact table plus
+    everything related to it, scanned as one joined frame.
 
-    Facts are never joined to each other — that is the whole point. Each is
-    queried on its own and the results are merged on the dimensions they have
-    in common, so three unrelated fact tables can share one axis without any
-    of the fan-out a fact-to-fact join would cause.
+    A model's datasets need not all be related to each other — two fact tables
+    that share nothing but a common dimension model are the ordinary case (see
+    resolve_model). Each component becomes a part, and a part is what the
+    engine actually scans: `model` here is a synthetic single-source Model
+    carrying that component's root source, its internal joins, its dimensions,
+    its measures and the bundle imports declared against it.
 
-    A reference is all there is to declare. Two facts conform on a dimension
-    when they call it by the same name, which is what importing the same
-    dimension bundle gets you — how a fact reaches a shared dimension is a
-    property of that fact, declared once on the fact model.
+    Parts are never joined to each other — that is the whole point. Joining
+    them would pair every row of one fact with every matching row of the other
+    and inflate both sides' measures; instead each is queried on its own and
+    the per-part *results* are merged on the dimensions they share
+    (engine._run_parts). A model with a single part is that part: `model` is
+    the outer Model itself, and nothing about the query path changes.
     """
-    model: str
-    alias: str = ""   # namespaces this fact's measures
-
-
-@dataclass
-class FactBinding:
-    """Resolved, engine-facing form of a FactRef — computed by resolve_facts()
-    at load/hot-reload time, the multi-fact counterpart of ImportBinding. A
-    FactRef is only a name and an alias, so resolving one is just looking the
-    Model up; there is nothing else to carry over."""
-    alias: str
-    model: "Model"
+    name: str                # the root dataset's name — what names this fact table
+    datasets: list[str]      # component members, root first, in join order
+    model: "Model"           # single-source Model the engine scans for this part
 
 
 @dataclass
@@ -332,16 +342,24 @@ class Model:
     name: str
     label: str
     description: str
-    source: Optional[Source] = None   # None on a multi-fact model — see `facts`
+    # `datasets` is the authored shape: every table this model reads, plus the
+    # relations between them. The terser `source:`/`joins:` spelling of a
+    # single fact table desugars into it at parse time (_parse_model), so from
+    # here on there is only one shape to reason about.
+    datasets: dict[str, Dataset] = field(default_factory=dict)
+    # ...and `parts` is the resolved one: one per connected component of that
+    # graph (resolve_model). The four fields below describe the *whole* model —
+    # on a single-part model they are that part's own (and parts[0].model is
+    # this object); on a multi-part one, `source`/`joins` are empty and the
+    # catalog is merged: measures from every part, dimensions only those every
+    # part offers.
+    parts: list[ModelPart] = field(default_factory=list)
+    source: Optional[Source] = None   # None when the model has several parts
     joins: list[Join] = field(default_factory=list)
     dimensions: dict[str, Dimension] = field(default_factory=dict)
     measures: dict[str, Measure] = field(default_factory=dict)
     imports: list[Import] = field(default_factory=list)
-    import_bindings: list[ImportBinding] = field(default_factory=list)  # populated by resolve_imports
-    # a model declares either `source` (one fact table) or `facts` (several,
-    # unrelated to each other, merged on the dimensions they share) — never both
-    facts: list[FactRef] = field(default_factory=list)
-    fact_bindings: list[FactBinding] = field(default_factory=list)  # populated by resolve_facts
+    import_bindings: list[ImportBinding] = field(default_factory=list)  # populated by resolve_model
     pipeline_lineage: Optional[LineageSection] = None  # tolerantly parsed; see _parse_lineage_section
     origin: Optional[Path] = None  # yaml file the model was loaded from; None for a local model
     # True for every model loaded from the committed models/ directory — the
@@ -352,10 +370,10 @@ class Model:
 
     @property
     def is_composite(self) -> bool:
-        """True for a multi-fact model: its dimensions and measures are
-        borrowed from its facts, and engine.run_query answers it by querying
-        each fact separately and merging (see engine._run_composite)."""
-        return bool(self.facts)
+        """True when this model holds several unrelated fact tables: it has no
+        single frame to scan, and engine.run_query answers it by querying each
+        part separately and merging (see engine._run_parts)."""
+        return len(self.parts) > 1
 
     def dimension(self, name: str) -> Dimension:
         try:
@@ -380,10 +398,11 @@ class Model:
             "path": self.source.path if self.source else None,
             "format": self.source.format if self.source else None,
             "file": self.origin.name if self.origin else None,
-            "facts": [
-                {"alias": b.alias, "model": b.model.name, "label": b.model.label,
-                 "measures": [f"{b.alias}{MEASURE_SEP}{m}" for m in b.model.measures]}
-                for b in self.fact_bindings
+            "parts": [
+                {"name": p.name, "label": p.model.label, "datasets": list(p.datasets),
+                 "path": p.model.source.path if p.model.source else None,
+                 "measures": list(p.model.measures)}
+                for p in self.parts
             ],
             "joins": [{"name": j.name, "path": j.source.path, "format": j.source.format} for j in self.joins],
             "imports": [
@@ -530,108 +549,211 @@ def _parse_import(raw: dict, owner: str) -> Import:
     if datasets is not None and not isinstance(datasets, list):
         raise ModelError(f"{owner}: {desc}: 'datasets' must be a list")
     return Import(
-        bundle=raw["bundle"], anchor_dataset=anchor,
+        bundle=raw["bundle"], anchor_dataset=anchor, from_dataset=raw.get("from_dataset") or "",
         left_on=left_on, right_on=right_on, how=how, datasets=datasets, match=match,
     )
 
 
-def _parse_fact(raw: object, owner: str) -> FactRef:
-    if not isinstance(raw, dict) or not raw.get("model"):
-        raise ModelError(f"{owner}: every entry under 'facts' needs a 'model'")
-    alias = raw.get("alias") or raw["model"]
-    if not _IDENTIFIER.match(str(alias)):
-        raise ModelError(
-            f"{owner}: fact alias '{alias}' must be lowercase letters, digits and "
-            f"underscores — it prefixes that fact's measures"
+def _parse_measures(raw_list: list, owner: str) -> dict[str, Measure]:
+    """Shared `measures:` block parsing — a model's datasets declare these; a
+    dimension bundle's never do (see _parse_dataset)."""
+    measures: dict[str, Measure] = {}
+    for m in raw_list:
+        meas = Measure(
+            name=m["name"],
+            label=m.get("label", m["name"].replace("_", " ").title()),
+            expr_source=m["expr"],
+            format=m.get("format", "number"),
+            description=m.get("description", ""),
+            frame_source=m.get("frame"),
+            frame_emits=_as_list(m["frame_emits"]) if m.get("frame_emits") else [],
+            synonyms=_as_list(m["synonyms"]) if m.get("synonyms") else [],
         )
-    if "map" in raw:
-        raise ModelError(
-            f"{owner}: fact '{alias}': 'map' is no longer supported — facts conform on the "
-            f"dimensions they already call by the same name. Declare the relation on the fact "
-            f"model itself (a 'dimension_imports' entry against a shared bundle, e.g. the "
-            f"calendar) so every model that reads '{raw['model']}' gets it, not just this one"
-        )
-    return FactRef(model=raw["model"], alias=str(alias))
+        if meas.frame_source:
+            validate_frame(meas.frame_source, f"measure '{meas.name}'")
+        elif meas.frame_emits:
+            raise ModelError(f"{owner}: measure '{meas.name}': 'frame_emits' needs a 'frame'")
+        meas.expr()  # validate at load time
+        measures[meas.name] = meas
+    return measures
 
 
-# keys a multi-fact model may not declare: everything it exposes is borrowed
-# from its facts, so a local one would silently be ignored
-_FACT_MODEL_FORBIDDEN = ("source", "joins", "dimensions", "measures", "dimension_imports")
+# ---------------------------------------------------------------------------
+# Datasets and the graph they form. A Model and a DimensionBundle are both a
+# named set of Datasets plus the relations between them; the parsing and the
+# graph walks below are shared by the two, and differ only in what a component
+# of the graph *means*: a bundle is walked from an import's anchor to decide
+# what that import pulls in, a model is split into components because every
+# one of them is a fact table to be scanned on its own.
+# ---------------------------------------------------------------------------
+
+def _parse_dataset_join(j: dict, origin: Path, owner: str) -> DatasetJoin:
+    to = j.get("to")
+    if not to:
+        raise ModelError(f"{origin.name}: {owner}: dataset join needs 'to'")
+    left_on, right_on, how = _parse_join_keys(j, origin.name, f"{owner}: join to '{to}'")
+    return DatasetJoin(to=to, left_on=left_on, right_on=right_on, how=how)
 
 
-def _parse_composite(raw: dict, origin: Path) -> Model:
-    """Parse a multi-fact model: several unrelated fact models conformed on the
-    dimensions they share. resolve_facts() fills in its dimensions/measures."""
-    name = raw["name"]
-    for key in _FACT_MODEL_FORBIDDEN:
-        if raw.get(key):
+def _parse_dataset(raw: dict, origin: Path, with_measures: bool = False) -> Dataset:
+    try:
+        dataset = Dataset(name=raw["name"], source=_parse_source(raw["source"], origin))
+    except KeyError as exc:
+        raise ModelError(f"{origin.name}: dataset missing required key {exc}") from exc
+    owner = f"dataset '{dataset.name}'"
+    dataset.dimensions = _parse_dimensions(raw.get("dimensions", []), f"{origin.name}: {owner}")
+    if raw.get("measures"):
+        if not with_measures:
             raise ModelError(
-                f"{origin.name}: multi-fact model '{name}' declares '{key}' — a model has either "
-                f"'source' (one fact table) or 'facts' (several); a multi-fact model's dimensions "
-                f"and measures come from the models it lists under 'facts'"
+                f"{origin.name}: {owner}: a common dimensional model's datasets declare no "
+                f"measures — they provide shared dimensions; measures belong to the fact models "
+                f"that import them"
             )
-    model = Model(
-        name=name,
-        label=raw.get("label", name),
-        description=raw.get("description", ""),
-        source=None,
-    )
-    model.facts = [_parse_fact(f, origin.name) for f in raw["facts"]]
+        dataset.measures = _parse_measures(raw["measures"], f"{origin.name}: {owner}")
+    for j in raw.get("joins", []):
+        dataset.joins.append(_parse_dataset_join(j, origin, owner))
+    return dataset
+
+
+def _dataset_edges(datasets: dict[str, Dataset]) -> dict[str, set[str]]:
+    """Undirected adjacency: a DatasetJoin declared on either side makes both
+    datasets reachable from each other, whichever end the walk starts at."""
+    edges: dict[str, set[str]] = {name: set() for name in datasets}
+    for ds in datasets.values():
+        for j in ds.joins:
+            edges[ds.name].add(j.to)
+            edges[j.to].add(ds.name)
+    return edges
+
+
+def _check_dataset_graph(datasets: dict[str, Dataset], owner: str) -> None:
+    """Every relation points at a dataset that exists, and no cycles: a cycle
+    would give the join walk two different routes to the same table, and so
+    two different answers."""
+    for ds in datasets.values():
+        for j in ds.joins:
+            if j.to not in datasets:
+                raise ModelError(f"{owner}: dataset '{ds.name}' relates to unknown dataset '{j.to}'")
+    edges = _dataset_edges(datasets)
+    visited: set[str] = set()
+
+    def dfs(node: str, parent: Optional[str]) -> None:
+        visited.add(node)
+        for neighbor in edges[node]:
+            if neighbor == parent:
+                continue
+            if neighbor in visited:
+                raise ModelError(
+                    f"{owner}: cyclical relation between datasets '{node}' and '{neighbor}'")
+            dfs(neighbor, node)
+
+    for start in datasets:
+        if start not in visited:
+            dfs(start, None)
+
+
+def _components(datasets: dict[str, Dataset]) -> list[list[str]]:
+    """Connected components of the relation graph, each in declaration order,
+    the components themselves ordered by their first-declared member.
+
+    For a model this is the whole point: datasets that relate to each other
+    are one fact table to scan, and datasets that don't are separate ones that
+    must never be joined (see ModelPart)."""
+    edges = _dataset_edges(datasets)
     seen: set[str] = set()
-    for fr in model.facts:
-        if fr.alias in seen:
+    out: list[list[str]] = []
+    for start in datasets:
+        if start in seen:
+            continue
+        group: set[str] = {start}
+        frontier = [start]
+        while frontier:
+            node = frontier.pop()
+            for neighbor in edges[node]:
+                if neighbor not in group:
+                    group.add(neighbor)
+                    frontier.append(neighbor)
+        seen |= group
+        out.append([name for name in datasets if name in group])
+    return out
+
+
+_FACTS_REMOVED = (
+    "'facts:' is no longer supported — a model no longer borrows other models' fact tables. "
+    "Declare the fact tables here instead, one entry per table under 'datasets:', each with its "
+    "own source, dimensions and measures. Datasets that relate to nothing else in the model stay "
+    "unjoined and are read exactly the way facts: used to be: separately, merged on the dimensions "
+    "they share (import the same common model into each to conform them)"
+)
+
+
+def _model_datasets(raw: dict, origin: Path) -> dict[str, Dataset]:
+    """The model's datasets, from either spelling.
+
+    `datasets:` is the general shape — every table the model reads, plus the
+    relations between them. `source:` (+ optional `joins:`) is the terser
+    spelling of the single-fact case, and desugars into exactly the same
+    thing: the model's own dataset, named after the model, related to one
+    dataset per join entry. Everything downstream sees only `datasets`.
+    """
+    if raw.get("facts"):
+        raise ModelError(f"{origin.name}: model '{raw.get('name')}': {_FACTS_REMOVED}")
+    if raw.get("datasets"):
+        stray = [key for key in ("source", "joins", "dimensions", "measures") if raw.get(key)]
+        if stray:
             raise ModelError(
-                f"{origin.name}: multi-fact model '{name}': duplicate fact alias '{fr.alias}' — "
-                f"give one of them an 'alias'"
+                f"{origin.name}: model '{raw['name']}' declares both 'datasets' and "
+                f"{', '.join(repr(k) for k in stray)} — those keys are the shorthand for a model "
+                f"with a single dataset, and mixing the two would silently ignore them. Move each "
+                f"into the 'datasets' entry it belongs to"
             )
-        seen.add(fr.alias)
-    model.pipeline_lineage = _parse_lineage_section(raw.get("pipeline_lineage"))
-    return model
+        datasets: dict[str, Dataset] = {}
+        for d in raw["datasets"]:
+            dataset = _parse_dataset(d, origin, with_measures=True)
+            if dataset.name in datasets:
+                raise ModelError(
+                    f"{origin.name}: model '{raw['name']}': duplicate dataset '{dataset.name}'")
+            datasets[dataset.name] = dataset
+        return datasets
+
+    if not raw.get("source"):
+        raise ModelError(
+            f"{origin.name}: model '{raw['name']}' has no datasets — list the tables it reads "
+            f"under 'datasets', or use 'source' for the single-table case"
+        )
+    name = raw["name"]
+    root = Dataset(name=name, source=_parse_source(raw["source"], origin))
+    root.dimensions = _parse_dimensions(raw.get("dimensions", []), origin.name)
+    root.measures = _parse_measures(raw.get("measures", []), origin.name)
+    datasets = {name: root}
+    for j in raw.get("joins", []):
+        join_name = j.get("name", "join")
+        left_on, right_on, how = _parse_join_keys(j, origin.name, f"join '{join_name}'")
+        if join_name in datasets:
+            raise ModelError(
+                f"{origin.name}: model '{name}': join '{join_name}' collides with the model's "
+                f"own dataset name — rename the join"
+            )
+        datasets[join_name] = Dataset(name=join_name, source=_parse_source(j["source"], origin))
+        root.joins.append(DatasetJoin(to=join_name, left_on=left_on, right_on=right_on, how=how))
+    return datasets
 
 
 def _parse_model(raw: dict, origin: Path) -> Model:
-    if raw.get("facts"):
-        try:
-            return _parse_composite(raw, origin)
-        except KeyError as exc:
-            raise ModelError(f"{origin.name}: missing required key {exc}") from exc
     try:
         model = Model(
             name=raw["name"],
             label=raw.get("label", raw["name"]),
             description=raw.get("description", ""),
-            source=_parse_source(raw["source"], origin),
         )
-        for j in raw.get("joins", []):
-            left_on, right_on, how = _parse_join_keys(j, origin.name, f"join '{j.get('name', 'join')}'")
-            model.joins.append(Join(
-                name=j.get("name", "join"), source=_parse_source(j["source"], origin),
-                left_on=left_on, right_on=right_on, how=how,
-            ))
-        model.dimensions = _parse_dimensions(raw.get("dimensions", []), origin.name)
-        for m in raw.get("measures", []):
-            meas = Measure(
-                name=m["name"],
-                label=m.get("label", m["name"].replace("_", " ").title()),
-                expr_source=m["expr"],
-                format=m.get("format", "number"),
-                description=m.get("description", ""),
-                frame_source=m.get("frame"),
-                frame_emits=_as_list(m["frame_emits"]) if m.get("frame_emits") else [],
-                synonyms=_as_list(m["synonyms"]) if m.get("synonyms") else [],
-            )
-            if meas.frame_source:
-                validate_frame(meas.frame_source, f"measure '{meas.name}'")
-            elif meas.frame_emits:
-                raise ModelError(
-                    f"{origin.name}: measure '{meas.name}': 'frame_emits' needs a 'frame'"
-                )
-            meas.expr()  # validate at load time
-            model.measures[meas.name] = meas
+        model.datasets = _model_datasets(raw, origin)
         for imp in raw.get("dimension_imports", []):
             model.imports.append(_parse_import(imp, origin.name))
     except KeyError as exc:
         raise ModelError(f"{origin.name}: missing required key {exc}") from exc
+    _check_dataset_graph(model.datasets, f"{origin.name}: model '{model.name}'")
+    _assign_imports(model, _components(model.datasets))
+    _split_parts(model)
     model.pipeline_lineage = _parse_lineage_section(raw.get("pipeline_lineage"))
     return model
 
@@ -781,7 +903,7 @@ def _parse_editor_text(text: str, mapping_desc: str, parser: Callable[[dict, Pat
 
 def parse_model_text(text: str) -> Model:
     """Parse and validate a model from editor-supplied YAML text."""
-    return _parse_editor_text(text, "name / source / dimensions / measures", _parse_model)
+    return _parse_editor_text(text, "name / datasets (or source / dimensions / measures)", _parse_model)
 
 
 def _load_yaml_dir(directory: Path, parser: Callable[[dict, Path], object]) -> dict:
@@ -809,59 +931,6 @@ def load_models(models_dir: Path) -> dict[str, Model]:
 # A bundle groups reusable Datasets, declared once, that any fact Model can
 # import by name instead of re-declaring the same source/joins/dimensions.
 # ---------------------------------------------------------------------------
-
-def _parse_dataset_join(j: dict, origin: Path, owner: str) -> DatasetJoin:
-    to = j.get("to")
-    if not to:
-        raise ModelError(f"{origin.name}: {owner}: dataset join needs 'to'")
-    left_on, right_on, how = _parse_join_keys(j, origin.name, f"{owner}: join to '{to}'")
-    return DatasetJoin(to=to, left_on=left_on, right_on=right_on, how=how)
-
-
-def _parse_dataset(raw: dict, origin: Path) -> Dataset:
-    try:
-        dataset = Dataset(name=raw["name"], source=_parse_source(raw["source"], origin))
-    except KeyError as exc:
-        raise ModelError(f"{origin.name}: dataset missing required key {exc}") from exc
-    owner = f"dataset '{dataset.name}'"
-    dataset.dimensions = _parse_dimensions(raw.get("dimensions", []), f"{origin.name}: {owner}")
-    for j in raw.get("joins", []):
-        dataset.joins.append(_parse_dataset_join(j, origin, owner))
-    return dataset
-
-
-def _bundle_edges(bundle: DimensionBundle) -> dict[str, set[str]]:
-    """Undirected adjacency: a DatasetJoin declared on either side makes both
-    datasets reachable from each other once the bundle is walked from an
-    arbitrary anchor."""
-    edges: dict[str, set[str]] = {name: set() for name in bundle.datasets}
-    for ds in bundle.datasets.values():
-        for j in ds.joins:
-            edges[ds.name].add(j.to)
-            edges[j.to].add(ds.name)
-    return edges
-
-
-def _check_acyclic(bundle: DimensionBundle) -> None:
-    edges = _bundle_edges(bundle)
-    visited: set[str] = set()
-
-    def dfs(node: str, parent: Optional[str]) -> None:
-        visited.add(node)
-        for neighbor in edges[node]:
-            if neighbor == parent:
-                continue
-            if neighbor in visited:
-                raise ModelError(
-                    f"dimension bundle '{bundle.name}': cyclical join between "
-                    f"datasets '{node}' and '{neighbor}'"
-                )
-            dfs(neighbor, node)
-
-    for start in bundle.datasets:
-        if start not in visited:
-            dfs(start, None)
-
 
 def _check_no_cross_dataset_collisions(bundle: DimensionBundle) -> None:
     owner_of: dict[str, str] = {}
@@ -891,15 +960,7 @@ def _parse_bundle(raw: dict, origin: Path) -> DimensionBundle:
         raise ModelError(f"{origin.name}: missing required key {exc}") from exc
     if not bundle.datasets:
         raise ModelError(f"{origin.name}: dimension bundle '{bundle.name}' has no datasets")
-
-    for ds in bundle.datasets.values():
-        for j in ds.joins:
-            if j.to not in bundle.datasets:
-                raise ModelError(
-                    f"{origin.name}: bundle '{bundle.name}': dataset '{ds.name}' joins "
-                    f"to unknown dataset '{j.to}'"
-                )
-    _check_acyclic(bundle)
+    _check_dataset_graph(bundle.datasets, f"{origin.name}: dimension bundle '{bundle.name}'")
     _check_no_cross_dataset_collisions(bundle)
     return bundle
 
@@ -939,37 +1000,43 @@ def _dimension_to_spec(d: Dimension) -> dict:
     }
 
 
+def _measure_to_spec(m: Measure) -> dict:
+    return {
+        "name": m.name, "label": m.label, "expr": m.expr_source,
+        "format": m.format, "description": m.description,
+        "frame": m.frame_source, "frame_emits": list(m.frame_emits),
+        "synonyms": list(m.synonyms),
+    }
+
+
+def _dataset_to_spec(ds: Dataset) -> dict:
+    return {
+        "name": ds.name,
+        "source": {"path": ds.source.path, "format": ds.source.format},
+        "dimensions": [_dimension_to_spec(d) for d in ds.dimensions.values()],
+        "measures": [_measure_to_spec(m) for m in ds.measures.values()],
+        "joins": [{"to": j.to, "left_on": j.left_on, "right_on": j.right_on, "how": j.how}
+                  for j in ds.joins],
+    }
+
+
 def model_to_spec(model: Model) -> dict:
     """Form-facing dict for a parsed-but-unresolved Model (native dimensions
-    only — imported dimensions live in the bundle, not this file)."""
-    if model.is_composite:
-        raise ModelError(
-            f"model '{model.name}' is a multi-fact model — the guided form edits a single "
-            f"fact table; edit its 'facts' list in the yaml editor instead"
-        )
+    only — imported dimensions live in the bundle, not this file).
+
+    Both spellings of a model parse into `datasets`, so a file written the
+    terse `source:`/`joins:` way opens in the form as the datasets it always
+    was, and saving rewrites it in the general shape."""
     return {
         "name": model.name,
         "label": model.label,
         "description": model.description,
-        "source": {"path": model.source.path, "format": model.source.format},
-        "joins": [
-            {"name": j.name, "path": j.source.path, "format": j.source.format,
-             "left_on": j.left_on, "right_on": j.right_on, "how": j.how}
-            for j in model.joins
-        ],
+        "datasets": [_dataset_to_spec(ds) for ds in model.datasets.values()],
         "dimension_imports": [
-            {"bundle": i.bundle, "anchor_dataset": i.anchor_dataset,
+            {"bundle": i.bundle, "from_dataset": i.from_dataset, "anchor_dataset": i.anchor_dataset,
              "left_on": i.left_on, "right_on": i.right_on, "how": i.how,
              "datasets": i.datasets, "match": i.match}
             for i in model.imports
-        ],
-        "dimensions": [_dimension_to_spec(d) for d in model.dimensions.values()],
-        "measures": [
-            {"name": m.name, "label": m.label, "expr": m.expr_source,
-             "format": m.format, "description": m.description,
-             "frame": m.frame_source, "frame_emits": m.frame_emits,
-             "synonyms": list(m.synonyms)}
-            for m in model.measures.values()
         ],
     }
 
@@ -982,11 +1049,7 @@ def bundle_to_spec(bundle: DimensionBundle) -> dict:
         "label": bundle.label,
         "description": bundle.description,
         "datasets": [
-            {"name": ds.name,
-             "source": {"path": ds.source.path, "format": ds.source.format},
-             "dimensions": [_dimension_to_spec(d) for d in ds.dimensions.values()],
-             "joins": [{"to": j.to, "left_on": j.left_on, "right_on": j.right_on, "how": j.how}
-                       for j in ds.joins]}
+            {k: v for k, v in _dataset_to_spec(ds).items() if k != "measures"}
             for ds in bundle.datasets.values()
         ],
     }
@@ -1045,37 +1108,10 @@ def _spec_header(spec: dict) -> dict:
     return doc
 
 
-def spec_to_yaml(spec: dict) -> str:
-    """Render a form spec dict to canonical model YAML (defaults omitted)."""
-    doc = _spec_header(spec)
-    src = spec["source"]
-    doc["source"] = {"format": src.get("format", "parquet"), "path": src["path"]}
-
-    joins = []
-    for j in spec.get("joins") or []:
-        entry = {"name": j["name"],
-                 "source": {"format": j.get("format", "parquet"), "path": j["path"]}}
-        _spec_join_keys(entry, j)
-        joins.append(entry)
-    if joins:
-        doc["joins"] = joins
-
-    imports = []
-    for i in spec.get("dimension_imports") or []:
-        entry = {"bundle": i["bundle"], "anchor_dataset": i["anchor_dataset"]}
-        _spec_join_keys(entry, i)
-        if i.get("how") == "between" and i.get("match", "overlap") != "overlap":
-            entry["match"] = i["match"]
-        if i.get("datasets") is not None:
-            entry["datasets"] = list(i["datasets"])
-        imports.append(entry)
-    if imports:
-        doc["dimension_imports"] = imports
-
-    doc["dimensions"] = _spec_dimension_entries(spec.get("dimensions") or [])
-
-    measures = []
-    for m in spec.get("measures") or []:
+def _spec_measure_entries(measures: list[dict]) -> list[dict]:
+    """Spec measure dicts -> tersest correct yaml entries (defaults omitted)."""
+    out = []
+    for m in measures:
         entry = {"name": m["name"]}
         if m.get("label"):
             entry["label"] = m["label"]
@@ -1090,8 +1126,53 @@ def spec_to_yaml(spec: dict) -> str:
         if m.get("synonyms"):
             entry["synonyms"] = list(m["synonyms"])
         entry["expr"] = m["expr"]
-        measures.append(entry)
-    doc["measures"] = measures
+        out.append(entry)
+    return out
+
+
+def _spec_dataset_entry(ds: dict, with_measures: bool) -> dict:
+    entry: dict = {
+        "name": ds["name"],
+        "source": {"format": ds["source"].get("format", "parquet"), "path": ds["source"]["path"]},
+    }
+    joins = []
+    for j in ds.get("joins") or []:
+        join_entry = {"to": j["to"]}
+        _spec_join_keys(join_entry, j)
+        joins.append(join_entry)
+    if joins:
+        entry["joins"] = joins
+    entry["dimensions"] = _spec_dimension_entries(ds.get("dimensions") or [])
+    if with_measures:
+        entry["measures"] = _spec_measure_entries(ds.get("measures") or [])
+    return entry
+
+
+def spec_to_yaml(spec: dict) -> str:
+    """Render a form spec dict to canonical model YAML (defaults omitted).
+
+    Always the general `datasets:` shape, even for a single table — the terse
+    `source:` spelling stays readable and supported for hand-written files, but
+    one shape out of the generator means opening a model in the form and saving
+    it never changes what it is."""
+    doc = _spec_header(spec)
+    doc["datasets"] = [_spec_dataset_entry(ds, with_measures=True)
+                       for ds in spec.get("datasets") or []]
+
+    imports = []
+    for i in spec.get("dimension_imports") or []:
+        entry = {"bundle": i["bundle"]}
+        if i.get("from_dataset"):
+            entry["from_dataset"] = i["from_dataset"]
+        entry["anchor_dataset"] = i["anchor_dataset"]
+        _spec_join_keys(entry, i)
+        if i.get("how") == "between" and i.get("match", "overlap") != "overlap":
+            entry["match"] = i["match"]
+        if i.get("datasets") is not None:
+            entry["datasets"] = list(i["datasets"])
+        imports.append(entry)
+    if imports:
+        doc["dimension_imports"] = imports
 
     return _dump_generated(doc)
 
@@ -1107,22 +1188,8 @@ def _dump_generated(doc: dict) -> str:
 def bundle_spec_to_yaml(spec: dict) -> str:
     """Render a form spec dict to canonical dimension-bundle YAML."""
     doc = _spec_header(spec)
-    entries = []
-    for ds in spec.get("datasets") or []:
-        entry: dict = {
-            "name": ds["name"],
-            "source": {"format": ds["source"].get("format", "parquet"), "path": ds["source"]["path"]},
-            "dimensions": _spec_dimension_entries(ds.get("dimensions") or []),
-        }
-        joins = []
-        for j in ds.get("joins") or []:
-            join_entry = {"to": j["to"]}
-            _spec_join_keys(join_entry, j)
-            joins.append(join_entry)
-        if joins:
-            entry["joins"] = joins
-        entries.append(entry)
-    doc["datasets"] = entries
+    doc["datasets"] = [_spec_dataset_entry(ds, with_measures=False)
+                       for ds in spec.get("datasets") or []]
     return _dump_generated(doc)
 
 
@@ -1174,14 +1241,13 @@ def model_source_matchers(
     prefix = f"s3://{bucket}/"
     matchers: list[tuple[str, str, Callable[[str], bool]]] = []
     for m in models:
-        if m.is_composite:
-            continue  # reads no objects of its own; its facts are matched as themselves
-        sources = (
-            [("source", m.source)]
-            + [(f"join: {j.name}", j.source) for j in m.joins]
-            + [(f"import: {b.bundle.name}.{ds}", b.bundle.datasets[ds].source)
-               for b in m.import_bindings for ds in b.included_datasets]
-        )
+        sources: list[tuple[str, Source]] = []
+        for part in m.parts:
+            root_role = "source" if len(m.parts) == 1 else f"source: {part.name}"
+            for i, name in enumerate(part.datasets):
+                sources.append((root_role if i == 0 else f"join: {name}", m.datasets[name].source))
+            sources += [(f"import: {b.bundle.name}.{ds}", b.bundle.datasets[ds].source)
+                        for b in part.model.import_bindings for ds in b.included_datasets]
         for role, src in sources:
             if not src.path.startswith(prefix):
                 continue
@@ -1295,7 +1361,7 @@ def group_objects(objects: list[dict], bucket: str) -> list[dict]:
 def _bfs_reachable(bundle: DimensionBundle, start: str, allowed: set[str]) -> list[str]:
     """Datasets reachable from `start` walking only through `allowed` nodes —
     excluding a dataset also prunes anything reachable only through it."""
-    edges = _bundle_edges(bundle)
+    edges = _dataset_edges(bundle.datasets)
     order = [start]
     frontier = [start]
     seen = {start}
@@ -1311,28 +1377,32 @@ def _bfs_reachable(bundle: DimensionBundle, start: str, allowed: set[str]) -> li
 
 
 def dimension_sources(model: Model) -> dict[str, str]:
-    """Best-effort label for the dataset each of `model`'s dimensions is drawn
-    from: the fact's own table (the model's own label), or the common-
-    dimension bundle that supplied it via an import — what the Studio groups
-    the dimension list into folders by (see Model.to_public). A composite
-    model borrows its (shared) dimensions from its first fact — see
-    shared_dimensions — so it reads that fact's own sourcing rather than
-    having any of its own (dimension_imports is forbidden on it)."""
-    target = model.fact_bindings[0].model if model.is_composite and model.fact_bindings else model
+    """Best-effort label for where each of `model`'s dimensions comes from:
+    the common-dimension bundle that supplied it via an import, else — when
+    the model holds several fact tables — the dataset that declares it. What
+    the Studio groups the dimension list into folders by (see Model.to_public).
+    A model with a single fact table has one place its native dimensions can
+    come from, so they read as the model's own label."""
     owners: dict[str, str] = {}
-    for binding in target.import_bindings:
-        for dim_name in binding.dimension_owners:
-            owners[dim_name] = binding.bundle.label
-    return {name: owners.get(name, target.label) for name in model.dimensions}
+    for part in model.parts:
+        for binding in part.model.import_bindings:
+            for dim_name in binding.dimension_owners:
+                owners.setdefault(dim_name, binding.bundle.label)
+    if model.is_composite:
+        for ds in model.datasets.values():
+            for dim_name in ds.dimensions:
+                owners.setdefault(dim_name, ds.name)
+    return {name: owners.get(name, model.label) for name in model.dimensions}
 
 
-def resolve_imports(model: Model, bundles: dict[str, DimensionBundle]) -> Model:
-    """Merge each of a model's declared imports into model.dimensions and
+def _resolve_part_imports(model: Model, bundles: dict[str, DimensionBundle]) -> Model:
+    """Merge each of one part's declared imports into its dimensions and
     attach the ImportBinding metadata engine.scan() needs to build the join
     chain. A native dimension always shadows a same-named imported one; a
     same-named dimension offered by two different imports is a load-time
     error (subset one of the imports to resolve it). Mutates and returns
-    `model`; safe to call once per freshly-parsed model."""
+    `model` (a ModelPart's synthetic single-source Model, which for a
+    single-part model is the model itself)."""
     native_names = set(model.dimensions)
     claimed: dict[str, str] = {}  # dimension name -> "bundle.dataset" that claimed it
     model.import_bindings = []
@@ -1404,48 +1474,133 @@ def resolve_imports(model: Model, bundles: dict[str, DimensionBundle]) -> Model:
 
 
 # ---------------------------------------------------------------------------
-# Multi-fact models. A model that lists `facts:` instead of a `source:` borrows
-# its catalog from several other models at once, so measures from fact tables
-# that have nothing to do with each other can be read on one axis.
+# Parts: a model's datasets, split into the fact tables they actually form.
 #
-# The rule that makes it safe is that the facts are never joined together. Each
-# is queried on its own and the per-fact results are merged on the dimensions
-# they share (engine._run_composite) — the "drill across a conformed dimension"
-# shape. Joining the facts instead would multiply every measure by the other
-# tables' row counts.
+# A model's datasets don't have to be related to each other. Order lines
+# joined to a product lookup are one fact table; monthly ad spend sitting
+# alongside them, related to nothing, is a second. Each connected component of
+# the relation graph becomes a ModelPart, and a part is what gets scanned.
 #
-# The corollary is that facts can only be grouped by a dimension *every* one of
-# them offers: the intersection, not the union. A dimension only one fact knows
+# The rule that makes several parts in one model safe is that they are never
+# joined together. Each is queried on its own and the per-part results are
+# merged on the dimensions they share (engine._run_parts) — the "drill across a
+# conformed dimension" shape. Joining them instead would give every row of one
+# fact a copy of every matching row of the other and multiply both measures.
+#
+# The corollary is that parts can only be grouped by a dimension *every* one of
+# them offers: the intersection, not the union. A dimension only one part knows
 # about has no meaning for the others' rows, so there is no honest value to put
-# on the row where they meet. Facts agree on a name because they declare or
-# import one — importing the same dimension bundle into two fact models is what
-# conforms them, and it is declared on the fact, once, rather than restated in
-# every analysis that reads it.
+# on the row where they meet. Parts agree on a name because they declare or
+# import one — importing the same common dimensional model into two of the
+# model's fact tables is what conforms them, and it is the ordinary way to
+# build this: two facts, each related to the shared calendar, neither related
+# to the other.
 #
-# That intersection is taken over the facts a *query* actually reads, not over
-# every fact the model lists (see shared_dimensions and engine._run_composite).
-# A model listing sales, marketing and subscriptions still offers `channel` to a
+# That intersection is taken over the parts a *query* actually reads, not over
+# every part the model has (see shared_dimensions and engine._run_parts). A
+# model holding sales, marketing and subscriptions still offers `channel` to a
 # query that only measures the first two, because subscriptions contributes no
-# rows to it. model.dimensions holds the all-facts intersection: the catalog
+# rows to it. model.dimensions holds the all-parts intersection: the catalog
 # that is safe whatever you ask for, which is what the builder opens on.
 # ---------------------------------------------------------------------------
 
-def shared_dimensions(bindings: list["FactBinding"]) -> dict[str, Dimension]:
-    """The dimensions every one of `bindings` offers, under the names they all
-    use, in the first fact's declaration order.
+def _join_chain(
+    datasets: dict[str, Dataset], members: list[str], root: str,
+) -> tuple[list[str], list[Join]]:
+    """Order one component's datasets into a join chain starting at `root`, and
+    render each edge as the Join engine.scan() applies.
+
+    Each join is applied with the already-accumulated side as polars' left
+    operand and `how` taken from the edge as declared — so the root fact table
+    (and anything already pulled in) is always preserved in full, gaining
+    nullable columns for anything only reachable in the reverse of how the
+    author happened to declare that particular edge. Same walk, and same
+    reasoning, as engine._scan_bundle does from an import's anchor."""
+    edge_by_pair = {(name, j.to): j
+                    for name in members for j in datasets[name].joins if j.to in members}
+    order = [root]
+    joins: list[Join] = []
+    remaining = [name for name in members if name != root]
+    while remaining:
+        progressed = False
+        for name in list(remaining):
+            edge, reversed_edge = None, False
+            for joined in order:
+                if (joined, name) in edge_by_pair:
+                    edge = edge_by_pair[(joined, name)]
+                    break
+                if (name, joined) in edge_by_pair:
+                    edge, reversed_edge = edge_by_pair[(name, joined)], True
+                    break
+            if edge is None:
+                continue
+            left_on, right_on = (edge.right_on, edge.left_on) if reversed_edge else (edge.left_on, edge.right_on)
+            joins.append(Join(name=name, source=datasets[name].source,
+                              left_on=left_on, right_on=right_on, how=edge.how))
+            order.append(name)
+            remaining.remove(name)
+            progressed = True
+        if not progressed:  # _components() only groups datasets that connect
+            raise ModelError(
+                f"model: internal error resolving join order for datasets {sorted(remaining)}")
+    return order, joins
+
+
+def _build_part(model: Model, members: list[str]) -> ModelPart:
+    """Turn one connected component into the single-source Model the engine
+    scans for it.
+
+    The root — the table the joins fan out from — is the first member that
+    declares a measure, since that is the fact table the rest look up against;
+    a component of pure lookups (no measures anywhere) roots at its first
+    declared dataset. Dimensions and measures are pooled across the whole
+    component: they are evaluated against one joined frame, so a dimension
+    declared on the order lines is free to read a column the product lookup
+    brought in.
+    """
+    datasets = model.datasets
+    root = next((name for name in members if datasets[name].measures), members[0])
+    order, joins = _join_chain(datasets, members, root)
+
+    part_model = Model(
+        name=model.name if len(members) == len(datasets) else f"{model.name}.{root}",
+        label=model.label, description=model.description,
+        source=datasets[root].source, joins=joins,
+    )
+    owner_of: dict[str, str] = {}
+    for name in order:
+        for what, declared, target in (("dimension", datasets[name].dimensions, part_model.dimensions),
+                                       ("measure", datasets[name].measures, part_model.measures)):
+            for field_name, obj in declared.items():
+                if field_name in owner_of:
+                    raise ModelError(
+                        f"model '{model.name}': {what} '{field_name}' is declared by both dataset "
+                        f"'{owner_of[field_name]}' and dataset '{name}', which are related to each "
+                        f"other — rename one (two datasets may only reuse a dimension name when "
+                        f"they are separate fact tables, which is what conforms them)"
+                    )
+                owner_of[field_name] = name
+                target[field_name] = obj
+    part_model.imports = [imp for imp in model.imports if imp.from_dataset in set(members)]
+    return ModelPart(name=root, datasets=order, model=part_model)
+
+
+def shared_dimensions(parts: list[ModelPart]) -> dict[str, Dimension]:
+    """The dimensions every one of `parts` offers, under the names they all
+    use, in the first part's declaration order.
 
     Each is a fresh Dimension: `column` is never read (the engine delegates to
-    each fact, which knows its own), and a spine or a geo pair stays behind
-    with the fact that declares it. Types are checked in _check_shared_types at
-    load time, so any binding can supply the template."""
-    conformed = set(bindings[0].model.dimensions)
-    for binding in bindings[1:]:
-        conformed &= set(binding.model.dimensions)
+    each part, which knows its own), and a spine or a geo pair stays behind
+    with the part that declares it. Types are checked in _check_shared_types at
+    load time, so any part can supply the template."""
+    conformed = set(parts[0].model.dimensions)
+    for part in parts[1:]:
+        conformed &= set(part.model.dimensions)
     out: dict[str, Dimension] = {}
-    for name in bindings[0].model.dimensions:
+    for name in parts[0].model.dimensions:
         if name not in conformed:
             continue
-        template = bindings[0].model.dimensions[name]
+        template = parts[0].model.dimensions[name]
         out[name] = Dimension(
             name=name, column=name, type=template.type, label=template.label,
             description=template.description, synonyms=list(template.synonyms),
@@ -1454,68 +1609,132 @@ def shared_dimensions(bindings: list["FactBinding"]) -> dict[str, Dimension]:
 
 
 def _check_shared_types(model: Model) -> None:
-    """Every dimension name two or more facts offer has to mean the same kind
+    """Every dimension name two or more parts offer has to mean the same kind
     of thing on both, or it can't be grouped across them. Checked over *pairs*
-    rather than over the all-facts intersection, since a query reading a subset
-    of the facts conforms on that subset's intersection."""
-    types: dict[str, dict[str, str]] = {}   # dimension -> type -> fact alias
-    for binding in model.fact_bindings:
-        for name, dim in binding.model.dimensions.items():
+    rather than over the all-parts intersection, since a query reading a subset
+    of the parts conforms on that subset's intersection."""
+    types: dict[str, dict[str, str]] = {}   # dimension -> type -> part name
+    for part in model.parts:
+        for name, dim in part.model.dimensions.items():
             seen = types.setdefault(name, {})
             if dim.type not in seen and seen:
-                other_type, other_alias = next(iter(seen.items()))
+                other_type, other_part = next(iter(seen.items()))
                 raise ModelError(
                     f"model '{model.name}': shared dimension '{name}' is {other_type} on "
-                    f"'{other_alias}' and {dim.type} on '{binding.alias}' — the facts have to "
+                    f"'{other_part}' and {dim.type} on '{part.name}' — the fact tables have to "
                     f"agree on its type before it can be grouped across them"
                 )
-            seen.setdefault(dim.type, binding.alias)
+            seen.setdefault(dim.type, part.name)
 
 
-def resolve_facts(model: Model, models: dict[str, Model]) -> Model:
-    """Attach a multi-fact model's FactBindings and build its borrowed catalog:
-    the dimensions all its facts share, and every fact's measures under an
-    `alias.measure` name. No-op for a single-source model. Call after
-    resolve_imports() has run over every model, since a fact's imported
-    dimensions count towards what it can conform on."""
-    if not model.facts:
+def _check_unique_measures(model: Model) -> None:
+    """Measure names are the model's public namespace, so they have to be
+    unique across its fact tables — unlike dimension names, where a repeat is
+    the conformance mechanism rather than a clash."""
+    owner_of: dict[str, str] = {}
+    for part in model.parts:
+        for name in part.model.measures:
+            if name in owner_of:
+                raise ModelError(
+                    f"model '{model.name}': measure '{name}' is declared on both fact table "
+                    f"'{owner_of[name]}' and fact table '{part.name}' — rename one; a query names "
+                    f"a measure without saying which table it came from"
+                )
+            owner_of[name] = part.name
+
+
+def _assign_imports(model: Model, components: list[list[str]]) -> None:
+    """Point every import at one of the model's datasets, and check it lands.
+
+    With a single fact table there is only one thing it could relate to, so
+    `from_dataset` may be omitted (which is what the terse `source:` spelling
+    always does). With several, saying which one is the whole question — an
+    import that doesn't say lands nowhere in particular, so it's an error."""
+    for imp in model.imports:
+        if not imp.from_dataset:
+            if len(components) > 1:
+                raise ModelError(
+                    f"model '{model.name}': import of '{imp.bundle}' needs 'from_dataset' — this "
+                    f"model has {len(components)} unrelated fact tables "
+                    f"({', '.join(c[0] for c in components)}), so which one relates to the common "
+                    f"model decides which measures the import's dimensions can be read alongside"
+                )
+            imp.from_dataset = components[0][0]
+        if imp.from_dataset not in model.datasets:
+            raise ModelError(
+                f"model '{model.name}': import of '{imp.bundle}' relates from unknown dataset "
+                f"'{imp.from_dataset}'"
+            )
+
+
+def _split_parts(model: Model) -> Model:
+    """Split a model's datasets into parts and build the catalog its own file
+    decides — everything short of the imports, which need the bundles.
+
+    A single-part model *is* its part: parts[0].model is `model` itself, so its
+    source, joins, dimensions and measures sit where they always have and every
+    query path is unchanged. With several parts the model has no source of its
+    own; it offers every part's measures, and only the dimensions all of them
+    share. Called at the end of parsing, so a parsed-but-unresolved model reads
+    exactly as it always did: its native catalog, imports not yet merged."""
+    model.parts = [_build_part(model, members) for members in _components(model.datasets)]
+    if len(model.parts) == 1:
+        # the model is the part: adopt it wholesale rather than keeping a
+        # near-copy of the same model alongside itself
+        only = model.parts[0]
+        model.source, model.joins = only.model.source, only.model.joins
+        model.dimensions, model.measures = only.model.dimensions, only.model.measures
+        model.parts = [ModelPart(name=only.name, datasets=only.datasets, model=model)]
         return model
-    model.fact_bindings = []
 
-    for fr in model.facts:
-        target = models.get(fr.model)
-        if target is None:
+    for part in model.parts:
+        if not part.model.measures:
             raise ModelError(
-                f"model '{model.name}': fact '{fr.alias}' references unknown model '{fr.model}'"
+                f"model '{model.name}': dataset '{part.name}' is related to nothing else in this "
+                f"model and declares no measures, so it is a fact table with nothing to measure — "
+                f"its dimensions would only narrow what the model's other fact tables can be "
+                f"grouped by. Relate it to one of them, or give it a measure"
             )
-        if target.is_composite:
-            raise ModelError(
-                f"model '{model.name}': fact '{fr.alias}' references '{fr.model}', which is itself "
-                f"a multi-fact model — list its facts here directly instead"
-            )
-        model.fact_bindings.append(FactBinding(alias=fr.alias, model=target))
-
     _check_shared_types(model)
-    model.dimensions = shared_dimensions(model.fact_bindings)
-
+    _check_unique_measures(model)
+    model.source, model.joins = None, []
+    model.dimensions = shared_dimensions(model.parts)
     model.measures = {}
-    for binding in model.fact_bindings:
-        for meas in binding.model.measures.values():
-            qualified = f"{binding.alias}{MEASURE_SEP}{meas.name}"
-            model.measures[qualified] = Measure(
-                name=qualified, label=f"{meas.label} · {binding.model.label}",
-                expr_source=meas.expr_source, format=meas.format,
-                description=meas.description, frame_source=meas.frame_source,
-                frame_emits=list(meas.frame_emits), synonyms=list(meas.synonyms),
-            )
+    for part in model.parts:
+        model.measures.update(part.model.measures)
     return model
 
 
-def split_measure(model: Model, name: str) -> tuple[FactBinding, str]:
-    """Resolve a multi-fact model's `alias.measure` name to the fact that owns
-    it and the measure's own name on that fact."""
-    alias, _, own = name.partition(MEASURE_SEP)
-    binding = next((b for b in model.fact_bindings if b.alias == alias), None)
-    if binding is None or own not in binding.model.measures:
-        raise ModelError(f"unknown measure '{name}' in model '{model.name}'")
-    return binding, own
+def resolve_model(model: Model, bundles: dict[str, DimensionBundle]) -> Model:
+    """Merge each part's imported dimensions in, against the bundles currently
+    loaded — the half of resolution that needs to look outside the file.
+
+    A model with several fact tables re-takes the intersection afterwards:
+    importing the same common model into two of them is exactly what conforms
+    them, so its dimensions have to be on board before "what can this be
+    grouped by" has its final answer. Mutates and returns `model`; idempotent,
+    so a hot-reload can re-resolve a model already in the registry."""
+    if not model.is_composite:
+        return _resolve_part_imports(model, bundles)
+    for part in model.parts:
+        _resolve_part_imports(part.model, bundles)
+    _check_shared_types(model)
+    model.import_bindings = []
+    model.dimensions = shared_dimensions(model.parts)
+    return model
+
+
+def part_for_measure(model: Model, name: str) -> ModelPart:
+    """The fact table a measure belongs to. Names are unique across a model's
+    parts (_check_unique_measures), so this is unambiguous."""
+    for part in model.parts:
+        if name in part.model.measures:
+            return part
+    raise ModelError(f"unknown measure '{name}' in model '{model.name}'")
+
+
+def fact_sources(model: Model) -> list[Source]:
+    """The source behind each of the model's fact tables — what a pipeline
+    matches its target path against (app/pipelines.py), and what "this model
+    reads that object" means for a model with more than one."""
+    return [part.model.source for part in model.parts if part.model.source]
