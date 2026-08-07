@@ -1,0 +1,94 @@
+/* Hallmark · design-system: design.md · designed-as-app
+ * CASH_INTELLIGENCE scale tokens — the theme-invariant half of the system.
+ *
+ * Colour lives in style.css (four [data-theme] blocks, frozen: theme.js
+ * validates each theme's categorical chart palette against its own --bg, and
+ * the ids are persisted in localStorage + authstore.VALID_THEMES). Everything
+ * a theme does NOT change — type scale, tracking, space, radius, motion,
+ * depth — lives here, declared once.
+ *
+ * Rule: no raw px for size, space, radius or z-index anywhere in style.css.
+ * If a value is needed that has no token, add the token here first.
+ */
+
+:root {
+  /* ── type ──────────────────────────────────────────
+     Seven steps, named by role. Replaces the 17 ad-hoc pixel sizes this
+     app carried before the redesign. --text-stat is the one fluid step:
+     stat tiles are the only place the app goes genuinely large. */
+  --text-2xs:  9px;    /* tags, counts, keycaps — uppercase only */
+  --text-xs:   10px;   /* section labels, meta, hints */
+  --text-sm:   11px;   /* dense UI: rows, chips, buttons */
+  --text-md:   12px;   /* body, inputs, table cells */
+  --text-lg:   13px;   /* names, titles in chrome */
+  --text-xl:   15px;   /* view titles, chat questions */
+  --text-2xl:  19px;   /* wordmark — the one big thing per view */
+  --text-stat: clamp(30px, 4vw, 44px);
+
+  /* code surfaces read a touch larger than chrome — they're read, not scanned */
+  --text-code: 12.5px;
+
+  /* ── tracking ──────────────────────────────────────
+     Mono has no weight range worth using, so letter-spacing carries
+     hierarchy. Three steps, tied to role. Uppercase is reserved for labels
+     and actions — never for content. */
+  --track-label: 0.22em;
+  --track-name:  0.08em;
+  --track-body:  0;
+
+  /* ── space (4pt) ───────────────────────────────────*/
+  --space-3xs: 2px;
+  --space-2xs: 4px;
+  --space-xs:  6px;
+  --space-sm:  8px;
+  --space-md:  12px;
+  --space-lg:  16px;
+  --space-xl:  24px;
+  --space-2xl: 36px;
+  --space-3xl: 56px;
+
+  /* ── shape ─────────────────────────────────────────
+     Eight ad-hoc radii collapse to three, tied to surface tier:
+     Ground is square, Field is 4px, and only true pills get pill. */
+  --radius-none: 0;
+  --radius-sm:   4px;
+  --radius-pill: 999px;
+
+  /* The one separator in the app. Ground siblings are divided by this and by
+     honest spacing — never by giving each sibling a box. `--line` is a theme
+     token (style.css); custom properties resolve at use time, so the forward
+     reference is fine. */
+  --rule-hair: 1px solid var(--line);
+  --rule-mark: 2px;    /* the inset selection/active rule */
+
+  /* ── motion ────────────────────────────────────────
+     Motion-cut project: no library, no reveals, no scroll animation.
+     Named easings only — never the browser default `ease`, never overshoot. */
+  --ease-out:    cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in:     cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-instant: 80ms;
+  --dur-short:   140ms;
+  --dur-mid:     240ms;
+
+  /* ── depth ─────────────────────────────────────────
+     Six named levels replace the ad-hoc 50/600/700/999/1000 freestyle.
+     --shadow-float is the ONLY shadow in the app, and only tier-2 Float
+     surfaces (popover, menu, modal, tooltip) may wear it: a coloured outer
+     glow on a dark surface is the shadow-glow-on-dark tell. */
+  --z-base:     1;
+  --z-raised:   10;
+  --z-dropdown: 100;
+  --z-sticky:   200;
+  --z-modal:    400;
+  --z-toast:    500;
+  --z-tooltip:  600;
+
+  --shadow-float: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+
+/* Paddock Light runs on paper — a black-alpha shadow reads as grime on cream,
+   so the float shadow warms and lightens to a printed drop instead. */
+[data-theme="daylight"] {
+  --shadow-float: 0 8px 24px rgba(42, 32, 21, 0.18);
+}

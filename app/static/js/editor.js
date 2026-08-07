@@ -12,7 +12,8 @@ import { isAdmin } from "./auth.js";
 import { refreshModels } from "./builder.js";
 import { dslContext, dslItems, makeCompleter } from "./completion.js";
 import { renderImportPanel } from "./dimlab.js";
-import { $, api, el, fmtBytes } from "./lib.js";
+import { datasetLedger } from "./formkit.js";
+import { $, api, el } from "./lib.js";
 import { navigate, paths } from "./router.js";
 import { hooks, showView, state } from "./state.js";
 import { highlightYaml } from "./yamlhighlight.js";
@@ -563,29 +564,10 @@ async function toggleDatasetPicker() {
     return;
   }
   panel.append(el("div", { class: "empty-note" }, "click to set this model's source"));
-  for (const ds of data.datasets) {
-    const card = el("div", { class: "import-card" });
-    const head = el("div", { class: "ds-pick-head", title: `set source → ${ds.path}` },
-      el("span", { class: "nm" }, ds.key || "(root)"),
-      el("span", { class: "fmt" }, ds.format));
-    head.addEventListener("click", () => applySource(ds.path, ds.format));
-    card.append(head);
-    const readerNames = [...new Set(ds.models.map((m) => m.name))];
-    const readers = readerNames.length ? ` · read by ${readerNames.join(", ")}` : "";
-    card.append(el("div", { class: "ds-pick-meta" },
-      `${ds.object_count} obj · ${fmtBytes(ds.bytes)}${readers}${ds.format_ambiguous ? " · ⚠ mixed types" : ""}`));
-    if (ds.format !== "delta" && ds.format !== "iceberg" && ds.objects.length > 1) {
-      const drill = el("div", { class: "import-datasets" });
-      for (const o of ds.objects) {
-        const chip = el("div", { class: "col-chip", title: `set source → this single object` },
-          el("span", {}, o.key.split("/").pop()), el("span", { class: "dt" }, o.format));
-        chip.addEventListener("click", () => applySource(`s3://${data.bucket}/${o.key}`, o.format));
-        drill.append(chip);
-      }
-      card.append(drill);
-    }
-    panel.append(card);
-  }
+  // same ledger the guided form's source step uses (formkit.js) — one
+  // dataset picker, so the two never drift apart visually
+  panel.append(datasetLedger(data.datasets, data.bucket,
+    ({ path, format }) => applySource(path, format)));
 }
 
 // ── expression + structural intellisense in the yaml editor (US4) ──

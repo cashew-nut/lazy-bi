@@ -35,36 +35,76 @@ export async function loadDatasets() {
   return datasets;
 }
 
-// dataset cards grid: click a card for the grouped glob, or drill into a
-// chip to use one exact object (FR-006)
-export function datasetCards(onpick, current) {
-  const box = el("div", { class: "mf-ds-grid" });
-  if (!datasets) { box.append(note("bucket not reachable — enter a path manually below")); return box; }
-  for (const ds of datasets.datasets) {
+/* The bucket's datasets as a ledger — one hairline-ruled row per dataset,
+   not a wall of identical bordered tiles. A dataset is an entry in an index:
+   what matters is the key, then whether anything already reads it, then the
+   path. Tiles gave all three the same weight and boxed each one, which is
+   why eight datasets read as eight cards instead of one list.
+
+   Click a row to take the grouped glob. A multi-object dataset also gets a
+   drill toggle that reveals its objects as indented sub-rows, so "use just
+   recruitment.parquet" is one click without a chip cloud inside a card.
+
+   Shared with the model editor's side panel (editor.js) so both pickers are
+   the same object; `bucket` is only needed to build single-object paths. */
+export function datasetLedger(list, bucket, onpick, current) {
+  const box = el("div", { class: "ds-ledger" });
+  for (const ds of list) {
     const on = current && current.path === ds.path;
-    const card = el("div", { class: "mk-card clickable" + (on ? " sel" : "") },
-      el("div", { class: "mk-top" }, el("span", { class: "nm" }, ds.key || "(root)"), el("span", { class: "fmt" }, ds.format)),
-      el("div", { class: "path" }, ds.path),
-      el("div", { class: "mk-sub" }, `${ds.object_count} obj · ${fmtBytes(ds.bytes)}`
-        + (ds.models.length ? ` · read by ${[...new Set(ds.models.map((m) => m.name))].join(", ")}` : " · unmapped")
-        + (ds.format_ambiguous ? " · ⚠ mixed types" : "")));
-    card.addEventListener("click", () => onpick({ key: ds.key, path: ds.path, format: ds.format }));
+    const readers = [...new Set(ds.models.map((m) => m.name))];
+    const row = el("button", {
+      type: "button", class: "ds-row" + (on ? " on" : ""), title: `use ${ds.path}`,
+    },
+      el("span", { class: "ds-nm" }, ds.key || "(root)"),
+      el("span", { class: "ds-fmt" }, ds.format),
+      el("span", { class: "ds-path" }, ds.path),
+      el("span", { class: "ds-meta" }, `${ds.object_count} obj · ${fmtBytes(ds.bytes)}`),
+      readers.length
+        ? el("span", { class: "ds-read" }, `read by ${readers.join(", ")}`)
+        : el("span", { class: "ds-read ds-unmapped" }, "unmapped"));
+    if (ds.format_ambiguous) row.append(el("span", { class: "ds-warn", title: "objects here are not all one format" }, "⚠ mixed types"));
+    row.addEventListener("click", () => onpick({ key: ds.key, path: ds.path, format: ds.format }));
+
+    const group = el("div", { class: "ds-group" }, row);
+    // delta/iceberg are single logical tables — their files aren't separately
+    // selectable, so they never get a drill toggle
     if (ds.format !== "delta" && ds.format !== "iceberg" && ds.objects.length > 1) {
-      const drill = el("div", { class: "import-datasets" });
+      const objects = el("div", { class: "ds-objects", hidden: "" });
       for (const o of ds.objects) {
-        const chip = el("div", { class: "col-chip", title: `use just ${o.key}` },
-          el("span", {}, o.key.split("/").pop()), el("span", { class: "dt" }, o.format));
-        chip.addEventListener("click", (e) => {
-          e.stopPropagation();
-          onpick({ key: o.key, path: `s3://${datasets.bucket}/${o.key}`, format: o.format });
+        const leaf = el("button", { type: "button", class: "ds-object", title: `use just ${o.key}` },
+          el("span", { class: "nm" }, o.key.split("/").pop()),
+          el("span", { class: "dt" }, o.format));
+        leaf.addEventListener("click", () => {
+          onpick({ key: o.key, path: `s3://${bucket}/${o.key}`, format: o.format });
         });
-        drill.append(chip);
+        objects.append(leaf);
       }
-      card.append(drill);
+      const drill = el("button", {
+        type: "button", class: "ds-drill", "aria-expanded": "false",
+        title: "pick one object instead of the whole prefix",
+      }, el("span", { class: "tree-caret" }, "▸"), `${ds.objects.length} objects`);
+      drill.addEventListener("click", () => {
+        const open = objects.hidden;
+        objects.hidden = !open;
+        drill.setAttribute("aria-expanded", String(open));
+        drill.classList.toggle("open", open);
+      });
+      group.append(drill, objects);
     }
-    box.append(card);
+    box.append(group);
   }
   return box;
+}
+
+// the guided forms' source picker — the session-cached bucket listing,
+// rendered as the ledger above (FR-006)
+export function datasetCards(onpick, current) {
+  if (!datasets) {
+    const box = el("div", { class: "ds-ledger" });
+    box.append(note("bucket not reachable — enter a path manually below"));
+    return box;
+  }
+  return datasetLedger(datasets.datasets, datasets.bucket, onpick, current);
 }
 
 // ── field + relationship builders ──
