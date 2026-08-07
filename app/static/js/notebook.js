@@ -45,10 +45,12 @@ export function renderNotebookList() {
   if (!state.notebooks.length) {
     box.append(el("div", { class: "empty-note" }, "no notebooks yet"));
   }
+  // a ledger of pages, hairline-ruled — the same row voice the home index
+  // and the dataset picker use, rather than a stack of bordered cards
   for (const n of state.notebooks) {
-    const item = el("div", { class: "mk-card clickable" },
-      el("div", { class: "mk-top" }, el("span", { class: "nm" }, n.name)),
-      el("div", { class: "mk-sub" }, `updated ${n.updated_at.slice(0, 10)}`));
+    const item = el("button", { type: "button", class: "nb-row" },
+      el("span", { class: "nm" }, n.name),
+      el("span", { class: "sub" }, n.updated_at.slice(0, 10)));
     item.addEventListener("click", () => navigate(paths.notebook(n.id)));
     box.append(item);
   }
