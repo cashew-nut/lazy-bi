@@ -1309,9 +1309,15 @@ unjoined model, an out-of-vocabulary filter operator, or anything else
 outside what's already declared is rejected before any query runs.
 `show_last_query` lets a user reliably ask for the exact query behind a
 prior answer (e.g. "what query did you just run?") without that request
-being mis-translated as a new, unanswerable business question. Conversations
-persist per-user (SQLite) and are strictly owner-scoped; asking a question
-requires only the **viewer** role, the same tier as the query builder.
+being mis-translated as a new, unanswerable business question. It is
+deliberately narrow: a follow-up that wants the previous answer *changed*
+("break this down by quarter", "now just the top 5", "and last year?") is a
+`propose_query` built on the prior turn — the assistant carries that turn's
+model, dimensions, measures, filters, sort and limit forward and applies
+only what the follow-up changes, and the complete result is re-validated
+fresh like any other proposal (FR-008/FR-009). Conversations persist
+per-user (SQLite) and are strictly owner-scoped; asking a question requires
+only the **viewer** role, the same tier as the query builder.
 
 **Ad-hoc measures (`propose_query`'s `inline_measures`).** A question that
 needs a calculation nobody declared as a measure — a running total, a

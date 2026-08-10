@@ -45,6 +45,58 @@ def test_show_last_query_tool_is_declared_with_no_required_args():
     assert tool["input_schema"].get("required", []) == []
 
 
+# ── follow-ups are propose_query calls, not show_last_query (the bug this
+# fixes: "can you break this down by quarter" after an answered turn came
+# back as the *previous* query shown verbatim — the prompt shipped prior
+# turns with no instruction about what to do with them, and
+# show_last_query's description claimed anything referring to "a previous
+# answer in this conversation") ──────────────────────────────────────────
+
+def test_show_last_query_description_excludes_refinement_follow_ups():
+    description = _tool("show_last_query")["description"]
+    assert "break this down by quarter" in description
+    assert "propose_query" in description
+
+
+def test_system_prompt_tells_the_model_to_build_follow_ups_from_the_last_turn():
+    prompt = llm._SYSTEM_PROMPT
+    assert "Follow-ups" in prompt
+    assert "break this down by quarter" in prompt
+    # the two halves that make a follow-up resolvable at all: which turn it
+    # attaches to, and that the unmentioned parts must be repeated
+    assert "most recent prior turn" in prompt
+    assert "complete on its own" in prompt
+
+
+def test_system_prompt_reserves_show_last_query_for_seeing_the_query_itself():
+    assert "show_last_query ONLY when the user" in llm._SYSTEM_PROMPT
+
+
+def test_prior_context_text_marks_the_most_recent_turn():
+    """Which turn a follow-up adjusts can't be left implicit — the LLM sees
+    a flat list, not a conversation."""
+    text = llm._prior_context_text([
+        llm.PriorTurn(question_text="revenue by category", model="sales",
+                      dimensions=["category"], measures=["revenue"], filters=[]),
+        llm.PriorTurn(question_text="top 5 products", model="sales",
+                      dimensions=["product"], measures=["revenue"], filters=[], limit=5),
+    ])
+    lines = text.splitlines()
+    assert "most recent" not in lines[0]
+    assert "most recent" in lines[1]
+
+
+def test_prior_context_text_includes_sort_and_limit():
+    """Carried in PriorTurn but never rendered, so a follow-up to "top 5
+    products" had nothing to tell it to keep the limit."""
+    text = llm._prior_context_text([
+        llm.PriorTurn(question_text="top 5 products", model="sales", dimensions=["product"],
+                      measures=["revenue"], filters=[], sort={"by": "revenue", "desc": True}, limit=5),
+    ])
+    assert "limit=5" in text
+    assert "sort={'by': 'revenue', 'desc': True}" in text
+
+
 def test_all_four_tool_kinds_present():
     assert {t["name"] for t in llm._TOOLS} == {
         "propose_query", "ask_clarification", "show_last_query", "decline",
