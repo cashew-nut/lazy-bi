@@ -89,11 +89,47 @@ COOKIE_SECURE = os.environ.get("CI_COOKIE_SECURE", "0") == "1"
 # question text/schema/results to a third party (research.md R7).
 LLM_API_KEY = os.environ.get("CI_LLM_API_KEY", "")
 LLM_MODEL = os.environ.get("CI_LLM_MODEL", "claude-sonnet-5")
-LLM_ENABLED = bool(LLM_API_KEY)
+# Point the Anthropic client at something other than api.anthropic.com — any
+# server exposing an Anthropic-compatible /v1/messages endpoint (LM Studio
+# 0.4.1+, a litellm proxy). That's what makes an open-weights local model
+# like Meta's Muse Glimmer 30B usable here without a second SDK: the three
+# LLM seams (app/llm.py, app/composer.py, app/sandbox_agent.py) keep sending
+# exactly the request they already send, just to a different host. See the
+# README's "Local and self-hosted models" section for the caveat that shapes
+# the rest of this — a compat layer may ignore `tool_choice`, which every one
+# of those seams relies on.
+LLM_BASE_URL = os.environ.get("CI_LLM_BASE_URL", "")
+# A local endpoint authenticates nothing but the SDK still requires *some*
+# key, so a base URL alone is enough to turn the LLM features on — an
+# unconfigured deployment (neither set) stays off exactly as before.
+LLM_ENABLED = bool(LLM_API_KEY or LLM_BASE_URL)
 # User-selectable per conversation (app/api/chat.py); CI_LLM_MODEL above is
 # just the default a new conversation starts with. Keep in sync with the
-# id's actually valid for the configured provider.
-LLM_MODEL_CHOICES = ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001"]
+# id's actually valid for the configured provider — which is why this is
+# overridable: the built-in list is meaningless against a local server, where
+# the valid id's are whatever that server has loaded (e.g.
+# "meta-models/Muse-Glimmer-30B"). Comma-separated.
+LLM_MODEL_CHOICES = [
+    m.strip() for m in os.environ.get("CI_LLM_MODEL_CHOICES", "").split(",") if m.strip()
+] or ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001"]
+# The default a new conversation starts with must itself be selectable, or
+# chat.py's _validate_llm_model rejects the very model the UI shows as
+# current — reachable as soon as CI_LLM_MODEL names something the built-in
+# (or overridden) list doesn't contain.
+if LLM_MODEL not in LLM_MODEL_CHOICES:
+    LLM_MODEL_CHOICES = [LLM_MODEL, *LLM_MODEL_CHOICES]
+
+
+def llm_client_kwargs(api_key: str | None = None) -> dict:
+    """Constructor kwargs shared by every anthropic.Anthropic() in the app, so
+    a deployment points all three LLM seams at one endpoint by setting one
+    variable. The placeholder key mirrors what LM Studio's own docs use
+    (ANTHROPIC_AUTH_TOKEN=lmstudio): a local server ignores it, but the SDK
+    won't construct a client without one."""
+    key = api_key or LLM_API_KEY
+    if not LLM_BASE_URL:
+        return {"api_key": key}
+    return {"api_key": key or "local", "base_url": LLM_BASE_URL}
 
 # Sandbox coding agent (app/sandbox_agent.py) — writes polars for the open
 # notebook, and fills in a converted pipeline's lineage. Shares CI_LLM_API_KEY

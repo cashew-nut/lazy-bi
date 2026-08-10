@@ -508,9 +508,18 @@ def build_user_prompt(req: ComposeRequest) -> str:
     return "\n".join(lines)
 
 
+_TOOL_NUDGE = (
+    "You replied without calling a tool. Return the page by calling "
+    "compose_page with the complete HTML — that is the only way to deliver "
+    "it, and prose around it is discarded. Call it now."
+)
+
+
 class AnthropicComposer:
     """Talks to the Anthropic Messages API with forced tool-use so the result
-    is always one typed compose_page proposal."""
+    is always one typed compose_page proposal. As with app/llm.py's
+    translator, "Anthropic" is the wire protocol — CI_LLM_BASE_URL points
+    this at any Anthropic-compatible endpoint, local models included."""
 
     def __init__(self, api_key: str | None = None, model: str | None = None):
         self.api_key = api_key or config.LLM_API_KEY
@@ -529,14 +538,14 @@ class AnthropicComposer:
     def compose_streaming(self, request: ComposeRequest) -> Iterator[ComposeStreamEvent]:
         import anthropic
 
-        from .llm import _thinking_kwargs  # shared adaptive-thinking gate
+        # shared adaptive-thinking gate + the forced-tool-use fallback for
+        # endpoints that ignore tool_choice (see app/llm.py)
+        from .llm import _thinking_kwargs, first_tool_call, retry_messages
 
-        client = anthropic.Anthropic(api_key=self.api_key)
+        client = anthropic.Anthropic(**config.llm_client_kwargs(self.api_key))
+        kwargs = self._request_kwargs(request)
         try:
-            with client.messages.stream(
-                **self._request_kwargs(request),
-                **_thinking_kwargs(self.model),
-            ) as stream:
+            with client.messages.stream(**kwargs, **_thinking_kwargs(self.model)) as stream:
                 for event in stream:
                     if event.type == "thinking":
                         yield ComposeStreamEvent(kind="thinking", text=event.thinking)
@@ -545,17 +554,25 @@ class AnthropicComposer:
                         if isinstance(snapshot.get("html"), str):
                             yield ComposeStreamEvent(kind="html", html=snapshot["html"])
                 message = stream.get_final_message()
+            call = first_tool_call(message.content)
+            if call is None:
+                retry = client.messages.create(
+                    **{**kwargs, "messages": retry_messages(kwargs["messages"], message.content, _TOOL_NUDGE)}
+                )
+                call = first_tool_call(retry.content)
+                if call is not None and isinstance(call[1].get("html"), str):
+                    # the stream showed nothing, so hand the page over in one
+                    # go before the "done" event the caller renders from
+                    yield ComposeStreamEvent(kind="html", html=call[1]["html"])
         except anthropic.APIError as exc:
             logger.warning("Anthropic composer call failed: %r (cause: %r)", exc, exc.__cause__)
             raise ComposerError(str(exc)) from exc
 
-        for block in message.content:
-            if block.type == "tool_use" and block.name == "compose_page":
-                args = block.input or {}
-                yield ComposeStreamEvent(kind="done", final=RawComposition(
-                    name=str(args.get("name") or "untitled page"),
-                    html=str(args.get("html") or ""),
-                    summary=str(args.get("summary") or ""),
-                ))
-                return
-        raise ComposerError("model did not call compose_page")
+        if call is None or call[0] != "compose_page":
+            raise ComposerError("model did not call compose_page")
+        args = call[1]
+        yield ComposeStreamEvent(kind="done", final=RawComposition(
+            name=str(args.get("name") or "untitled page"),
+            html=str(args.get("html") or ""),
+            summary=str(args.get("summary") or ""),
+        ))

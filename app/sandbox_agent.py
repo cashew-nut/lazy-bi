@@ -479,10 +479,24 @@ def _log_and_wrap(exc: Exception) -> AgentError:
     return AgentError(str(exc))
 
 
+_TOOL_NUDGE = (
+    "You replied without calling a tool. Every reply must be exactly one "
+    "tool call and nothing else: write_cells to change the notebook, or "
+    "answer to reply without changing it. Call one of them now."
+)
+
+_LINEAGE_NUDGE = (
+    "You replied without calling a tool. Call describe_lineage with the "
+    "lineage for the script above — that is the only accepted reply."
+)
+
+
 class AnthropicSandboxAgent:
     """Talks to the Anthropic Messages API with forced tool use, one call per
     request, no extended thinking (see the module docstring for why each of
-    those is a cost/latency decision rather than an oversight)."""
+    those is a cost/latency decision rather than an oversight). As with
+    app/llm.py's translator, "Anthropic" is the wire protocol — CI_LLM_BASE_URL
+    points this at any Anthropic-compatible endpoint, local models included."""
 
     def __init__(self, api_key: str | None = None, model: str | None = None,
                  lineage_model: str | None = None):
@@ -493,7 +507,7 @@ class AnthropicSandboxAgent:
     def _client(self):
         import anthropic
 
-        return anthropic.Anthropic(api_key=self.api_key)
+        return anthropic.Anthropic(**config.llm_client_kwargs(self.api_key))
 
     def assist_streaming(
         self, request: str, notebook: NotebookContext, history: list[AgentTurn],
@@ -505,15 +519,21 @@ class AnthropicSandboxAgent:
         acted on, and even that is re-validated (app/sandbox.py)."""
         import anthropic
 
+        # the forced-tool-use fallback for endpoints that ignore tool_choice
+        # (see app/llm.py)
+        from .llm import first_tool_call, retry_messages
+
+        client = self._client()
+        kwargs = dict(
+            model=self.model,
+            max_tokens=config.SANDBOX_AGENT_MAX_TOKENS,
+            system=_system_blocks(_ASSIST_SYSTEM_PROMPT),
+            tools=_tools_for_notebook(notebook),
+            tool_choice={"type": "any"},
+            messages=[{"role": "user", "content": build_assist_prompt(request, notebook, history)}],
+        )
         try:
-            with self._client().messages.stream(
-                model=self.model,
-                max_tokens=config.SANDBOX_AGENT_MAX_TOKENS,
-                system=_system_blocks(_ASSIST_SYSTEM_PROMPT),
-                tools=_tools_for_notebook(notebook),
-                tool_choice={"type": "any"},
-                messages=[{"role": "user", "content": build_assist_prompt(request, notebook, history)}],
-            ) as stream:
+            with client.messages.stream(**kwargs) as stream:
                 for event in stream:
                     if event.type == "content_block_start" and event.content_block.type == "tool_use":
                         yield AgentStreamEvent(kind="tool_name", tool_name=event.content_block.name)
@@ -521,14 +541,21 @@ class AnthropicSandboxAgent:
                         snapshot = event.snapshot if isinstance(event.snapshot, dict) else {}
                         yield AgentStreamEvent(kind="tool_input", tool_input=snapshot)
                 message = stream.get_final_message()
+            call = first_tool_call(message.content)
+            if call is None:
+                retry = client.messages.create(
+                    **{**kwargs, "messages": retry_messages(kwargs["messages"], message.content, _TOOL_NUDGE)}
+                )
+                call = first_tool_call(retry.content)
+                if call is not None:
+                    yield AgentStreamEvent(kind="tool_name", tool_name=call[0])
+                    yield AgentStreamEvent(kind="tool_input", tool_input=call[1])
         except anthropic.APIError as exc:
             raise _log_and_wrap(exc) from exc
 
-        for block in message.content:
-            if block.type == "tool_use":
-                yield AgentStreamEvent(kind="done", final=RawAgentCall(kind=block.name, args=block.input))
-                return
-        raise AgentError("model did not call any tool")
+        if call is None:
+            raise AgentError("model did not call any tool")
+        yield AgentStreamEvent(kind="done", final=RawAgentCall(kind=call[0], args=call[1]))
 
     def describe_lineage(self, context: LineageContext) -> dict:
         """One non-streamed call (the caller is a single POST that has
@@ -537,19 +564,30 @@ class AnthropicSandboxAgent:
         final call."""
         import anthropic
 
+        from .llm import first_tool_call, retry_messages
+
+        client = self._client()
+        kwargs = dict(
+            model=self.lineage_model,
+            max_tokens=config.SANDBOX_LINEAGE_MAX_TOKENS,
+            system=_system_blocks(_LINEAGE_SYSTEM_PROMPT),
+            tools=[_LINEAGE_TOOL],
+            tool_choice={"type": "tool", "name": _LINEAGE_TOOL["name"]},
+            messages=[{"role": "user", "content": build_lineage_prompt(context)}],
+        )
         try:
-            response = self._client().messages.create(
-                model=self.lineage_model,
-                max_tokens=config.SANDBOX_LINEAGE_MAX_TOKENS,
-                system=_system_blocks(_LINEAGE_SYSTEM_PROMPT),
-                tools=[_LINEAGE_TOOL],
-                tool_choice={"type": "tool", "name": _LINEAGE_TOOL["name"]},
-                messages=[{"role": "user", "content": build_lineage_prompt(context)}],
-            )
+            response = client.messages.create(**kwargs)
+            call = first_tool_call(response.content)
+            if call is None:
+                # a compat endpoint ignores the single-tool tool_choice above
+                # just as it ignores {"type": "any"} — same fallback
+                response = client.messages.create(
+                    **{**kwargs, "messages": retry_messages(kwargs["messages"], response.content, _LINEAGE_NUDGE)}
+                )
+                call = first_tool_call(response.content)
         except anthropic.APIError as exc:
             raise _log_and_wrap(exc) from exc
 
-        for block in response.content:
-            if block.type == "tool_use":
-                return block.input
-        raise AgentError("model did not call any tool")
+        if call is None:
+            raise AgentError("model did not call any tool")
+        return call[1]

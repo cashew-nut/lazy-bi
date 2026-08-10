@@ -325,3 +325,210 @@ def test_translate_streaming_wires_thinking_and_model_enum_into_the_real_call(mo
     sonnet = llm.AnthropicTranslator(api_key="x", model="claude-sonnet-5")
     list(sonnet.translate_streaming("q", catalog, []))
     assert captured["thinking"] == {"type": "adaptive", "display": "summarized"}
+
+
+# ── local / self-hosted endpoints (Anthropic-compatible base URL) ─────────
+# CI_LLM_BASE_URL points the same client at any server speaking the
+# Anthropic wire protocol — LM Studio, a litellm proxy — which is what makes
+# an open-weights model like Meta's Muse Glimmer 30B usable here. Those
+# compat layers accept `tools` but may ignore `tool_choice`, so the model can
+# reply in prose where api.anthropic.com would have forced a tool call; the
+# tests below cover both the wiring and that fallback.
+
+import importlib
+
+import pytest
+
+
+@pytest.fixture
+def reloaded_config(monkeypatch):
+    """Re-import config with CI_* overrides applied — its LLM settings are
+    read at import time, so an env override only lands on a reload. The
+    teardown undoes the env *before* reloading again: config is a singleton
+    every other module holds a reference to, so reloading it while the test's
+    env is still patched would leave those overrides in place for the rest of
+    the session."""
+    def _reload(**env):
+        for key, value in env.items():
+            if value is None:
+                monkeypatch.delenv(key, raising=False)
+            else:
+                monkeypatch.setenv(key, value)
+        return importlib.reload(config)
+
+    yield _reload
+    monkeypatch.undo()
+    importlib.reload(config)
+
+
+def test_llm_client_kwargs_is_unchanged_without_a_base_url(reloaded_config):
+    reloaded = reloaded_config(CI_LLM_API_KEY="sk-ant-real", CI_LLM_BASE_URL=None)
+    assert reloaded.llm_client_kwargs() == {"api_key": "sk-ant-real"}
+    # an explicit per-instance key still wins, as the callers rely on
+    assert reloaded.llm_client_kwargs("other")["api_key"] == "other"
+    assert "base_url" not in reloaded.llm_client_kwargs()
+
+
+def test_base_url_alone_enables_the_llm_features_with_a_placeholder_key(reloaded_config):
+    """A local server authenticates nothing, so requiring CI_LLM_API_KEY would
+    make a local model unusable — but the SDK won't build a client with no key
+    at all, hence the placeholder."""
+    reloaded = reloaded_config(CI_LLM_API_KEY=None, CI_LLM_BASE_URL="http://localhost:1234")
+    assert reloaded.LLM_ENABLED is True
+    assert reloaded.llm_client_kwargs() == {
+        "api_key": "local",
+        "base_url": "http://localhost:1234",
+    }
+
+
+def test_neither_key_nor_base_url_still_leaves_the_llm_features_off(reloaded_config):
+    """The privacy default (research.md R7): an unconfigured deployment never
+    reaches a third party."""
+    assert reloaded_config(CI_LLM_API_KEY=None, CI_LLM_BASE_URL=None).LLM_ENABLED is False
+
+
+def test_model_choices_are_overridable_for_a_local_server(reloaded_config):
+    """The built-in claude id's are meaningless against a local endpoint,
+    where the valid id's are whatever that server has loaded."""
+    reloaded = reloaded_config(
+        CI_LLM_MODEL_CHOICES="meta-models/Muse-Glimmer-30B, qwen3-coder",
+        CI_LLM_MODEL="meta-models/Muse-Glimmer-30B",
+    )
+    assert reloaded.LLM_MODEL_CHOICES == ["meta-models/Muse-Glimmer-30B", "qwen3-coder"]
+
+
+def test_default_model_is_always_selectable(reloaded_config):
+    """chat.py's _validate_llm_model rejects anything outside LLM_MODEL_CHOICES,
+    so a CI_LLM_MODEL the list doesn't contain would make the model the UI
+    shows as current unselectable."""
+    reloaded = reloaded_config(CI_LLM_MODEL="meta-models/Muse-Glimmer-30B", CI_LLM_MODEL_CHOICES=None)
+    assert reloaded.LLM_MODEL in reloaded.LLM_MODEL_CHOICES
+    assert reloaded.LLM_MODEL_CHOICES[0] == "meta-models/Muse-Glimmer-30B"
+    # the built-ins are kept, not replaced
+    assert "claude-sonnet-5" in reloaded.LLM_MODEL_CHOICES
+
+
+def _block(**attrs):
+    return type("Block", (), attrs)()
+
+
+def _message(*blocks):
+    return type("Message", (), {"content": list(blocks)})()
+
+
+_PROSE = _message(_block(type="text", text="Sure! Revenue last quarter was strong."))
+_TOOL = _message(_block(type="tool_use", name="decline", input={"reason_text": "x"}))
+
+
+def test_first_tool_call_reads_the_tool_use_block_and_none_from_prose():
+    assert llm.first_tool_call(_TOOL.content) == ("decline", {"reason_text": "x"})
+    assert llm.first_tool_call(_PROSE.content) is None
+
+
+def test_retry_messages_replays_the_prose_turn_and_appends_the_nudge():
+    out = llm.retry_messages([{"role": "user", "content": "q"}], _PROSE.content, "call a tool")
+    assert [m["role"] for m in out] == ["user", "assistant", "user"]
+    assert out[1]["content"] == "Sure! Revenue last quarter was strong."
+    assert out[2]["content"] == "call a tool"
+
+
+def test_retry_messages_never_builds_an_empty_assistant_turn():
+    """The API rejects empty content, so a model that returned nothing at all
+    must not turn the retry into a 400."""
+    out = llm.retry_messages([{"role": "user", "content": "q"}], [], "call a tool")
+    assert out[1]["content"].strip()
+
+
+class _FakeMessages:
+    """messages.create/stream returning `replies` in order, recording each
+    request. Mirrors only what the translator touches."""
+
+    def __init__(self, replies):
+        self._replies = list(replies)
+        self.requests = []
+
+    def create(self, **kwargs):
+        self.requests.append(kwargs)
+        return self._replies.pop(0)
+
+    def stream(self, **kwargs):
+        self.requests.append(kwargs)
+        reply = self._replies.pop(0)
+        messages = self
+
+        class FakeStream:
+            def __enter__(self): return self
+            def __exit__(self, *exc): return False
+            def __iter__(self): return iter(())
+            def get_final_message(self): return reply
+
+        return FakeStream()
+
+
+def _fake_anthropic(monkeypatch, replies):
+    import anthropic
+
+    holder = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            holder["init"] = kwargs
+            self.messages = _FakeMessages(replies)
+            holder["messages"] = self.messages
+
+    monkeypatch.setattr(anthropic, "Anthropic", FakeClient)
+    return holder
+
+
+def test_translate_retries_once_when_tool_choice_was_ignored(monkeypatch):
+    """The LM Studio case: `tool_choice` is accepted and ignored, so the first
+    reply is prose. Before the retry this failed the whole turn with "model
+    did not call any tool" — a user-visible "temporarily unavailable"."""
+    holder = _fake_anthropic(monkeypatch, [_PROSE, _TOOL])
+    result = llm.AnthropicTranslator(api_key="x", model="m").translate("q", [], [])
+
+    assert result == llm.RawToolCall(kind="decline", args={"reason_text": "x"})
+    requests = holder["messages"].requests
+    assert len(requests) == 2
+    # the retry keeps the same tools/system and only extends the conversation
+    assert requests[1]["tools"] == requests[0]["tools"]
+    assert [m["role"] for m in requests[1]["messages"]] == ["user", "assistant", "user"]
+    assert "propose_query" in requests[1]["messages"][-1]["content"]
+
+
+def test_translate_does_not_retry_when_the_first_reply_calls_a_tool(monkeypatch):
+    """The retry must cost nothing wherever tool_choice is enforced."""
+    holder = _fake_anthropic(monkeypatch, [_TOOL])
+    llm.AnthropicTranslator(api_key="x", model="m").translate("q", [], [])
+    assert len(holder["messages"].requests) == 1
+
+
+def test_translate_still_fails_when_the_retry_also_returns_prose(monkeypatch):
+    _fake_anthropic(monkeypatch, [_PROSE, _PROSE])
+    translator = llm.AnthropicTranslator(api_key="x", model="m")
+    try:
+        translator.translate("q", [], [])
+    except llm.TranslatorError as exc:
+        assert "did not call any tool" in str(exc)
+    else:
+        raise AssertionError("expected TranslatorError")
+
+
+def test_translate_streaming_retries_and_still_emits_a_done_event(monkeypatch):
+    """A prose-only stream must reach the same decision as translate(), and
+    the caller still gets the tool_name/tool_input events it renders from."""
+    _fake_anthropic(monkeypatch, [_PROSE, _TOOL])
+    events = list(llm.AnthropicTranslator(api_key="x", model="m").translate_streaming("q", [], []))
+
+    assert events[-1].kind == "done"
+    assert events[-1].final == llm.RawToolCall(kind="decline", args={"reason_text": "x"})
+    assert [e.kind for e in events[:-1]] == ["tool_name", "tool_input"]
+
+
+def test_translator_passes_the_configured_base_url_to_the_client(monkeypatch):
+    """End-to-end wiring guard: CI_LLM_BASE_URL has to reach the constructor,
+    or every request still goes to api.anthropic.com."""
+    holder = _fake_anthropic(monkeypatch, [_TOOL])
+    monkeypatch.setattr(config, "LLM_BASE_URL", "http://localhost:1234")
+    llm.AnthropicTranslator(api_key="x", model="m").translate("q", [], [])
+    assert holder["init"] == {"api_key": "x", "base_url": "http://localhost:1234"}

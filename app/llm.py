@@ -523,6 +523,49 @@ def _thinking_kwargs(model: str) -> dict:
     return {}
 
 
+# ── forced tool use, for endpoints that don't enforce it ──────────────────
+# Every LLM seam in this app (here, app/composer.py, app/sandbox_agent.py)
+# sends tool_choice={"type": "any"} and treats a reply with no tool call as a
+# hard failure. api.anthropic.com enforces that server-side, so the failure
+# was unreachable in practice. An Anthropic-*compatible* endpoint need not:
+# LM Studio's compat layer, for one, documents that it accepts tools but
+# ignores tool_choice, which leaves the model free to answer in prose and
+# turns every such turn into a user-visible "temporarily unavailable".
+#
+# So instead of trusting the parameter, ask again: replay the exchange with
+# the model's own prose as the assistant turn and a follow-up demanding a
+# tool call. This costs nothing where tool_choice is honoured (the retry
+# never runs) and is what makes a local open-weights model — the case this
+# was added for — usable rather than intermittently broken.
+
+def first_tool_call(content) -> tuple[str, dict] | None:
+    """The first tool_use block's (name, args), or None if the model replied
+    without calling anything."""
+    for block in content:
+        if block.type == "tool_use":
+            return block.name, block.input or {}
+    return None
+
+
+def retry_messages(messages: list[dict], content, nudge: str) -> list[dict]:
+    """`messages` continued with the no-tool-call reply and a nudge back to
+    the tools. The assistant turn falls back to a placeholder when the model
+    returned no text at all, since the API rejects empty content."""
+    prose = "".join(b.text for b in content if b.type == "text").strip()
+    return [
+        *messages,
+        {"role": "assistant", "content": prose or "(no tool call)"},
+        {"role": "user", "content": nudge},
+    ]
+
+
+_TOOL_NUDGE = (
+    "You replied without calling a tool. Every answer must be exactly one "
+    "tool call and nothing else: propose_query, ask_clarification, "
+    "show_last_query or decline. Call one of them now for the question above."
+)
+
+
 def _log_and_wrap(exc: Exception) -> TranslatorError:
     """Shared failure path for both translate() and translate_streaming():
     the user only ever sees a generic "temporarily unavailable" message
@@ -535,11 +578,21 @@ def _log_and_wrap(exc: Exception) -> TranslatorError:
 
 class AnthropicTranslator:
     """Talks to the Anthropic Messages API with forced tool-use so the
-    result is always one of the four typed decisions (research.md R1)."""
+    result is always one of the four typed decisions (research.md R1).
+
+    "Anthropic" here means the wire protocol, not necessarily the vendor:
+    with CI_LLM_BASE_URL set this same class drives any Anthropic-compatible
+    endpoint, including a locally served open-weights model (config.
+    llm_client_kwargs)."""
 
     def __init__(self, api_key: str | None = None, model: str | None = None):
         self.api_key = api_key or config.LLM_API_KEY
         self.model = model or config.LLM_MODEL
+
+    def _client(self):
+        import anthropic
+
+        return anthropic.Anthropic(**config.llm_client_kwargs(self.api_key))
 
     def _request_kwargs(
         self,
@@ -569,16 +622,24 @@ class AnthropicTranslator:
     ) -> RawToolCall:
         import anthropic
 
-        client = anthropic.Anthropic(api_key=self.api_key)
+        client = self._client()
+        kwargs = self._request_kwargs(question, catalog, prior_context)
         try:
-            response = client.messages.create(**self._request_kwargs(question, catalog, prior_context))
+            response = client.messages.create(**kwargs)
+            call = first_tool_call(response.content)
+            if call is None:
+                # tool_choice wasn't honoured (see first_tool_call's section
+                # comment) — ask again rather than failing the turn outright
+                response = client.messages.create(
+                    **{**kwargs, "messages": retry_messages(kwargs["messages"], response.content, _TOOL_NUDGE)}
+                )
+                call = first_tool_call(response.content)
         except anthropic.APIError as exc:
             raise _log_and_wrap(exc) from exc
 
-        for block in response.content:
-            if block.type == "tool_use":
-                return RawToolCall(kind=block.name, args=block.input)
-        raise TranslatorError("model did not call any tool")
+        if call is None:
+            raise TranslatorError("model did not call any tool")
+        return RawToolCall(kind=call[0], args=call[1])
 
     def translate_streaming(
         self,
@@ -598,12 +659,10 @@ class AnthropicTranslator:
         unchanged."""
         import anthropic
 
-        client = anthropic.Anthropic(api_key=self.api_key)
+        client = self._client()
+        kwargs = self._request_kwargs(question, catalog, prior_context)
         try:
-            with client.messages.stream(
-                **self._request_kwargs(question, catalog, prior_context),
-                **_thinking_kwargs(self.model),
-            ) as stream:
+            with client.messages.stream(**kwargs, **_thinking_kwargs(self.model)) as stream:
                 for event in stream:
                     if event.type == "thinking":
                         yield StreamEvent(kind="thinking", text=event.thinking)
@@ -613,11 +672,21 @@ class AnthropicTranslator:
                         snapshot = event.snapshot if isinstance(event.snapshot, dict) else {}
                         yield StreamEvent(kind="tool_input", tool_input=snapshot)
                 message = stream.get_final_message()
+            call = first_tool_call(message.content)
+            if call is None:
+                # same nudge as translate(), un-streamed: there is nothing
+                # left to show incrementally once the stream has ended, and
+                # the caller only ever acts on the "done" event anyway
+                retry = client.messages.create(
+                    **{**kwargs, "messages": retry_messages(kwargs["messages"], message.content, _TOOL_NUDGE)}
+                )
+                call = first_tool_call(retry.content)
+                if call is not None:
+                    yield StreamEvent(kind="tool_name", tool_name=call[0])
+                    yield StreamEvent(kind="tool_input", tool_input=call[1])
         except anthropic.APIError as exc:
             raise _log_and_wrap(exc) from exc
 
-        for block in message.content:
-            if block.type == "tool_use":
-                yield StreamEvent(kind="done", final=RawToolCall(kind=block.name, args=block.input))
-                return
-        raise TranslatorError("model did not call any tool")
+        if call is None:
+            raise TranslatorError("model did not call any tool")
+        yield StreamEvent(kind="done", final=RawToolCall(kind=call[0], args=call[1]))

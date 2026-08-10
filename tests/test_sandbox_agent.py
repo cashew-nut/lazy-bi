@@ -295,3 +295,103 @@ def test_system_prompt_forbids_test_writing():
     text = sandbox_agent._ASSIST_SYSTEM_PROMPT.lower()
     assert "no tests" in text
     assert "benchmark" in text
+
+
+# ── forced tool use on an Anthropic-compatible endpoint ──────────────────
+# CI_LLM_BASE_URL points the coding agent at any server speaking the
+# Anthropic wire protocol, so a local open-weights model can drive the
+# notebook. Those compat layers accept `tools` but may ignore `tool_choice`
+# — including the single-tool form describe_lineage uses — so both call
+# paths fall back to re-asking (app/llm.py holds the shared helpers).
+
+def _block(**attrs):
+    return type("Block", (), attrs)()
+
+
+def _reply(*blocks):
+    return type("Message", (), {"content": list(blocks)})()
+
+
+def _fake_anthropic(monkeypatch, replies):
+    import anthropic
+
+    holder = {"requests": []}
+    queue = list(replies)
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            holder["requests"].append(kwargs)
+            return queue.pop(0)
+
+        def stream(self, **kwargs):
+            holder["requests"].append(kwargs)
+            reply = queue.pop(0)
+
+            class FakeStream:
+                def __enter__(self): return self
+                def __exit__(self, *exc): return False
+                def __iter__(self): return iter(())
+                def get_final_message(self): return reply
+
+            return FakeStream()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            holder["init"] = kwargs
+            self.messages = FakeMessages()
+
+    monkeypatch.setattr(anthropic, "Anthropic", FakeClient)
+    return holder
+
+
+_PROSE = _reply(_block(type="text", text="You could use group_by here."))
+_ANSWER = _reply(_block(type="tool_use", name="answer", input={"text": "use group_by"}))
+_LINEAGE = _reply(_block(type="tool_use", name="describe_lineage", input={"fields": []}))
+
+
+def test_assist_retries_once_when_tool_choice_was_ignored(monkeypatch):
+    holder = _fake_anthropic(monkeypatch, [_PROSE, _ANSWER])
+    agent = sandbox_agent.AnthropicSandboxAgent(api_key="x", model="m")
+    events = list(agent.assist_streaming("how?", sandbox_agent.NotebookContext(name="nb"), []))
+
+    assert len(holder["requests"]) == 2
+    assert [m["role"] for m in holder["requests"][1]["messages"]] == ["user", "assistant", "user"]
+    assert events[-1].kind == "done"
+    assert events[-1].final == sandbox_agent.RawAgentCall(kind="answer", args={"text": "use group_by"})
+    assert [e.kind for e in events[:-1]] == ["tool_name", "tool_input"]
+
+
+def test_assist_does_not_retry_when_the_first_reply_calls_a_tool(monkeypatch):
+    holder = _fake_anthropic(monkeypatch, [_ANSWER])
+    agent = sandbox_agent.AnthropicSandboxAgent(api_key="x", model="m")
+    list(agent.assist_streaming("how?", sandbox_agent.NotebookContext(name="nb"), []))
+    assert len(holder["requests"]) == 1
+
+
+def test_assist_still_fails_when_the_retry_also_returns_prose(monkeypatch):
+    _fake_anthropic(monkeypatch, [_PROSE, _PROSE])
+    agent = sandbox_agent.AnthropicSandboxAgent(api_key="x", model="m")
+    with pytest.raises(sandbox_agent.AgentError, match="did not call any tool"):
+        list(agent.assist_streaming("how?", sandbox_agent.NotebookContext(name="nb"), []))
+
+
+def test_describe_lineage_retries_when_the_single_tool_choice_was_ignored(monkeypatch):
+    """tool_choice={"type": "tool", ...} is ignored by a compat layer just as
+    {"type": "any"} is."""
+    holder = _fake_anthropic(monkeypatch, [_PROSE, _LINEAGE])
+    agent = sandbox_agent.AnthropicSandboxAgent(api_key="x", model="m")
+    result = agent.describe_lineage(sandbox_agent.LineageContext(pipeline_name="p", script="df = 1"))
+
+    assert result == {"fields": []}
+    assert len(holder["requests"]) == 2
+    assert "describe_lineage" in holder["requests"][1]["messages"][-1]["content"]
+
+
+def test_sandbox_agent_passes_the_configured_base_url_to_the_client(monkeypatch):
+    from app import config
+
+    holder = _fake_anthropic(monkeypatch, [_ANSWER])
+    monkeypatch.setattr(config, "LLM_BASE_URL", "http://localhost:1234")
+    agent = sandbox_agent.AnthropicSandboxAgent(api_key="x", model="m")
+    list(agent.assist_streaming("how?", sandbox_agent.NotebookContext(name="nb"), []))
+    assert holder["init"] == {"api_key": "x", "base_url": "http://localhost:1234"}

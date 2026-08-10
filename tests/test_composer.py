@@ -282,3 +282,111 @@ def test_composed_page_saves_through_ordinary_notebooks_crud(author_client, monk
     fetched = author_client.get(f"/api/notebooks/{created['id']}").json()
     assert fetched["html"] == outcome["html"]
     author_client.delete(f"/api/notebooks/{created['id']}")
+
+
+# ── forced tool use on an Anthropic-compatible endpoint ──────────────────
+# A compat layer (LM Studio, a litellm proxy) accepts `tools` but may ignore
+# `tool_choice`, so the composer can get prose back where api.anthropic.com
+# would have forced a compose_page call. app/llm.py holds the shared
+# fallback; these cover the composer's own use of it and the base-url wiring
+# that makes a local open-weights model reachable at all.
+
+def _block(**attrs):
+    return type("Block", (), attrs)()
+
+
+def _reply(*blocks):
+    return type("Message", (), {"content": list(blocks)})()
+
+
+def _fake_anthropic(monkeypatch, replies):
+    """anthropic.Anthropic replaced with a client returning `replies` in
+    order — the first from messages.stream(), any later one from
+    messages.create() (the retry is never streamed)."""
+    import anthropic
+
+    holder = {"requests": []}
+    queue = list(replies)
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            holder["requests"].append(kwargs)
+            return queue.pop(0)
+
+        def stream(self, **kwargs):
+            holder["requests"].append(kwargs)
+            reply = queue.pop(0)
+
+            class FakeStream:
+                def __enter__(self): return self
+                def __exit__(self, *exc): return False
+                def __iter__(self): return iter(())
+                def get_final_message(self): return reply
+
+            return FakeStream()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            holder["init"] = kwargs
+            self.messages = FakeMessages()
+
+    monkeypatch.setattr(anthropic, "Anthropic", FakeClient)
+    return holder
+
+
+_PROSE = _reply(_block(type="text", text="Here's a sales page for you!"))
+_PAGE = _reply(_block(
+    type="tool_use", name="compose_page",
+    input={"name": "Sales", "html": "<h1>Sales</h1>", "summary": "a page"},
+))
+
+
+def _request():
+    return ComposeRequest(instruction="a sales page", catalog=ComposerCatalog())
+
+
+def test_compose_retries_once_when_tool_choice_was_ignored(monkeypatch):
+    """Before the retry, a prose reply failed the whole composition with
+    "model did not call compose_page"."""
+    from app.composer import AnthropicComposer
+
+    holder = _fake_anthropic(monkeypatch, [_PROSE, _PAGE])
+    events = list(AnthropicComposer(api_key="x", model="m").compose_streaming(_request()))
+
+    assert len(holder["requests"]) == 2
+    assert holder["requests"][1]["tools"] == holder["requests"][0]["tools"]
+    assert [m["role"] for m in holder["requests"][1]["messages"]] == ["user", "assistant", "user"]
+    assert events[-1].kind == "done"
+    assert events[-1].final == RawComposition(name="Sales", html="<h1>Sales</h1>", summary="a page")
+    # nothing streamed, so the page is handed over whole before "done"
+    assert [e.kind for e in events[:-1]] == ["html"]
+    assert events[0].html == "<h1>Sales</h1>"
+
+
+def test_compose_does_not_retry_when_the_first_reply_calls_the_tool(monkeypatch):
+    """The retry must cost nothing wherever tool_choice is enforced."""
+    from app.composer import AnthropicComposer
+
+    holder = _fake_anthropic(monkeypatch, [_PAGE])
+    list(AnthropicComposer(api_key="x", model="m").compose_streaming(_request()))
+    assert len(holder["requests"]) == 1
+
+
+def test_compose_still_fails_when_the_retry_also_returns_prose(monkeypatch):
+    from app.composer import AnthropicComposer
+
+    _fake_anthropic(monkeypatch, [_PROSE, _PROSE])
+    with pytest.raises(ComposerError, match="did not call compose_page"):
+        list(AnthropicComposer(api_key="x", model="m").compose_streaming(_request()))
+
+
+def test_compose_passes_the_configured_base_url_to_the_client(monkeypatch):
+    """Wiring guard: CI_LLM_BASE_URL has to reach the constructor, or every
+    request still goes to api.anthropic.com."""
+    from app import config
+    from app.composer import AnthropicComposer
+
+    holder = _fake_anthropic(monkeypatch, [_PAGE])
+    monkeypatch.setattr(config, "LLM_BASE_URL", "http://localhost:1234")
+    list(AnthropicComposer(api_key="x", model="m").compose_streaming(_request()))
+    assert holder["init"] == {"api_key": "x", "base_url": "http://localhost:1234"}

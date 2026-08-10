@@ -1388,7 +1388,63 @@ own model in the CHAT header (`claude-opus-4-8` / `claude-sonnet-5` /
 `claude-haiku-4-5-20251001`, `app/config.py`'s `LLM_MODEL_CHOICES`), a
 trade-off between answer quality and cost/latency. The picker is populated
 from `GET /api/health`, so it always reflects what the server actually
-allows — never hardcoded per deployment.
+allows — never hardcoded per deployment. `CI_LLM_MODEL_CHOICES` (comma-
+separated) replaces that list outright, for a deployment whose endpoint
+serves different models entirely — see below. Whatever `CI_LLM_MODEL` names
+is always selectable, whether or not the list mentions it.
+
+### Local and self-hosted models
+
+`CI_LLM_BASE_URL` points every LLM-backed surface at a different host
+instead of `api.anthropic.com`. Anything exposing an **Anthropic-compatible
+`/v1/messages`** endpoint works — [LM Studio](https://lmstudio.ai/docs/developer/anthropic-compat)
+0.4.1+, a litellm proxy — because all three seams (`app/llm.py`,
+`app/composer.py`, `app/sandbox_agent.py`) talk that wire protocol already;
+only the base URL changes. There is no second SDK and no provider setting.
+
+The case this was added for is running an **open-weights model locally**, so
+that nothing leaves the machine at all. Meta's [Muse Glimmer 30B](https://research.meta.ai/blog/introducing-muse-glimmer-open-agentic-model)
+(Apache 2.0, 131K context, built for local agentic tool use) fits this app's
+shape well — every surface here is forced tool use, which is exactly what
+that model is trained for, and 4-bit quantization brings it inside a 24–32GB
+VRAM envelope. Against LM Studio serving it on the default port:
+
+```bash
+CI_LLM_BASE_URL=http://localhost:1234
+CI_LLM_MODEL=meta-models/Muse-Glimmer-30B
+CI_LLM_MODEL_CHOICES=meta-models/Muse-Glimmer-30B
+```
+
+No `CI_LLM_API_KEY` is needed — a base URL alone enables the LLM features,
+and a placeholder key is sent because the SDK requires one. Set both if your
+endpoint does authenticate. The privacy default is unchanged: with *neither*
+variable set, nothing is sent anywhere.
+
+Two things to know about compat endpoints:
+
+- **`tool_choice` may be ignored.** LM Studio's compat layer accepts `tools`
+  but documents that it ignores `tool_choice`, which every surface here uses
+  to force a tool call. So a reply can come back as prose where
+  `api.anthropic.com` would have made it a tool call — which used to fail
+  the turn outright ("model did not call any tool"). All three seams now
+  re-ask once, replaying the prose and demanding a tool call
+  (`llm.retry_messages`). Where `tool_choice` *is* enforced the retry never
+  runs and costs nothing.
+- **Extended thinking is Claude-only.** `_ADAPTIVE_THINKING_MODELS`
+  (`app/llm.py`) gates the `thinking` kwarg by model id, so a non-Claude
+  model simply doesn't request it rather than 400-ing.
+
+vLLM, Together AI and Fireworks serve Muse Glimmer over an *OpenAI*-shaped
+API, which this doesn't speak — reach those through a proxy that exposes
+`/v1/messages`. Serving it on vLLM directly also needs
+`--tool-call-parser muse_glimmer --reasoning-parser muse_glimmer`, since the
+model emits XML-style ATEM tool calls rather than JSON.
+
+Quality is your own to verify: a 30B local model is not a drop-in
+substitute for a frontier model on the harder surfaces here (the Composer
+writes whole HTML pages), and nothing about the semantic-layer guarantees
+changes either way — every proposal is re-validated against the live model
+before it runs, no matter which model produced it.
 
 **What leaves the deployment, and to whom, when enabled:** every question
 sends the question text and a catalog of the declared model/dimension/
@@ -1417,8 +1473,11 @@ is validated and run,
 the resulting *result rows* (capped at `MAX_ROWS`, same cap the query
 builder uses) are also sent, so the assistant can generate the
 natural-language answer text. Nothing is sent to any third party unless
-`CI_LLM_API_KEY` is configured — there is no separate feature flag to
-forget, the key's presence is the flag.
+`CI_LLM_API_KEY` or `CI_LLM_BASE_URL` is configured — there is no separate
+feature flag to forget, the presence of either is the flag. With
+`CI_LLM_BASE_URL` set, "the provider" is wherever you pointed it: everything
+described above goes there instead, and to a local endpoint that means it
+never leaves the machine (see [Local and self-hosted models](#local-and-self-hosted-models)).
 
 ## Agents & MCP server
 
