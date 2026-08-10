@@ -246,11 +246,18 @@ _TOOLS = [
         "name": "show_last_query",
         "eager_input_streaming": True,
         "description": (
-            "The user is asking to see, return, or repeat the actual query "
+            "The user wants to SEE the query definition "
             "(model/dimensions/measures/filters) behind a previous answer in "
-            "this conversation — not a new business question. Use this for "
-            "things like 'show me the query', 'what did you just run', or "
-            "'return the query you used'. Takes no arguments."
+            "this conversation, as text — they are not asking for any data "
+            "they don't already have. Use this only for things like 'show me "
+            "the query', 'what did you just run', or 'return the query you "
+            "used'. Do NOT use this for a follow-up that wants the previous "
+            "answer changed, extended, or recomputed — 'break this down by "
+            "quarter', 'now just the top 5', 'and last year?', 'same but "
+            "monthly' all ask for new numbers, so they are propose_query "
+            "calls built on the prior turn, not this tool. Referring to a "
+            "previous answer is not the same as asking to see its query. "
+            "Takes no arguments."
         ),
         "input_schema": {"type": "object", "properties": {}},
     },
@@ -396,12 +403,29 @@ _SYSTEM_PROMPT = (
     "sibling measure it references doesn't need to be listed separately, "
     "it's pulled in automatically. Never invent a running total/lag over "
     "something that isn't a declared measure.\n\n"
+    "Follow-ups: the prompt lists this conversation's prior turns, oldest "
+    "first — each one's question and the exact query that answered it. Most "
+    "questions after the first are follow-ups that adjust the most recent "
+    "turn rather than starting over ('break this down by quarter', 'now "
+    "just the top 5', 'and last year?', 'same for the north region', 'what "
+    "about orders instead'). Answer those with propose_query: start from "
+    "the most recent prior turn's model, dimensions, measures, filters, "
+    "sort and limit, and change only what the follow-up actually asks to "
+    "change. Repeat the parts it doesn't mention rather than dropping them "
+    "— every propose_query call must be complete on its own, there is no "
+    "way to send only the difference. 'Break down / split / group by X' "
+    "means ADDING X to that turn's dimensions while keeping the ones "
+    "already there, and for a time dimension it means setting the grain the "
+    "question asks for (by quarter -> grain '1q', by month -> '1mo'). Treat "
+    "a question as a fresh start only when it genuinely changes subject.\n\n"
     "You must call exactly one tool: propose_query when the question maps "
-    "unambiguously to the catalog, ask_clarification when it could "
-    "reasonably map to more than one model/dimension/measure, "
-    "show_last_query when the user is asking to see/return the query used "
-    "for a previous answer rather than asking a new business question, or "
-    "decline when it cannot be answered from the catalog at all.\n\n"
+    "unambiguously to the catalog — including any follow-up that adjusts a "
+    "prior turn, since anything asking for numbers (new or recomputed) is a "
+    "propose_query — ask_clarification when it could reasonably map to more "
+    "than one model/dimension/measure, show_last_query ONLY when the user "
+    "wants to see the query definition behind a previous answer and is not "
+    "asking for data at all, or decline when it cannot be answered from the "
+    "catalog at all.\n\n"
     "Self-learning: whatever tool you call may also carry `memories` — "
     "durable facts about a catalog model learned from this exchange, stored "
     "against that model and shown to every future conversation about it. "
@@ -450,13 +474,22 @@ def _catalog_text(catalog: list[ModelCatalogEntry]) -> str:
 
 
 def _prior_context_text(prior_context: list[PriorTurn]) -> str:
+    """Prior turns oldest-first, with the last one explicitly marked as the
+    one a follow-up adjusts — "break this down by quarter" is resolved
+    against a specific turn, so which turn that is can't be left implicit.
+    Every field a propose_query call would have to repeat is rendered,
+    `sort` and `limit` included: PriorTurn has always carried them but they
+    were never shown, so a follow-up to "top 5 products by revenue" had no
+    way to know the limit it was supposed to keep."""
     if not prior_context:
         return "(no prior turns in this conversation)"
     lines = []
-    for t in prior_context:
+    last = len(prior_context) - 1
+    for i, t in enumerate(prior_context):
+        marker = " [most recent — a follow-up adjusts THIS turn]" if i == last else ""
         line = (
-            f"- Q: {t.question_text!r} -> model={t.model}, dimensions={t.dimensions}, "
-            f"measures={t.measures}, filters={t.filters}"
+            f"- Q: {t.question_text!r}{marker} -> model={t.model}, dimensions={t.dimensions}, "
+            f"measures={t.measures}, filters={t.filters}, sort={t.sort}, limit={t.limit}"
         )
         if t.inline_measures:
             line += f", inline_measures={t.inline_measures}"
@@ -467,7 +500,7 @@ def _prior_context_text(prior_context: list[PriorTurn]) -> str:
 def _build_prompt(question: str, catalog: list[ModelCatalogEntry], prior_context: list[PriorTurn]) -> str:
     return (
         f"Catalog:\n{_catalog_text(catalog)}\n\n"
-        f"Prior turns in this conversation:\n{_prior_context_text(prior_context)}\n\n"
+        f"Prior turns in this conversation (oldest first):\n{_prior_context_text(prior_context)}\n\n"
         f"Question: {question}"
     )
 
