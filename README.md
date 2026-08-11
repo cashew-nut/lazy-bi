@@ -1411,8 +1411,17 @@ VRAM envelope. Against LM Studio serving it on the default port:
 
 ```bash
 CI_LLM_BASE_URL=http://localhost:1234
-CI_LLM_MODEL=meta-models/Muse-Glimmer-30B
-CI_LLM_MODEL_CHOICES=meta-models/Muse-Glimmer-30B
+CI_LLM_MODEL=meta/muse-glimmer
+CI_LLM_MODEL_CHOICES=meta/muse-glimmer
+```
+
+The model id must be **whatever your server calls it**, which is not the
+same string everywhere: LM Studio uses its own catalog key (`meta/muse-glimmer`),
+while vLLM uses the HuggingFace repo id (`meta-models/Muse-Glimmer-30B`).
+Don't guess — ask the server, which lists exactly what it has loaded:
+
+```bash
+curl -s localhost:1234/v1/models | python -m json.tool
 ```
 
 No `CI_LLM_API_KEY` is needed — a base URL alone enables the LLM features,
@@ -1425,7 +1434,7 @@ then confirm what the server actually picked up:
 
 ```bash
 curl -s localhost:8080/api/health | python -m json.tool
-# {"llm_enabled": true, "llm_models": ["meta-models/Muse-Glimmer-30B"], ...}
+# {"llm_enabled": true, "llm_models": ["meta/muse-glimmer"], ...}
 ```
 
 `llm_models` is exactly what the CHAT header's picker shows. Still seeing the
