@@ -7,11 +7,19 @@
 # Behind a TLS proxy, pass CI_COOKIE_SECURE=1 (and optionally
 # CI_SESSION_IDLE_DAYS / CI_SESSION_MAX_DAYS) via `environment:`.
 # Conversational analytics (specs/012-conversational-analytics/) is off
-# unless CI_LLM_API_KEY (an Anthropic API key, "sk-ant-...") is set. Export it
-# in your shell, or put it in a .env file next to this compose file (copy
-# .env.example), and it's picked up below — no compose edits needed. See the
-# README's "Conversational analytics" section for exactly what that sends to
-# the configured LLM provider.
+# unless CI_LLM_API_KEY (an Anthropic API key, "sk-ant-...") or
+# CI_LLM_BASE_URL is set. Export it in your shell, or put it in a .env file
+# next to this compose file (copy .env.example), and it's picked up below —
+# no compose edits needed. See the README's "Conversational analytics"
+# section for exactly what that sends to the configured LLM provider.
+#
+# Every CI_LLM_* variable the app reads has to be listed under `environment:`
+# below to reach the container — compose interpolates only what it's asked
+# to. CI_LLM_BASE_URL points all LLM surfaces at an Anthropic-compatible
+# endpoint (a local model server); CI_LLM_MODEL_CHOICES replaces the model
+# picker's options. Note that a base URL on the *host* pointing at localhost
+# won't resolve from inside the container — see the README's "Local and
+# self-hosted models" section.
 services:
   app:
     build: .
@@ -20,6 +28,8 @@ services:
     environment:
       CI_LLM_API_KEY: ${CI_LLM_API_KEY:-}
       CI_LLM_MODEL: ${CI_LLM_MODEL:-claude-sonnet-5}
+      CI_LLM_BASE_URL: ${CI_LLM_BASE_URL:-}
+      CI_LLM_MODEL_CHOICES: ${CI_LLM_MODEL_CHOICES:-}
     volumes:
       - app-data:/data              # sqlite: visuals, dashboards, users, sessions
       - ./models:/srv/models        # edit semantic models from the host, live
@@ -56,6 +66,8 @@ services:
       AWS_SECRET_ACCESS_KEY: cashintel-secret
       CI_LLM_API_KEY: ${CI_LLM_API_KEY:-}
       CI_LLM_MODEL: ${CI_LLM_MODEL:-claude-sonnet-5}
+      CI_LLM_BASE_URL: ${CI_LLM_BASE_URL:-}
+      CI_LLM_MODEL_CHOICES: ${CI_LLM_MODEL_CHOICES:-}
     volumes:
       - app-data:/data
       - ./models:/srv/models

@@ -1420,6 +1420,24 @@ and a placeholder key is sent because the SDK requires one. Set both if your
 endpoint does authenticate. The privacy default is unchanged: with *neither*
 variable set, nothing is sent anywhere.
 
+These are read once at startup, so **restart the app after changing them**,
+then confirm what the server actually picked up:
+
+```bash
+curl -s localhost:8080/api/health | python -m json.tool
+# {"llm_enabled": true, "llm_models": ["meta-models/Muse-Glimmer-30B"], ...}
+```
+
+`llm_models` is exactly what the CHAT header's picker shows. Still seeing the
+built-in Claude ids there means `CI_LLM_MODEL_CHOICES` didn't reach the
+process, not that the picker is stale.
+
+Under Docker, two extra things bite. Every `CI_LLM_*` variable has to be
+listed under `environment:` in `docker-compose.yml` to reach the container
+(all four are), and `localhost` inside the container is the container itself
+— point the base URL at `http://host.docker.internal:1234` to reach a model
+server running on the host.
+
 Two things to know about compat endpoints:
 
 - **`tool_choice` may be ignored.** LM Studio's compat layer accepts `tools`

@@ -88,7 +88,10 @@ COOKIE_SECURE = os.environ.get("CI_COOKIE_SECURE", "0") == "1"
 # an API key is configured, so an unconfigured deployment never sends
 # question text/schema/results to a third party (research.md R7).
 LLM_API_KEY = os.environ.get("CI_LLM_API_KEY", "")
-LLM_MODEL = os.environ.get("CI_LLM_MODEL", "claude-sonnet-5")
+# `or` rather than a get() default: an explicitly empty CI_LLM_MODEL (easy to
+# produce from a .env line with nothing after the `=`) would otherwise leave
+# this "", which now also lands an empty entry in LLM_MODEL_CHOICES below.
+LLM_MODEL = os.environ.get("CI_LLM_MODEL") or "claude-sonnet-5"
 # Point the Anthropic client at something other than api.anthropic.com — any
 # server exposing an Anthropic-compatible /v1/messages endpoint (LM Studio
 # 0.4.1+, a litellm proxy). That's what makes an open-weights local model
