@@ -84,16 +84,78 @@ SESSION_IDLE_DAYS = int(os.environ.get("CI_SESSION_IDLE_DAYS", "7"))
 SESSION_MAX_DAYS = int(os.environ.get("CI_SESSION_MAX_DAYS", "30"))
 COOKIE_SECURE = os.environ.get("CI_COOKIE_SECURE", "0") == "1"
 
-# Conversational analytics (specs/012-conversational-analytics/) — off unless
-# an API key is configured, so an unconfigured deployment never sends
-# question text/schema/results to a third party (research.md R7).
+# ── LLM provider ──────────────────────────────────────────────────────────
+# Conversational analytics (specs/012-conversational-analytics/), the
+# Composer and the sandbox coding agent all share one provider config. Off
+# unless it is configured, so an unconfigured deployment never sends question
+# text/schema/results to a third party (research.md R7).
+#
+# The intended way to point at anything other than Anthropic's own API is a
+# URL and a key: CI_LLM_BASE_URL decides the wire format (app/llmclient.py's
+# resolve_provider), CI_LLM_API_KEY authenticates, CI_LLM_MODEL names a model
+# that endpoint actually serves. CI_LLM_PROVIDER overrides the detection for
+# the one case a URL can't express — a self-hosted gateway speaking the
+# Anthropic format on a neutral host — and selects AWS SigV4 auth for native
+# Bedrock, which has no API key to give.
 LLM_API_KEY = os.environ.get("CI_LLM_API_KEY", "")
+LLM_BASE_URL = os.environ.get("CI_LLM_BASE_URL", "").strip()
+LLM_PROVIDER = os.environ.get("CI_LLM_PROVIDER", "auto").strip().lower()
 LLM_MODEL = os.environ.get("CI_LLM_MODEL", "claude-sonnet-5")
-LLM_ENABLED = bool(LLM_API_KEY)
+
+# Azure's dated api-version surface (deployment name in the path). Leave
+# unset for Azure's newer /openai/v1/ endpoint, which needs only URL + key.
+LLM_API_VERSION = os.environ.get("CI_LLM_API_VERSION", "").strip()
+# Native Bedrock (CI_LLM_PROVIDER=bedrock) signs with the standard AWS
+# credential chain; only the region has to be stated, and it defaults to the
+# one the object store already uses.
+LLM_AWS_REGION = os.environ.get("CI_LLM_AWS_REGION", "").strip() or AWS_REGION
+# Reasoning models renamed max_tokens -> max_completion_tokens on the OpenAI
+# wire. "auto" guesses from the model id and self-corrects on the provider's
+# first 400 (app/llmclient.py); pin it if a gateway's error text is unclear.
+LLM_MAX_TOKENS_PARAM = os.environ.get("CI_LLM_MAX_TOKENS_PARAM", "auto").strip()
+
+# Native Bedrock authenticates by IAM role rather than by key, so an empty
+# CI_LLM_API_KEY does not mean "unconfigured" there.
+LLM_ENABLED = bool(LLM_API_KEY) or LLM_PROVIDER == "bedrock"
+
+
+def _csv(name: str, default: list[str]) -> list[str]:
+    """A comma-separated env override for a list setting, empty entries
+    dropped. An explicitly empty value means the empty list, not the default
+    — that's how CI_LLM_THINKING_MODELS turns extended thinking off."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return list(default)
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 # User-selectable per conversation (app/api/chat.py); CI_LLM_MODEL above is
-# just the default a new conversation starts with. Keep in sync with the
-# id's actually valid for the configured provider.
-LLM_MODEL_CHOICES = ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001"]
+# just the default a new conversation starts with. The Claude defaults only
+# apply while CI_LLM_MODEL is one of them — point CI_LLM_MODEL at another
+# provider's model and the picker narrows to that model alone unless
+# CI_LLM_MODEL_CHOICES names the rest, since no list of model ids is valid
+# across providers.
+_DEFAULT_MODEL_CHOICES = ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001"]
+LLM_MODEL_CHOICES = _csv(
+    "CI_LLM_MODEL_CHOICES",
+    _DEFAULT_MODEL_CHOICES if LLM_MODEL in _DEFAULT_MODEL_CHOICES else [LLM_MODEL],
+)
+if LLM_MODEL and LLM_MODEL not in LLM_MODEL_CHOICES:
+    # the default must always be selectable, or every request that echoes it
+    # back (app/api/chat.py's _validate_llm_model) would 400
+    LLM_MODEL_CHOICES = [LLM_MODEL, *LLM_MODEL_CHOICES]
+
+# Models to request extended thinking/reasoning from. Sent as Anthropic's
+# adaptive thinking or as OpenAI's reasoning_effort depending on the wire;
+# a model that doesn't support it rejects the whole request rather than
+# ignoring the parameter, which is why this is a declared list and not a
+# blanket flag. Same discipline as LLM_MODEL_CHOICES: only the Claude
+# defaults are assumed, anything else has to be named.
+LLM_THINKING_MODELS = set(_csv(
+    "CI_LLM_THINKING_MODELS",
+    [m for m in ("claude-opus-4-8", "claude-sonnet-5") if m in LLM_MODEL_CHOICES],
+))
+LLM_REASONING_EFFORT = os.environ.get("CI_LLM_REASONING_EFFORT", "medium").strip()
 
 # Sandbox coding agent (app/sandbox_agent.py) — writes polars for the open
 # notebook, and fills in a converted pipeline's lineage. Shares CI_LLM_API_KEY
@@ -106,9 +168,14 @@ LLM_MODEL_CHOICES = ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-202
 # anything itself.
 SANDBOX_AGENT_MODEL = os.environ.get("CI_SANDBOX_AGENT_MODEL", LLM_MODEL)
 # Lineage generation is mechanical summarization of a script the platform
-# already parsed, so it defaults to the cheapest/fastest choice rather than
-# to whatever the coding agent uses.
-SANDBOX_LINEAGE_MODEL = os.environ.get("CI_SANDBOX_LINEAGE_MODEL", "claude-haiku-4-5-20251001")
+# already parsed, so it defaults to the cheapest/fastest choice available —
+# but only when that choice is actually selectable, since a hardcoded Claude
+# id is not a valid model on any other provider.
+_CHEAPEST_MODEL = "claude-haiku-4-5-20251001"
+SANDBOX_LINEAGE_MODEL = os.environ.get(
+    "CI_SANDBOX_LINEAGE_MODEL",
+    _CHEAPEST_MODEL if _CHEAPEST_MODEL in LLM_MODEL_CHOICES else LLM_MODEL,
+)
 SANDBOX_AGENT_MAX_TOKENS = 2048
 SANDBOX_LINEAGE_MAX_TOKENS = 1024
 # Context budget: how much of the live notebook is sent per request. Cell
@@ -122,7 +189,7 @@ SANDBOX_AGENT_HISTORY_TURNS = 6
 
 # Agent/Skills MCP server (specs/017-agent-skills-mcp-server/) — per-identity
 # rate limit on skill invocations that call the LLM backend (ask_question),
-# so a single session/token can't drive unbounded Anthropic API cost/load
+# so a single session/token can't drive unbounded LLM API cost/load
 # through the external /mcp surface (research.md R3). In-process only — no
 # shared store needed, matching the single-uvicorn-worker deployment model.
 MCP_RATE_LIMIT_PER_MIN = int(os.environ.get("CI_MCP_RATE_LIMIT_PER_MIN", "20"))

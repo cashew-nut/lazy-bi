@@ -30,8 +30,10 @@ safety net):
   wants; here it is pure added latency on a task the model can answer in one
   shot.
 - **Cached system prompt.** The polars doctrine below is long, static, and
-  resent on every turn — it goes out as an explicit `cache_control` block so
-  repeat turns pay the cache-read price for it, not the input price.
+  resent on every turn — it goes out with `cache_system`, which the Anthropic
+  wire turns into an explicit `cache_control` breakpoint so repeat turns pay
+  the cache-read price for it, not the input price. On providers whose prompt
+  caching is automatic and prefix-based it costs nothing and asks for nothing.
 - **Bounded context.** Cell sources, output tails and the bucket listing are
   all truncated (config.SANDBOX_AGENT_*); result rows are never sent.
 - **Constrained decisions.** Forced tool use with the target-cell enum built
@@ -41,14 +43,11 @@ safety net):
 """
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 from typing import Iterator, Literal, Protocol
 
-from . import config
+from . import config, llmclient
 from .sandbox import NEW_CELL   # the tool schema and its validation share one constant
-
-logger = logging.getLogger(__name__)
 
 AgentToolKind = Literal["write_cells", "answer"]
 
@@ -464,70 +463,48 @@ def build_lineage_prompt(context: LineageContext) -> str:
     )
 
 
-def _system_blocks(text: str) -> list[dict]:
-    """The system prompt as one explicitly cached block: it is long, static
-    and resent on every turn, so a cache breakpoint here is the single
-    biggest cost lever this feature has (see the module docstring)."""
-    return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
-
-
-def _log_and_wrap(exc: Exception) -> AgentError:
-    """Same shared failure path as app/llm.py's: the user sees a generic
-    message, the real cause is logged server-side so a bad key / network /
-    proxy issue is actually diagnosable."""
-    logger.warning("sandbox agent API call failed: %r (cause: %r)", exc, exc.__cause__)
-    return AgentError(str(exc))
-
-
-class AnthropicSandboxAgent:
-    """Talks to the Anthropic Messages API with forced tool use, one call per
-    request, no extended thinking (see the module docstring for why each of
-    those is a cost/latency decision rather than an oversight)."""
+class LLMSandboxAgent:
+    """Forced tool use against the configured provider, one call per request,
+    no extended thinking (see the module docstring for why each of those is a
+    cost/latency decision rather than an oversight). Provider-neutral —
+    app/llmclient.py decides which API this reaches."""
 
     def __init__(self, api_key: str | None = None, model: str | None = None,
-                 lineage_model: str | None = None):
+                 lineage_model: str | None = None, client=None):
         self.api_key = api_key or config.LLM_API_KEY
         self.model = model or config.SANDBOX_AGENT_MODEL
         self.lineage_model = lineage_model or config.SANDBOX_LINEAGE_MODEL
-
-    def _client(self):
-        import anthropic
-
-        return anthropic.Anthropic(api_key=self.api_key)
+        self.client = client or llmclient.build_client(api_key=self.api_key)
 
     def assist_streaming(
         self, request: str, notebook: NotebookContext, history: list[AgentTurn],
     ) -> Iterator[AgentStreamEvent]:
-        """Streams the proposal as it is written — with eager_input_streaming
-        on every tool, `event.snapshot` is already a parsed partial dict, so
-        the caller can show code appearing live instead of a spinner. The
-        stream is display-only; only the final "done" event's RawAgentCall is
-        acted on, and even that is re-validated (app/sandbox.py)."""
-        import anthropic
-
+        """Streams the proposal as it is written, so the caller can show code
+        appearing live instead of a spinner. The stream is display-only; only
+        the final "done" event's RawAgentCall is acted on, and even that is
+        re-validated (app/sandbox.py)."""
+        chat = llmclient.ChatRequest(
+            model=self.model,
+            max_tokens=config.SANDBOX_AGENT_MAX_TOKENS,
+            system=_ASSIST_SYSTEM_PROMPT,
+            tools=_tools_for_notebook(notebook),
+            prompt=build_assist_prompt(request, notebook, history),
+            cache_system=True,
+        )
         try:
-            with self._client().messages.stream(
-                model=self.model,
-                max_tokens=config.SANDBOX_AGENT_MAX_TOKENS,
-                system=_system_blocks(_ASSIST_SYSTEM_PROMPT),
-                tools=_tools_for_notebook(notebook),
-                tool_choice={"type": "any"},
-                messages=[{"role": "user", "content": build_assist_prompt(request, notebook, history)}],
-            ) as stream:
-                for event in stream:
-                    if event.type == "content_block_start" and event.content_block.type == "tool_use":
-                        yield AgentStreamEvent(kind="tool_name", tool_name=event.content_block.name)
-                    elif event.type == "input_json":
-                        snapshot = event.snapshot if isinstance(event.snapshot, dict) else {}
-                        yield AgentStreamEvent(kind="tool_input", tool_input=snapshot)
-                message = stream.get_final_message()
-        except anthropic.APIError as exc:
-            raise _log_and_wrap(exc) from exc
-
-        for block in message.content:
-            if block.type == "tool_use":
-                yield AgentStreamEvent(kind="done", final=RawAgentCall(kind=block.name, args=block.input))
-                return
+            for event in self.client.stream(chat):
+                if event.kind == "tool_name":
+                    yield AgentStreamEvent(kind="tool_name", tool_name=event.tool_name)
+                elif event.kind == "tool_input":
+                    yield AgentStreamEvent(kind="tool_input", tool_input=event.tool_input)
+                elif event.kind == "done":
+                    yield AgentStreamEvent(
+                        kind="done",
+                        final=RawAgentCall(kind=event.final.name, args=event.final.args),
+                    )
+                    return
+        except llmclient.LLMError as exc:
+            raise AgentError(str(exc)) from exc
         raise AgentError("model did not call any tool")
 
     def describe_lineage(self, context: LineageContext) -> dict:
@@ -535,21 +512,20 @@ class AnthropicSandboxAgent:
         nothing to show incrementally), on the cheaper lineage model. Returns
         the tool's raw args — unvalidated, exactly like assist_streaming's
         final call."""
-        import anthropic
-
+        chat = llmclient.ChatRequest(
+            model=self.lineage_model,
+            max_tokens=config.SANDBOX_LINEAGE_MAX_TOKENS,
+            system=_LINEAGE_SYSTEM_PROMPT,
+            tools=[_LINEAGE_TOOL],
+            prompt=build_lineage_prompt(context),
+            force_tool=_LINEAGE_TOOL["name"],
+            cache_system=True,
+        )
         try:
-            response = self._client().messages.create(
-                model=self.lineage_model,
-                max_tokens=config.SANDBOX_LINEAGE_MAX_TOKENS,
-                system=_system_blocks(_LINEAGE_SYSTEM_PROMPT),
-                tools=[_LINEAGE_TOOL],
-                tool_choice={"type": "tool", "name": _LINEAGE_TOOL["name"]},
-                messages=[{"role": "user", "content": build_lineage_prompt(context)}],
-            )
-        except anthropic.APIError as exc:
-            raise _log_and_wrap(exc) from exc
+            return self.client.call(chat).args
+        except llmclient.LLMError as exc:
+            raise AgentError(str(exc)) from exc
 
-        for block in response.content:
-            if block.type == "tool_use":
-                return block.input
-        raise AgentError("model did not call any tool")
+
+# The pre-multi-provider name, kept so existing call sites keep importing.
+AnthropicSandboxAgent = LLMSandboxAgent

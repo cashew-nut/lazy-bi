@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from .. import config, s3, semantic
+from .. import config, llmclient, s3, semantic
 from ..registry import registry
 
 router = APIRouter(tags=["explorer"])
@@ -51,6 +51,11 @@ def health():
         "llm_enabled": config.LLM_ENABLED,
         "llm_models": config.LLM_MODEL_CHOICES if config.LLM_ENABLED else [],
         "llm_default_model": config.LLM_MODEL,
+        # which wire format CI_LLM_BASE_URL/CI_LLM_PROVIDER resolved to — the
+        # first thing to check when a configured endpoint answers oddly. The
+        # base URL itself is deliberately not reported: it can name an
+        # internal host, and the provider name is what's diagnostic.
+        "llm_provider": llmclient.configured_provider() if config.LLM_ENABLED else "",
         # the sandbox coding agent shares the same key, so it is configured
         # in exactly the deployments chat is — reported separately anyway so
         # the sandbox UI never has to reason about the chat feature's flag

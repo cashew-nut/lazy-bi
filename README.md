@@ -40,11 +40,13 @@ image runs a single uvicorn worker by design — the emulator is in-process and
 sqlite expects one writer. Scale out only against an external S3 endpoint.
 
 Conversational analytics, the Composer, and the sandbox coding agent are off
-until `CI_LLM_API_KEY` (an Anthropic API key) reaches the container — copy
-`.env.example` to `.env` and fill it in, or `export CI_LLM_API_KEY=sk-ant-...`
-before running `docker compose up`; `docker-compose.yml` passes it (and
-`CI_LLM_MODEL`) through automatically. See "Conversational analytics" below
-for what that enables and what it sends to the provider.
+until `CI_LLM_API_KEY` reaches the container — copy `.env.example` to `.env`
+and fill it in, or `export CI_LLM_API_KEY=...` before running `docker compose
+up`; `docker-compose.yml` passes it (and the rest of the `CI_LLM_*` settings)
+through automatically. Any OpenAI- or Anthropic-compatible endpoint works —
+add `CI_LLM_BASE_URL` and `CI_LLM_MODEL` for anything other than Anthropic's
+own API. See "Conversational analytics" below for what that enables, which
+providers are supported, and what it sends to whichever one you configure.
 
 **Local (no Docker):**
 
@@ -1384,15 +1386,110 @@ to the provider — the sandbox agent sends notebook *code*, schemas and bucket
 paths (never result rows); see that section and the egress note below.
 
 `CI_LLM_MODEL` only sets the *default* — each conversation can also pick its
-own model in the CHAT header (`claude-opus-4-8` / `claude-sonnet-5` /
-`claude-haiku-4-5-20251001`, `app/config.py`'s `LLM_MODEL_CHOICES`), a
+own model in the CHAT header (`app/config.py`'s `LLM_MODEL_CHOICES`), a
 trade-off between answer quality and cost/latency. The picker is populated
 from `GET /api/health`, so it always reflects what the server actually
 allows — never hardcoded per deployment.
 
+### Any provider: a URL and a key
+
+Nothing above this layer is Anthropic-specific. `app/llmclient.py` is the one
+module that knows which *wire format* an endpoint speaks; the three seams
+above it (`app/llm.py`, `app/sandbox_agent.py`, `app/composer.py`) build one
+provider-neutral request each and never import a vendor SDK. All three ask
+the model for exactly the same thing — *call one of these tools, with these
+arguments* — which is why porting them across providers is a transport
+concern and not a prompt rewrite.
+
+Point the app anywhere by setting a base URL and a key. The URL's host picks
+the wire format:
+
+```bash
+# OpenAI
+export CI_LLM_BASE_URL=https://api.openai.com/v1
+export CI_LLM_API_KEY=sk-...
+export CI_LLM_MODEL=gpt-4o
+
+# Azure OpenAI (the v1 surface — URL and key, nothing else)
+export CI_LLM_BASE_URL=https://my-resource.openai.azure.com/openai/v1/
+export CI_LLM_API_KEY=...
+export CI_LLM_MODEL=my-deployment-name
+
+# AWS Bedrock, OpenAI-compatible surface (with a Bedrock API key)
+export CI_LLM_BASE_URL=https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1
+export CI_LLM_API_KEY=...
+export CI_LLM_MODEL=openai.gpt-oss-120b-1:0
+
+# AWS Bedrock, native Claude models (IAM role / the AWS credential chain —
+# no API key at all, which is the point for most AWS deployments)
+export CI_LLM_PROVIDER=bedrock
+export CI_LLM_AWS_REGION=us-east-1
+export CI_LLM_MODEL=us.anthropic.claude-sonnet-4-5-20250929-v1:0
+
+# anything OpenAI-compatible: OpenRouter, vLLM, Ollama, LiteLLM, Together, …
+export CI_LLM_BASE_URL=http://localhost:11434/v1
+export CI_LLM_MODEL=qwen2.5-coder:32b
+```
+
+| variable | what it does |
+| --- | --- |
+| `CI_LLM_BASE_URL` | the endpoint. Unset = Anthropic's own API (the default, unchanged) |
+| `CI_LLM_API_KEY` | the key for that endpoint, and the on/off switch for every LLM feature |
+| `CI_LLM_MODEL` | a model id that endpoint actually serves (on Azure, the deployment name) |
+| `CI_LLM_PROVIDER` | `auto` (default) / `anthropic` / `openai` / `azure` / `bedrock` — override the guess |
+| `CI_LLM_MODEL_CHOICES` | comma-separated ids the CHAT model picker offers |
+| `CI_LLM_THINKING_MODELS` | comma-separated ids to request extended thinking/reasoning from; empty = never |
+| `CI_LLM_REASONING_EFFORT` | `reasoning_effort` for those models on the OpenAI wire (default `medium`) |
+| `CI_LLM_API_VERSION` | only for Azure's older dated surface; set `CI_LLM_BASE_URL` to the bare resource root with it |
+| `CI_LLM_AWS_REGION` | region for native Bedrock (defaults to `AWS_REGION`) |
+| `CI_LLM_MAX_TOKENS_PARAM` | `auto` (default) / `max_tokens` / `max_completion_tokens` — see below |
+
+Detection is by URL because a URL is the only thing a deployer reliably has:
+`*.anthropic.com` → the Anthropic wire, `*.azure.com` / `*.azure-api.net` →
+Azure, `bedrock-runtime.*` → native Bedrock unless the path is its
+`/openai/…` surface, and **anything else → the OpenAI wire**, which is what
+essentially every gateway and self-hosted server speaks. The one case a URL
+can't express is an *Anthropic*-format gateway on a neutral host — set
+`CI_LLM_PROVIDER=anthropic` for that. `GET /api/health` reports the resolved
+provider (`llm_provider`) so a misdetection is visible without reading logs.
+
+Three details the abstraction absorbs rather than pushing onto you:
+
+- **Model ids aren't portable, so the Claude defaults get out of the way.**
+  `LLM_MODEL_CHOICES` and `LLM_THINKING_MODELS` only keep their built-in
+  Claude values while `CI_LLM_MODEL` is one of them. Point `CI_LLM_MODEL`
+  elsewhere and the picker narrows to that model alone (and the lineage
+  helper stops reaching for a Haiku id no other provider serves) until you
+  name the rest with `CI_LLM_MODEL_CHOICES`.
+- **Reasoning models renamed `max_tokens` to `max_completion_tokens`.** The
+  spelling is guessed from the model id and then *self-corrects* from the
+  provider's own 400 on the first request, so an unrecognized id on an
+  unfamiliar gateway still works. Pin `CI_LLM_MAX_TOKENS_PARAM` if a
+  gateway's error text is too vague to key off.
+- **Live streaming works on both wires.** The Anthropic SDK hands over
+  already-parsed partial tool input; the OpenAI wire streams raw JSON
+  fragments, so `llmclient.parse_partial_json` reassembles them into the same
+  growing dicts. That is what keeps the Composer's page appearing as it is
+  written and the sandbox agent's code filling in live, rather than landing
+  in one blob at the end.
+
+Extended thinking is a declared opt-in (`CI_LLM_THINKING_MODELS`) rather than
+a blanket flag because a model that doesn't support it rejects the whole
+request instead of ignoring the parameter — the exact failure mode that used
+to 400 Haiku with "adaptive thinking is not supported on this model". It maps
+to Anthropic's adaptive thinking on one wire and `reasoning_effort` on the
+other.
+
+What does *not* change per provider: every tool schema, every system prompt,
+and — most importantly — every re-validation. A proposal from any model on
+any endpoint is still unvalidated text until `nlq.resolve()` re-checks it
+against the live semantic model, `sanitize_notebook_html()` re-checks a
+composed page, and `app/sandbox.py` re-checks proposed cells. Swapping
+providers cannot widen what the platform will execute.
+
 **What leaves the deployment, and to whom, when enabled:** every question
 sends the question text and a catalog of the declared model/dimension/
-measure names and descriptions to the Anthropic Messages API over HTTPS, so
+measure names and descriptions to the configured LLM endpoint over HTTPS, so
 it can propose a query or ask a clarifying question. A name and description
 alone are often not enough to pick the right measure (e.g. an unweighted
 average vs. a revenue-weighted one, or a measure with no description at

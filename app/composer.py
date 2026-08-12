@@ -21,16 +21,13 @@ and the app's own layout vocabulary instead of freestyle CSS.
 """
 from __future__ import annotations
 
-import logging
 import re
 from dataclasses import dataclass, field
 from html import escape
 from html.parser import HTMLParser
 from typing import Iterator, Literal, Protocol
 
-from . import config
-
-logger = logging.getLogger(__name__)
+from . import config, llmclient
 
 
 # ── the notebook html vocabulary ────────────────────────────────────────────
@@ -508,54 +505,54 @@ def build_user_prompt(req: ComposeRequest) -> str:
     return "\n".join(lines)
 
 
-class AnthropicComposer:
-    """Talks to the Anthropic Messages API with forced tool-use so the result
-    is always one typed compose_page proposal."""
+class LLMComposer:
+    """Forced tool-use against the configured provider, so the result is
+    always one typed compose_page proposal. Provider-neutral: app/llmclient.py
+    owns which API this reaches and how the page's html arrives as it is
+    written (the Anthropic wire streams parsed partial tool input; the OpenAI
+    wire streams raw JSON fragments that llmclient reassembles) — either way
+    this seam sees the same `html` snapshots."""
 
-    def __init__(self, api_key: str | None = None, model: str | None = None):
+    def __init__(self, api_key: str | None = None, model: str | None = None, client=None):
         self.api_key = api_key or config.LLM_API_KEY
         self.model = model or config.LLM_MODEL
+        self.client = client or llmclient.build_client(api_key=self.api_key)
 
-    def _request_kwargs(self, request: ComposeRequest) -> dict:
-        return dict(
+    def _request(self, request: ComposeRequest) -> llmclient.ChatRequest:
+        # deliberately no force_tool: with only one tool declared, "call some
+        # tool" and "call compose_page" are the same instruction, and the
+        # unnamed form is the one that has always gone out alongside extended
+        # thinking on this path.
+        return llmclient.ChatRequest(
             model=self.model,
             max_tokens=8192,
             system=_SYSTEM_PROMPT,
             tools=[_COMPOSE_TOOL],
-            tool_choice={"type": "any"},
-            messages=[{"role": "user", "content": build_user_prompt(request)}],
+            prompt=build_user_prompt(request),
+            thinking=True,
         )
 
     def compose_streaming(self, request: ComposeRequest) -> Iterator[ComposeStreamEvent]:
-        import anthropic
-
-        from .llm import _thinking_kwargs  # shared adaptive-thinking gate
-
-        client = anthropic.Anthropic(api_key=self.api_key)
         try:
-            with client.messages.stream(
-                **self._request_kwargs(request),
-                **_thinking_kwargs(self.model),
-            ) as stream:
-                for event in stream:
-                    if event.type == "thinking":
-                        yield ComposeStreamEvent(kind="thinking", text=event.thinking)
-                    elif event.type == "input_json":
-                        snapshot = event.snapshot if isinstance(event.snapshot, dict) else {}
-                        if isinstance(snapshot.get("html"), str):
-                            yield ComposeStreamEvent(kind="html", html=snapshot["html"])
-                message = stream.get_final_message()
-        except anthropic.APIError as exc:
-            logger.warning("Anthropic composer call failed: %r (cause: %r)", exc, exc.__cause__)
+            for event in self.client.stream(self._request(request)):
+                if event.kind == "thinking":
+                    yield ComposeStreamEvent(kind="thinking", text=event.text)
+                elif event.kind == "tool_input":
+                    html = (event.tool_input or {}).get("html")
+                    if isinstance(html, str):
+                        yield ComposeStreamEvent(kind="html", html=html)
+                elif event.kind == "done" and event.final.name == "compose_page":
+                    args = event.final.args or {}
+                    yield ComposeStreamEvent(kind="done", final=RawComposition(
+                        name=str(args.get("name") or "untitled page"),
+                        html=str(args.get("html") or ""),
+                        summary=str(args.get("summary") or ""),
+                    ))
+                    return
+        except llmclient.LLMError as exc:
             raise ComposerError(str(exc)) from exc
-
-        for block in message.content:
-            if block.type == "tool_use" and block.name == "compose_page":
-                args = block.input or {}
-                yield ComposeStreamEvent(kind="done", final=RawComposition(
-                    name=str(args.get("name") or "untitled page"),
-                    html=str(args.get("html") or ""),
-                    summary=str(args.get("summary") or ""),
-                ))
-                return
         raise ComposerError("model did not call compose_page")
+
+
+# The pre-multi-provider name, kept so existing call sites keep importing.
+AnthropicComposer = LLMComposer

@@ -1,23 +1,24 @@
-"""The one seam that talks to a third-party LLM (specs/012-conversational-
-analytics/). Everything above this module (app/nlq.py) only ever sees the
-typed `RawToolCall` result — never raw model output — and treats it as
-*unvalidated*: nlq.resolve() re-checks it against the live semantic model
-before it can become an executable query (research.md R2).
+"""The one seam that turns a question into a typed decision (specs/012-
+conversational-analytics/). Everything above this module (app/nlq.py) only
+ever sees the typed `RawToolCall` result — never raw model output — and treats
+it as *unvalidated*: nlq.resolve() re-checks it against the live semantic
+model before it can become an executable query (research.md R2).
 
-Swappable by design: tests use a FakeTranslator implementing the same
-Translator protocol, so the translator contract is exercised with zero
-network calls (plan.md's Testing section).
+Swappable by design at two levels: tests use a FakeTranslator implementing the
+same Translator protocol, so the translator contract is exercised with zero
+network calls (plan.md's Testing section) — and the *provider* underneath is
+swappable too, since everything here is expressed as a provider-neutral
+llmclient.ChatRequest. The prompt and tool schemas below are the whole of this
+module's contribution; which API they're sent to is app/llmclient.py's
+business (Anthropic, OpenAI, Azure, Bedrock, or any compatible gateway).
 """
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 from typing import Iterator, Literal, Protocol
 
-from . import config, engine
+from . import config, engine, llmclient
 from .semantic import TIME_GRAINS
-
-logger = logging.getLogger(__name__)
 
 ToolKind = Literal["propose_query", "ask_clarification", "decline", "show_last_query"]
 
@@ -505,60 +506,37 @@ def _build_prompt(question: str, catalog: list[ModelCatalogEntry], prior_context
     )
 
 
-# Subset of config.LLM_MODEL_CHOICES that supports Anthropic's "adaptive"
-# extended-thinking mode. Haiku doesn't, and requesting it there 400s with
-# "adaptive thinking is not supported on this model" — the bug this fixes.
-# Keep in sync with LLM_MODEL_CHOICES the same way that list's own comment
-# asks: add an entry here whenever a newly-added choice supports adaptive
-# thinking.
-_ADAPTIVE_THINKING_MODELS = {"claude-opus-4-8", "claude-sonnet-5"}
+class LLMTranslator:
+    """Forced tool-use against the configured provider, so the result is
+    always one of the four typed decisions (research.md R1). Which provider
+    that is — and therefore which wire format, auth scheme and base URL — is
+    resolved once by app/llmclient.py from CI_LLM_BASE_URL / CI_LLM_PROVIDER;
+    nothing in this class is Anthropic-specific."""
 
-
-def _thinking_kwargs(model: str) -> dict:
-    """The `thinking` kwarg for messages.stream(), omitted entirely for a
-    model that doesn't support adaptive thinking rather than sent
-    unconditionally and left to 400."""
-    if model in _ADAPTIVE_THINKING_MODELS:
-        return {"thinking": {"type": "adaptive", "display": "summarized"}}
-    return {}
-
-
-def _log_and_wrap(exc: Exception) -> TranslatorError:
-    """Shared failure path for both translate() and translate_streaming():
-    the user only ever sees a generic "temporarily unavailable" message
-    (chat.py) — log the real cause server-side so a deployer can actually
-    diagnose a bad key / network / proxy issue instead of staring at
-    "Connection error." with nothing in the terminal."""
-    logger.warning("Anthropic API call failed: %r (cause: %r)", exc, exc.__cause__)
-    return TranslatorError(str(exc))
-
-
-class AnthropicTranslator:
-    """Talks to the Anthropic Messages API with forced tool-use so the
-    result is always one of the four typed decisions (research.md R1)."""
-
-    def __init__(self, api_key: str | None = None, model: str | None = None):
+    def __init__(self, api_key: str | None = None, model: str | None = None, client=None):
         self.api_key = api_key or config.LLM_API_KEY
         self.model = model or config.LLM_MODEL
+        self.client = client or llmclient.build_client(api_key=self.api_key)
 
-    def _request_kwargs(
+    def _request(
         self,
         question: str,
         catalog: list[ModelCatalogEntry],
         prior_context: list[PriorTurn],
-    ) -> dict:
-        """The request shared by translate() (messages.create) and
-        translate_streaming() (messages.stream) — the two calls differ only
-        in streaming itself and the adaptive-thinking kwargs layered on top
-        (_thinking_kwargs)."""
-        prompt = _build_prompt(question, catalog, prior_context)
-        return dict(
+        *,
+        thinking: bool,
+    ) -> llmclient.ChatRequest:
+        """The request shared by translate() and translate_streaming() — the
+        two differ only in streaming itself and in asking for extended
+        thinking, which is worth its latency only when there is a live view
+        to show it in."""
+        return llmclient.ChatRequest(
             model=self.model,
             max_tokens=1024,
             system=_SYSTEM_PROMPT,
             tools=_tools_for_catalog(catalog),
-            tool_choice={"type": "any"},
-            messages=[{"role": "user", "content": prompt}],
+            prompt=_build_prompt(question, catalog, prior_context),
+            thinking=thinking,
         )
 
     def translate(
@@ -567,18 +545,11 @@ class AnthropicTranslator:
         catalog: list[ModelCatalogEntry],
         prior_context: list[PriorTurn],
     ) -> RawToolCall:
-        import anthropic
-
-        client = anthropic.Anthropic(api_key=self.api_key)
         try:
-            response = client.messages.create(**self._request_kwargs(question, catalog, prior_context))
-        except anthropic.APIError as exc:
-            raise _log_and_wrap(exc) from exc
-
-        for block in response.content:
-            if block.type == "tool_use":
-                return RawToolCall(kind=block.name, args=block.input)
-        raise TranslatorError("model did not call any tool")
+            call = self.client.call(self._request(question, catalog, prior_context, thinking=False))
+        except llmclient.LLMError as exc:
+            raise TranslatorError(str(exc)) from exc
+        return RawToolCall(kind=call.name, args=call.args)
 
     def translate_streaming(
         self,
@@ -587,37 +558,28 @@ class AnthropicTranslator:
         prior_context: list[PriorTurn],
     ) -> Iterator[StreamEvent]:
         """Same call as translate(), but yields StreamEvents for live display
-        (adaptive thinking on models that support it — _thinking_kwargs — and
-        the tool call's args as they're built — eager_input_streaming on
-        every _TOOLS entry means `event.snapshot` below is already a parsed
-        partial dict, not just a raw JSON fragment) as it goes, ending with a
-        "done" event carrying exactly what translate() would have returned
-        outright. A caller that only wants the final decision can skip every
-        event but "done" — nothing here is trusted any more than
-        translate()'s return value is; the re-validation in nlq.py is
-        unchanged."""
-        import anthropic
-
-        client = anthropic.Anthropic(api_key=self.api_key)
+        (extended thinking on models that support it, and the tool call's
+        args as they're built) as it goes, ending with a "done" event
+        carrying exactly what translate() would have returned outright. A
+        caller that only wants the final decision can skip every event but
+        "done" — nothing here is trusted any more than translate()'s return
+        value is; the re-validation in nlq.py is unchanged."""
+        request = self._request(question, catalog, prior_context, thinking=True)
         try:
-            with client.messages.stream(
-                **self._request_kwargs(question, catalog, prior_context),
-                **_thinking_kwargs(self.model),
-            ) as stream:
-                for event in stream:
-                    if event.type == "thinking":
-                        yield StreamEvent(kind="thinking", text=event.thinking)
-                    elif event.type == "content_block_start" and event.content_block.type == "tool_use":
-                        yield StreamEvent(kind="tool_name", tool_name=event.content_block.name)
-                    elif event.type == "input_json":
-                        snapshot = event.snapshot if isinstance(event.snapshot, dict) else {}
-                        yield StreamEvent(kind="tool_input", tool_input=snapshot)
-                message = stream.get_final_message()
-        except anthropic.APIError as exc:
-            raise _log_and_wrap(exc) from exc
-
-        for block in message.content:
-            if block.type == "tool_use":
-                yield StreamEvent(kind="done", final=RawToolCall(kind=block.name, args=block.input))
-                return
+            for event in self.client.stream(request):
+                if event.kind == "done":
+                    final = event.final
+                    yield StreamEvent(kind="done", final=RawToolCall(kind=final.name, args=final.args))
+                    return
+                yield StreamEvent(
+                    kind=event.kind, text=event.text,
+                    tool_name=event.tool_name, tool_input=event.tool_input,
+                )
+        except llmclient.LLMError as exc:
+            raise TranslatorError(str(exc)) from exc
         raise TranslatorError("model did not call any tool")
+
+
+# The pre-multi-provider name, kept so existing call sites and any deployer's
+# patches keep importing. There is nothing Anthropic-specific left behind it.
+AnthropicTranslator = LLMTranslator
