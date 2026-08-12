@@ -136,6 +136,9 @@ async def lifespan(app: FastAPI):
         registry.init()
         print(f"[cash-intel] loaded models: {', '.join(registry.models) or '(none)'}")
         print(f"[cash-intel] loaded agents: {', '.join(registry.agents) or '(none)'}")
+        if config.ENV_FILE_SHADOWED:
+            print(f"[cash-intel] .env ignored for {', '.join(config.ENV_FILE_SHADOWED)} "
+                  f"— already set in the environment, which wins")
         print(f"[cash-intel] {_llm_banner()}")
         seed.seed_bootstrap_admin()
         if seed.seed_notebook_demo():

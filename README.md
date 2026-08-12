@@ -1516,6 +1516,32 @@ Different means it was mangled on the way in, and the length usually says
 how. (Leading/trailing whitespace is trimmed before use, so that one is
 already handled.) Auth failures log the same fingerprint.
 
+**An exported variable beats `.env`** — deliberately, so a one-off override
+needs no edit, but it makes a forgotten `export CI_LLM_API_KEY=...` from an
+earlier experiment silently outrank the `.env` written to replace it. Startup
+names any setting shadowed that way:
+
+```
+[cash-intel] .env ignored for CI_LLM_API_KEY — already set in the environment, which wins
+```
+
+Docker Compose applies the same precedence (shell first, then `.env`) but
+resolves it before the container exists, so that line can't appear there.
+Check what Compose will actually inject — without printing the secret — with:
+
+```bash
+docker compose config --format json | python3 -c "
+import hashlib, json, sys
+env = json.load(sys.stdin)['services']['app']['environment']
+for k, v in sorted(env.items()):
+    if not k.startswith('CI_LLM'): continue
+    print(k, '=', (len(v), hashlib.sha256(v.encode()).hexdigest()[:8]) if 'KEY' in k and v else v)
+"
+```
+
+`unset CI_LLM_API_KEY` clears a stale export for the current shell; if it
+came from `~/.bashrc` or `~/.zshrc` it will return on the next one.
+
 Three details the abstraction absorbs rather than pushing onto you:
 
 - **Model ids aren't portable, so the Claude defaults get out of the way.**

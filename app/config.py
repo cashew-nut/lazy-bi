@@ -24,11 +24,17 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
-def _load_env_file() -> None:
+def _load_env_file() -> list[str]:
     """Seed os.environ from a `.env` file, without overriding anything the
     real environment already sets — an explicit `export` (or a `-e` on a
     container) always wins over the file, which is what makes a one-off
     override possible without editing it.
+
+    Returns the keys the file set that were ignored for that reason. A
+    forgotten `export CI_LLM_API_KEY=...` from an earlier experiment beats
+    the `.env` written to replace it, and the only symptom is the old value
+    being used — so the names of the shadowed settings get reported at
+    startup (app/main.py) rather than left to be discovered from a 401.
 
     Deliberately a literal parser, not a shell: a value is taken exactly as
     written, so an API key containing `$`, `#`, backticks or spaces needs no
@@ -44,27 +50,33 @@ def _load_env_file() -> None:
     """
     configured = os.environ.get("CI_ENV_FILE")
     if configured is not None and not configured.strip():
-        return
+        return []
     path = Path(configured.strip()) if configured else PROJECT_ROOT / ".env"
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
-        return          # absent or unreadable: the environment alone decides
+        return []       # absent or unreadable: the environment alone decides
+    shadowed = []
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
         key = key.removeprefix("export ").strip()
-        if not key or key in os.environ:
+        if not key:
+            continue
+        if key in os.environ:
+            shadowed.append(key)
             continue
         value = value.strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
             value = value[1:-1]
         os.environ[key] = value
+    return shadowed
 
 
-_load_env_file()
+# names only — the values are the point of keeping them out of a log
+ENV_FILE_SHADOWED = _load_env_file()
 
 # S3 / emulator
 S3_ENDPOINT = os.environ.get("CI_S3_ENDPOINT", "http://127.0.0.1:9600")

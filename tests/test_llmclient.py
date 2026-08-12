@@ -769,6 +769,24 @@ def test_env_file_loading_can_be_disabled(tmp_path, reloaded_config):
     assert reloaded_config().LLM_ENABLED is False
 
 
+def test_a_shadowed_env_file_setting_is_reported_by_name(tmp_path, reloaded_config):
+    """A forgotten `export CI_LLM_API_KEY=...` beats the .env written to
+    replace it, and the only symptom is the old value being used — a 401 that
+    looks like a bad key. The names (never the values) surface at startup."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("CI_LLM_API_KEY=key-from-file\nCI_LLM_MODEL=gpt-5\n", encoding="utf-8")
+
+    cfg = reloaded_config(env_file, CI_LLM_API_KEY="key-already-exported")
+    assert cfg.LLM_API_KEY == "key-already-exported"      # the environment wins
+    assert cfg.LLM_MODEL == "gpt-5"                       # the unshadowed line still applies
+    assert cfg.ENV_FILE_SHADOWED == ["CI_LLM_API_KEY"]
+
+    # nothing exported: the file applies in full and there is nothing to report
+    cfg = reloaded_config(env_file)
+    assert cfg.LLM_API_KEY == "key-from-file"
+    assert cfg.ENV_FILE_SHADOWED == []
+
+
 def test_an_api_key_is_trimmed_of_whitespace(reloaded_config):
     """A CRLF-edited .env, a `$(cat key.txt)` or a stray copy-paste space
     otherwise goes into the auth header verbatim and 401s, which reads as
