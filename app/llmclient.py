@@ -28,11 +28,17 @@ Bedrock is its OpenAI-compatible surface
 key, which auto-detects to the `openai` wire below and needs nothing special.
 
 Provider detection is by URL (resolve_provider) with CI_LLM_PROVIDER as the
-override, because a URL is the only thing a deployer reliably has. The one
-case detection cannot get right is a self-hosted gateway that speaks the
-*Anthropic* format on a neutral host — that needs CI_LLM_PROVIDER=anthropic,
-since an unrecognized host is assumed to be OpenAI-shaped (by far the more
-common gateway dialect: vLLM, Ollama, LiteLLM, OpenRouter, Together, Groq).
+override, because a URL is the only thing a deployer reliably has. An
+unrecognized host is assumed to be OpenAI-shaped, by far the more common
+gateway dialect (vLLM, Ollama, LiteLLM, OpenRouter, Together, Groq) — which
+leaves two cases a hostname alone cannot express:
+
+  * a gateway speaking the *Anthropic* format on a neutral host, which needs
+    CI_LLM_PROVIDER=anthropic;
+  * a corporate gateway fronting *Azure* (gateway.example.net/azure-openai),
+    where the deployment name belongs in the path. Setting CI_LLM_API_VERSION
+    is enough to detect that one, since an api-version means nothing to any
+    other provider.
 """
 from __future__ import annotations
 
@@ -261,7 +267,7 @@ def _final_args(raw: str) -> dict:
 
 # ── provider detection ────────────────────────────────────────────────────
 
-def resolve_provider(base_url: str, override: str = "") -> Provider:
+def resolve_provider(base_url: str, override: str = "", api_version: str = "") -> Provider:
     """Which provider a base URL points at, unless CI_LLM_PROVIDER says
     otherwise. No URL at all means the historical default (Anthropic's own
     API); an unrecognized host means the OpenAI wire, which is what
@@ -278,6 +284,15 @@ def resolve_provider(base_url: str, override: str = "") -> Provider:
     path = (parsed.path or "").lower()
     if host.endswith("anthropic.com"):
         return "anthropic"
+    if (api_version or "").strip():
+        # an api-version is an Azure-only concept, so setting one is a
+        # deliberate enough signal to detect on. It has to be, because the
+        # hostname often can't be: a corporate API gateway fronting Azure
+        # (gateway.example.net/azure-openai) looks exactly like any other
+        # OpenAI-shaped gateway, and guessing OpenAI there sends requests to
+        # /chat/completions instead of /openai/deployments/<model>/chat/
+        # completions — a 404 from a perfectly good URL and key.
+        return "azure"
     if "azure.com" in host or "azure-api.net" in host:
         return "azure"
     if "bedrock" in host:
@@ -293,7 +308,7 @@ def configured_provider() -> str:
     breaking the health check that would tell a deployer about it — the first
     real request still fails loudly."""
     try:
-        return resolve_provider(config.LLM_BASE_URL, config.LLM_PROVIDER)
+        return resolve_provider(config.LLM_BASE_URL, config.LLM_PROVIDER, config.LLM_API_VERSION)
     except ValueError:
         return "invalid"
 
@@ -309,18 +324,41 @@ def build_client(
     at import time exactly as they always have."""
     key = config.LLM_API_KEY if api_key is None else api_key
     url = (config.LLM_BASE_URL if base_url is None else base_url or "").strip()
-    resolved = resolve_provider(url, config.LLM_PROVIDER if provider is None else provider)
+    resolved = resolve_provider(
+        url, config.LLM_PROVIDER if provider is None else provider, config.LLM_API_VERSION
+    )
     if resolved in _ANTHROPIC_WIRE:
         return AnthropicClient(api_key=key, base_url=url, provider=resolved)
     return OpenAIClient(api_key=key, base_url=url, provider=resolved)
 
 
-def _wrap(exc: Exception) -> LLMError:
+def _wrap(exc: Exception, provider: str = "") -> LLMError:
     """Shared failure path for every provider: the user only ever sees a
     generic "temporarily unavailable" message, so log the real cause
     server-side — a deployer debugging a bad key, a wrong base URL or a proxy
-    should not have to stare at "Connection error." with nothing else."""
-    logger.warning("LLM API call failed: %r (cause: %r)", exc, exc.__cause__)
+    should not have to stare at "Connection error." with nothing else.
+
+    The URL comes off the exception's own httpx request rather than from
+    self.base_url, so it is the path actually sent (which for Azure the SDK
+    builds, and which is exactly what a 404 is complaining about)."""
+    request = getattr(exc, "request", None)
+    url = getattr(request, "url", None)
+    logger.warning(
+        "LLM API call failed: %r (provider=%s, url=%s, cause: %r)",
+        exc, provider or "?", url or "(request not sent)", exc.__cause__,
+    )
+    if getattr(exc, "status_code", None) == 404 and provider == "openai":
+        # By far the most likely misconfiguration behind a 404 on a URL the
+        # deployer copied from somewhere that worked: an Azure OpenAI
+        # endpoint, or a gateway fronting one, detected as a plain OpenAI
+        # gateway because its hostname says nothing about Azure.
+        logger.warning(
+            "a 404 on the OpenAI wire usually means the endpoint is an Azure "
+            "OpenAI deployment (or a gateway fronting one): its chat path is "
+            "/openai/deployments/<model>/chat/completions?api-version=..., not "
+            "/chat/completions. Set CI_LLM_API_VERSION (and CI_LLM_PROVIDER=azure) "
+            "to switch to it."
+        )
     return LLMError(str(exc))
 
 
@@ -385,7 +423,7 @@ class AnthropicClient:
                 **self._kwargs(req), **self._thinking_kwargs(req)
             )
         except anthropic.AnthropicError as exc:
-            raise _wrap(exc) from exc
+            raise _wrap(exc, self.provider) from exc
         for block in response.content:
             if block.type == "tool_use":
                 return ToolCall(name=block.name, args=block.input or {})
@@ -410,7 +448,7 @@ class AnthropicClient:
                         yield ClientEvent(kind="tool_input", tool_input=snapshot)
                 message = stream.get_final_message()
         except anthropic.AnthropicError as exc:
-            raise _wrap(exc) from exc
+            raise _wrap(exc, self.provider) from exc
 
         for block in message.content:
             if block.type == "tool_use":
@@ -535,9 +573,9 @@ class OpenAIClient:
             except openai.BadRequestError as exc:
                 if attempt == 0 and self._swap_token_param(exc, req.model):
                     continue
-                raise _wrap(exc) from exc
+                raise _wrap(exc, self.provider) from exc
             except openai.OpenAIError as exc:
-                raise _wrap(exc) from exc
+                raise _wrap(exc, self.provider) from exc
         raise LLMError("unreachable")   # pragma: no cover
 
     def call(self, req: ChatRequest) -> ToolCall:
@@ -596,7 +634,7 @@ class OpenAIClient:
                         buffer += fragment
                         yield ClientEvent(kind="tool_input", tool_input=parse_partial_json(buffer))
         except openai.OpenAIError as exc:
-            raise _wrap(exc) from exc
+            raise _wrap(exc, self.provider) from exc
 
         if not name:
             raise LLMError("model did not call any tool")

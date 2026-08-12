@@ -1425,6 +1425,15 @@ export CI_LLM_BASE_URL=https://my-resource.openai.azure.com/openai/v1/
 export CI_LLM_API_KEY=...
 export CI_LLM_MODEL=my-deployment-name
 
+# Azure OpenAI's older dated surface, including any corporate API gateway
+# fronting it. The base URL is whatever your working example passes as
+# `azure_endpoint` — everything after it (/openai/deployments/<model>/…) is
+# built by the SDK, so don't include it yourself.
+export CI_LLM_BASE_URL=https://ai-gateway.example.net/azure-openai
+export CI_LLM_API_VERSION=2025-02-01-preview
+export CI_LLM_API_KEY=...
+export CI_LLM_MODEL=gpt-5
+
 # AWS Bedrock, OpenAI-compatible surface (with a Bedrock API key)
 export CI_LLM_BASE_URL=https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1
 export CI_LLM_API_KEY=...
@@ -1450,7 +1459,7 @@ export CI_LLM_MODEL=qwen2.5-coder:32b
 | `CI_LLM_MODEL_CHOICES` | comma-separated ids the CHAT model picker offers |
 | `CI_LLM_THINKING_MODELS` | comma-separated ids to request extended thinking/reasoning from; `none` = never |
 | `CI_LLM_REASONING_EFFORT` | `reasoning_effort` for those models on the OpenAI wire (default `medium`) |
-| `CI_LLM_API_VERSION` | only for Azure's older dated surface; set `CI_LLM_BASE_URL` to the bare resource root with it |
+| `CI_LLM_API_VERSION` | Azure's dated deployment surface; setting it also *implies* `azure`, on any host |
 | `CI_LLM_AWS_REGION` | region for native Bedrock (defaults to `AWS_REGION`) |
 | `CI_LLM_MAX_TOKENS_PARAM` | `auto` (default) / `max_tokens` / `max_completion_tokens` — see below |
 | `CI_ENV_FILE` | read settings from a different file than `./.env`; empty = read none |
@@ -1464,10 +1473,25 @@ Detection is by URL because a URL is the only thing a deployer reliably has:
 `*.anthropic.com` → the Anthropic wire, `*.azure.com` / `*.azure-api.net` →
 Azure, `bedrock-runtime.*` → native Bedrock unless the path is its
 `/openai/…` surface, and **anything else → the OpenAI wire**, which is what
-essentially every gateway and self-hosted server speaks. The one case a URL
-can't express is an *Anthropic*-format gateway on a neutral host — set
-`CI_LLM_PROVIDER=anthropic` for that. `GET /api/health` reports the resolved
-provider (`llm_provider`) so a misdetection is visible without reading logs.
+essentially every gateway and self-hosted server speaks. `GET /api/health`
+reports the resolved provider (`llm_provider`) so a misdetection is visible
+without reading logs.
+
+Two cases a hostname alone can't express, both on a *neutral* host — a
+corporate gateway, a self-hosted server — where the URL says nothing about
+who is behind it:
+
+- **An Anthropic-format gateway.** Set `CI_LLM_PROVIDER=anthropic`; an
+  unrecognized host is otherwise assumed OpenAI-shaped.
+- **A gateway fronting Azure**, where the deployment name belongs in the
+  path. Setting `CI_LLM_API_VERSION` is enough — an api-version means nothing
+  to any other provider, so it doubles as the signal. Without it the request
+  goes to `/chat/completions` instead of
+  `/openai/deployments/<model>/chat/completions` and the gateway answers
+  **404 `OperationNotFound`** — a routing failure that looks nothing like
+  one, since both the URL and the key are fine. The server log for any 404 on
+  the OpenAI wire names this explicitly, alongside the provider and the exact
+  path that was sent.
 
 Three details the abstraction absorbs rather than pushing onto you:
 

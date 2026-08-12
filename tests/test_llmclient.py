@@ -48,6 +48,55 @@ def test_explicit_provider_overrides_detection():
     assert llmclient.resolve_provider("https://llm.internal/v1", "auto") == "openai"
 
 
+def test_an_api_version_implies_azure_on_any_host():
+    """A corporate gateway fronting Azure (gateway.example.net/azure-openai)
+    is indistinguishable by hostname from any other OpenAI-shaped gateway,
+    and guessing OpenAI there posts to /chat/completions — a 404 from a URL
+    and key that are both perfectly good. An api-version means nothing to any
+    other provider, so setting one is signal enough to detect on."""
+    neutral = "https://ai-gateway.example.net/azure-openai"
+    assert llmclient.resolve_provider(neutral) == "openai"
+    assert llmclient.resolve_provider(neutral, api_version="2025-02-01-preview") == "azure"
+    # an explicit provider still wins, and Anthropic's own API is never Azure
+    assert llmclient.resolve_provider(neutral, "openai", "2025-02-01-preview") == "openai"
+    assert llmclient.resolve_provider("https://api.anthropic.com", api_version="x") == "anthropic"
+
+
+def test_build_client_honours_a_configured_api_version(monkeypatch):
+    """The detection above has to reach build_client, or the deployer sets
+    CI_LLM_API_VERSION and watches it get silently ignored."""
+    monkeypatch.setattr(config, "LLM_PROVIDER", "auto")
+    monkeypatch.setattr(config, "LLM_BASE_URL", "https://ai-gateway.example.net/azure-openai")
+    monkeypatch.setattr(config, "LLM_API_KEY", "k")
+    monkeypatch.setattr(config, "LLM_API_VERSION", "")
+    assert llmclient.build_client().provider == "openai"
+
+    monkeypatch.setattr(config, "LLM_API_VERSION", "2025-02-01-preview")
+    assert llmclient.build_client().provider == "azure"
+    assert llmclient.configured_provider() == "azure"
+
+
+def test_a_gateway_fronting_azure_gets_the_deployment_path(monkeypatch):
+    """The end-to-end shape of the fix, pinned against the URL the Azure SDK
+    actually builds: /openai/deployments/<model>/chat/completions, with the
+    api-version on the query string and the key in the api-key header."""
+    import openai
+
+    seen = {}
+    monkeypatch.setattr(openai, "AzureOpenAI", lambda **kwargs: seen.update(kwargs) or "azure-client")
+    monkeypatch.setattr(config, "LLM_PROVIDER", "auto")
+    monkeypatch.setattr(config, "LLM_BASE_URL", "https://ai-gateway.example.net/azure-openai")
+    monkeypatch.setattr(config, "LLM_API_KEY", "gw-key")
+    monkeypatch.setattr(config, "LLM_API_VERSION", "2025-02-01-preview")
+
+    assert llmclient.build_client()._client() == "azure-client"
+    assert seen == {
+        "azure_endpoint": "https://ai-gateway.example.net/azure-openai",
+        "api_key": "gw-key",
+        "api_version": "2025-02-01-preview",
+    }
+
+
 def test_unknown_provider_is_rejected_loudly():
     """A typo in CI_LLM_PROVIDER must not silently fall back to a provider
     the deployer didn't choose — that would send their prompts somewhere
@@ -355,6 +404,68 @@ def test_openai_errors_become_llm_errors(monkeypatch):
     monkeypatch.setattr(openai, "OpenAI", FakeClient)
     with pytest.raises(llmclient.LLMError):
         list(llmclient.OpenAIClient(api_key="k").stream(_request()))
+
+
+def _status_error(status: int, url: str):
+    """A provider SDK's status error, carrying the httpx request the way a
+    real one does (which is where _wrap reads the URL from)."""
+    import httpx
+    import openai
+
+    request = httpx.Request("POST", url)
+    response = httpx.Response(status, request=request, json={"error": {"code": "OperationNotFound"}})
+    return openai.APIStatusError("boom", response=response, body=None)
+
+
+def test_a_failure_logs_which_provider_and_url_it_was(monkeypatch, caplog):
+    """The failure a deployer actually has to debug is a misrouted request,
+    and the message they get ("Error code: 404 ...") names neither the
+    provider we picked nor the path we sent — so both go in the log."""
+    import openai
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": type("C", (), {
+                "create": lambda s, **k: (_ for _ in ()).throw(
+                    _status_error(404, "https://ai-gateway.example.net/azure-openai/chat/completions")),
+            })()})()
+
+    monkeypatch.setattr(openai, "OpenAI", FakeClient)
+    with caplog.at_level("WARNING", logger="app.llmclient"):
+        with pytest.raises(llmclient.LLMError):
+            llmclient.OpenAIClient(api_key="k", base_url="https://ai-gateway.example.net/azure-openai").call(_request())
+
+    logged = caplog.text
+    assert "provider=openai" in logged
+    assert "https://ai-gateway.example.net/azure-openai/chat/completions" in logged
+    # and the hint that names the actual fix for by far the likeliest cause
+    assert "CI_LLM_API_VERSION" in logged
+
+
+def test_the_azure_hint_is_not_offered_for_unrelated_failures(monkeypatch, caplog):
+    """A 401, or a 404 we already routed to Azure, is a different problem —
+    pointing at the api-version there would send a deployer the wrong way."""
+    import openai
+
+    def failing(status, provider):
+        class FakeClient:
+            def __init__(self, **kwargs):
+                self.chat = type("Chat", (), {"completions": type("C", (), {
+                    "create": lambda s, **k: (_ for _ in ()).throw(
+                        _status_error(status, "https://x/chat/completions")),
+                })()})()
+
+        monkeypatch.setattr(openai, "OpenAI", FakeClient)
+        monkeypatch.setattr(openai, "AzureOpenAI", FakeClient)
+        monkeypatch.setattr(config, "LLM_API_VERSION", "2025-02-01-preview" if provider == "azure" else "")
+        caplog.clear()
+        with caplog.at_level("WARNING", logger="app.llmclient"):
+            with pytest.raises(llmclient.LLMError):
+                llmclient.OpenAIClient(api_key="k", provider=provider).call(_request())
+        return caplog.text
+
+    assert "CI_LLM_API_VERSION" not in failing(401, "openai")
+    assert "CI_LLM_API_VERSION" not in failing(404, "azure")
 
 
 # ── transport wiring ──────────────────────────────────────────────────────
