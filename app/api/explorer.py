@@ -51,6 +51,15 @@ def health():
         "llm_enabled": config.LLM_ENABLED,
         "llm_models": config.LLM_MODEL_CHOICES if config.LLM_ENABLED else [],
         "llm_default_model": config.LLM_MODEL,
+        # which of those models the THINKING toggle can be turned on for, and
+        # the state it starts in — reported (in picker order) rather than
+        # hardcoded in the UI, so the toggle can never offer a model that
+        # would 400 on the parameter (app/config.py's LLM_THINKING_MODELS)
+        "llm_thinking_models": (
+            [m for m in config.LLM_MODEL_CHOICES if m in config.LLM_THINKING_MODELS]
+            if config.LLM_ENABLED else []
+        ),
+        "llm_thinking_default": config.LLM_THINKING_DEFAULT,
         # which wire format CI_LLM_BASE_URL/CI_LLM_PROVIDER resolved to — the
         # first thing to check when a configured endpoint answers oddly. The
         # base URL itself is deliberately not reported: it can name an

@@ -98,6 +98,20 @@ def test_panel_ask_disabled_without_llm_key(viewer_client, monkeypatch):
     assert res.status_code == 503
 
 
+def test_panel_ask_carries_its_thinking_toggle_per_request(viewer_client, fake_translator):
+    """The panel has no conversation row to remember a toggle in, so the flag
+    rides along with each ask — omitted means "no opinion" (the server
+    default), exactly as for a saved conversation that was never toggled."""
+    for body_flag, expected in ((None, None), (False, False), (True, True)):
+        body = {"question": "revenue by category", "model_scope": ["sales"]}
+        if body_flag is not None:
+            body["thinking"] = body_flag
+        fake_translator.responses.append(_propose_sales_by_category())
+        res = viewer_client.post("/api/chat/panel/ask/stream", json=body)
+        assert res.status_code == 200
+        assert fake_translator.thinking_calls[-1] is expected
+
+
 def test_panel_ask_description_override_reaches_the_catalog(viewer_client, fake_translator):
     fake_translator.responses.append(_propose_sales_by_category())
     res = viewer_client.post("/api/chat/panel/ask/stream", json={

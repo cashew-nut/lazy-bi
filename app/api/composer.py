@@ -11,6 +11,7 @@ documents. Author-gated end to end (composing exists to author pages), and
 from __future__ import annotations
 
 import json
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -43,6 +44,9 @@ class ComposeIn(BaseModel):
     dashboard_ids: list[int] = []
     current_html: str = ""
     history: list[dict] = []
+    # the composer header's THINKING toggle; omitted/null = the server
+    # default, so an API client that never sets it behaves as before
+    thinking: Optional[bool] = None
 
 
 def _require_enabled() -> None:
@@ -107,6 +111,7 @@ def compose_stream(body: ComposeIn, user: User = Depends(require_role("author"))
         selected_dashboard_ids=body.dashboard_ids,
         current_html=body.current_html,
         history=[h for h in body.history if isinstance(h, dict)][-_HISTORY_TURNS:],
+        thinking=body.thinking,
     )
 
     def _audit(outcome: str) -> None:

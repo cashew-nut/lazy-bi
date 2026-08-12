@@ -190,6 +190,40 @@ def test_conversation_llm_model_validation_and_roundtrip(viewer_client):
     assert bad_patch.status_code == 400
 
 
+def test_conversation_thinking_flag_roundtrips_and_defaults_to_unset(viewer_client):
+    """The CHAT header's THINKING toggle. Unset (null) is a real third state,
+    not a synonym for false: it means "follow the server default", so a
+    conversation created before an operator flipped CI_LLM_THINKING_DEFAULT
+    moves with it instead of being frozen at creation time."""
+    fresh = viewer_client.post("/api/conversations", json={}).json()
+    assert fresh["thinking"] is None
+
+    off = viewer_client.post("/api/conversations", json={"thinking": False}).json()
+    assert off["thinking"] is False
+    assert viewer_client.get(f"/api/conversations/{off['id']}").json()["thinking"] is False
+
+    on = viewer_client.patch(f"/api/conversations/{off['id']}", json={"thinking": True})
+    assert on.status_code == 200 and on.json()["thinking"] is True
+
+    # a PATCH about something else leaves the flag alone
+    renamed = viewer_client.patch(f"/api/conversations/{off['id']}", json={"title": "renamed"})
+    assert renamed.json()["thinking"] is True
+
+
+def test_ask_stream_sends_the_conversations_thinking_flag_to_the_translator(
+        viewer_client, fake_translator):
+    """End to end for the toggle: what the conversation stores is what the
+    translator is asked for. None stays None rather than being resolved here,
+    so the server default is applied in exactly one place (app/llm.py)."""
+    for stored, expected in ((None, None), (False, False), (True, True)):
+        conv = viewer_client.post("/api/conversations", json={"thinking": stored}).json()
+        fake_translator.responses.append(_propose_sales_by_category())
+        res = viewer_client.post(f"/api/conversations/{conv['id']}/ask/stream",
+                                 json={"question": "revenue by category"})
+        assert res.status_code == 200
+        assert fake_translator.thinking_calls[-1] is expected
+
+
 def test_ask_uses_a_dedicated_translator_for_a_non_default_model(viewer_client, monkeypatch):
     from app import config as app_config
 

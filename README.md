@@ -1397,9 +1397,13 @@ paths (never result rows); see that section and the egress note below.
 
 `CI_LLM_MODEL` only sets the *default* — each conversation can also pick its
 own model in the CHAT header (`app/config.py`'s `LLM_MODEL_CHOICES`), a
-trade-off between answer quality and cost/latency. The picker is populated
-from `GET /api/health`, so it always reflects what the server actually
-allows — never hardcoded per deployment.
+trade-off between answer quality and cost/latency. Next to the picker is a
+*THINKING* toggle: extended reasoning before the answer, better on a hard
+question and pure cost on an easy one, remembered per conversation. Both
+controls are populated from `GET /api/health`, so they always reflect what the
+server actually allows — never hardcoded per deployment; the toggle greys out
+on a model that can't think ([why it isn't one blanket
+flag](#any-provider-a-url-and-a-key)).
 
 ### Any provider: a URL and a key
 
@@ -1457,7 +1461,8 @@ export CI_LLM_MODEL=qwen2.5-coder:32b
 | `CI_LLM_MODEL` | a model id that endpoint actually serves (on Azure, the deployment name) |
 | `CI_LLM_PROVIDER` | `auto` (default) / `anthropic` / `openai` / `azure` / `bedrock` — override the guess |
 | `CI_LLM_MODEL_CHOICES` | comma-separated ids the CHAT model picker offers |
-| `CI_LLM_THINKING_MODELS` | comma-separated ids to request extended thinking/reasoning from; `none` = never |
+| `CI_LLM_THINKING_MODELS` | comma-separated ids that *can* be asked for extended thinking/reasoning — where the THINKING toggle is offered; `none` = never |
+| `CI_LLM_THINKING_DEFAULT` | the state that toggle starts in (default `true`; `false`/`0`/`no`/`off` to make thinking opt-in) |
 | `CI_LLM_REASONING_EFFORT` | `reasoning_effort` for those models on the OpenAI wire (default `medium`) |
 | `CI_LLM_API_VERSION` | Azure's dated deployment surface; setting it also *implies* `azure`, on any host |
 | `CI_LLM_AWS_REGION` | region for native Bedrock (defaults to `AWS_REGION`) |
@@ -1573,12 +1578,23 @@ Four details the abstraction absorbs rather than pushing onto you:
   written and the sandbox agent's code filling in live, rather than landing
   in one blob at the end.
 
-Extended thinking is a declared opt-in (`CI_LLM_THINKING_MODELS`) rather than
-a blanket flag because a model that doesn't support it rejects the whole
+Extended thinking is two separate things, which is why it takes two settings.
+*Capability* stays a declared list (`CI_LLM_THINKING_MODELS`) rather than a
+blanket flag, because a model that doesn't support it rejects the whole
 request instead of ignoring the parameter — the exact failure mode that used
-to 400 Haiku with "adaptive thinking is not supported on this model". It maps
-to Anthropic's adaptive thinking on one wire and `reasoning_effort` on the
-other.
+to 400 Haiku with "adaptive thinking is not supported on this model".
+*Preference* is the *THINKING* toggle in the CHAT, COMPOSER and modelling-panel
+headers: a per-conversation choice (per session for the two ephemeral
+surfaces), starting from `CI_LLM_THINKING_DEFAULT` and stored as "unset" until
+someone actually flips it, so a conversation follows the deployment's default
+as that changes rather than freezing it at creation. The toggle is live only
+for models the capability list names — dead-but-visible in CHAT, where you
+also pick the model, and simply absent in the two surfaces that can only use
+the default one — and a request to think on a model that can't is dropped
+before it reaches the wire, so a stale toggle can never 400 a question. The
+flag maps to Anthropic's adaptive thinking on one wire and `reasoning_effort`
+on the other, and it only ever changes how much the model deliberates: every
+proposal is re-validated identically either way.
 
 What does *not* change per provider: every tool schema, every system prompt,
 and — most importantly — every re-validation. A proposal from any model on

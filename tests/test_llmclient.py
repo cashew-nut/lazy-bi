@@ -697,7 +697,8 @@ def test_anthropic_client_passes_base_url_when_set(monkeypatch):
 
 _LLM_ENV = (
     "CI_LLM_API_KEY", "CI_LLM_BASE_URL", "CI_LLM_PROVIDER", "CI_LLM_MODEL",
-    "CI_LLM_MODEL_CHOICES", "CI_LLM_THINKING_MODELS", "CI_SANDBOX_LINEAGE_MODEL",
+    "CI_LLM_MODEL_CHOICES", "CI_LLM_THINKING_MODELS", "CI_LLM_THINKING_DEFAULT",
+    "CI_SANDBOX_LINEAGE_MODEL",
 )
 
 
@@ -770,6 +771,28 @@ def test_thinking_can_be_turned_off_with_none(reloaded_config):
     """The escape hatch for a gateway that rejects the parameter."""
     cfg = reloaded_config(CI_LLM_API_KEY="k", CI_LLM_THINKING_MODELS="none")
     assert cfg.LLM_THINKING_MODELS == set()
+
+
+def test_thinking_is_on_by_default_and_can_be_defaulted_off(reloaded_config):
+    """CI_LLM_THINKING_DEFAULT only moves where the UI's THINKING toggle
+    starts — it never widens LLM_THINKING_MODELS, which stays the capability
+    list a toggle can be turned on *within*."""
+    assert reloaded_config(CI_LLM_API_KEY="k").LLM_THINKING_DEFAULT is True
+    off = reloaded_config(CI_LLM_API_KEY="k", CI_LLM_THINKING_DEFAULT="false")
+    assert off.LLM_THINKING_DEFAULT is False
+    assert off.LLM_THINKING_MODELS == {"claude-opus-4-8", "claude-sonnet-5"}
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("1", True), ("true", True), ("TRUE", True), ("yes", True), ("on", True),
+    ("0", False), ("false", False), ("No", False), ("off", False),
+    # empty is what an unset `${VAR:-}` looks like, and a typo is not an
+    # instruction — both fall back to the default rather than reading as off
+    ("", True), ("  ", True), ("maybe", True),
+])
+def test_flag_settings_read_the_usual_spellings(reloaded_config, raw, expected):
+    cfg = reloaded_config(CI_LLM_API_KEY="k", CI_LLM_THINKING_DEFAULT=raw)
+    assert cfg.LLM_THINKING_DEFAULT is expected
 
 
 def test_an_empty_list_setting_is_not_read_as_none(reloaded_config):

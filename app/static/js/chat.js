@@ -18,8 +18,11 @@ const chat = {
   enabled: false,
   llmModels: [],       // selectable model ids, from GET /api/health (config.LLM_MODEL_CHOICES)
   defaultModel: "",
+  thinkingModels: [],  // the subset of those that can do extended thinking at all
+  thinkingDefault: false,   // the state a conversation's THINKING toggle starts in
+  pendingThinking: null,    // toggle state for the not-yet-created conversation
   conversations: [],
-  current: null,   // full conversation {id, title, model_scope, llm_model, messages}
+  current: null,   // full conversation {id, title, model_scope, llm_model, thinking, messages}
   scopeSelection: new Set(),   // model names ticked in the scope picker — mirrors
                                 // chat.current.model_scope when a conversation is
                                 // open, or the pending scope for a new one
@@ -32,10 +35,38 @@ export function probeChatAvailability(health) {
   chat.enabled = !!health.llm_enabled;
   chat.llmModels = health.llm_models || [];
   chat.defaultModel = health.llm_default_model || "";
+  chat.thinkingModels = health.llm_thinking_models || [];
+  chat.thinkingDefault = !!health.llm_thinking_default;
   $("#chat-nav-btn").hidden = !chat.enabled;
 }
 
 export const isChatEnabled = () => chat.enabled;
+
+// Extended thinking is a per-model capability, not a preference: a model
+// that can't do it rejects the whole request rather than ignoring the
+// parameter (app/config.py's LLM_THINKING_MODELS), so the toggle is only
+// live for models the server declared. Shared with the modelling panel and
+// the Composer (panelchat.js, composer.js), which ask about the *default*
+// model — the only one either of them can use.
+export const supportsThinking = (model) => chat.thinkingModels.includes(model || chat.defaultModel);
+export const thinkingDefault = () => chat.thinkingDefault;
+
+// Wires one of those header toggles to its capability: checked only when the
+// model can think *and* the flag is on, disabled (with the reason in the
+// tooltip) when it can't. Returns nothing — the caller owns what a change
+// means, since the chat's toggle persists on a conversation and the
+// panel's/Composer's lives for the session.
+export function renderThinkingToggle(boxId, inputId, model, on) {
+  const box = $(boxId);
+  const input = $(inputId);
+  if (!box || !input) return;
+  const capable = supportsThinking(model);
+  input.disabled = !capable;
+  input.checked = capable && !!on;
+  box.title = capable
+    ? "ask the model to reason before it answers — better on hard questions, slower and dearer on easy ones"
+    : `${model || chat.defaultModel} doesn't support extended thinking`;
+}
 
 // returns the id of whichever conversation ends up current (freshly
 // auto-opened, or already open from before) so the router can reflect it
@@ -99,6 +130,21 @@ function renderModelSelect() {
     opt.selected = id === current;
     sel.append(opt);
   }
+  // the toggle's live/dead state follows whichever model is now selected, so
+  // it is always redrawn with the picker rather than on its own
+  renderChatThinking();
+}
+
+// The choice behind the toggle, null included: a conversation that has never
+// been toggled stores null and keeps following the server default as that
+// changes — the same fallback the model picker makes when llm_model is null.
+// Before the conversation exists, it's only a pending choice.
+const chatThinkingChoice = () => (chat.current ? chat.current.thinking : chat.pendingThinking);
+
+function renderChatThinking() {
+  const model = (chat.current && chat.current.llm_model) || $("#chat-model").value || chat.defaultModel;
+  renderThinkingToggle("#chat-thinking-box", "#chat-thinking", model,
+    chatThinkingChoice() ?? thinkingDefault());
 }
 
 async function refreshConvList() {
@@ -135,9 +181,15 @@ hooks.openConversation = openConversation;
 export async function newConversation() {
   const scope = [...chat.scopeSelection];
   const llmModel = $("#chat-model").value || undefined;
+  // the choice behind the toggle rather than the checkbox's state, so an
+  // untouched toggle sends null and the new conversation goes on following
+  // the server default instead of freezing today's default into a stored
+  // true/false — while a deliberate off is carried over from the
+  // conversation on screen, the way the model picker's value is
   const created = await api("/api/conversations", {
-    method: "POST", body: { model_scope: scope, llm_model: llmModel },
+    method: "POST", body: { model_scope: scope, llm_model: llmModel, thinking: chatThinkingChoice() },
   });
+  chat.pendingThinking = null;
   chat.conversations.unshift(created);
   await navigate(paths.chatConversation(created.id));
 }
@@ -416,10 +468,24 @@ function renderGroundingTable(result) {
 export function attachChat() {
   $("#chat-new").addEventListener("click", () => newConversation());
   $("#chat-model").addEventListener("change", async (e) => {
-    if (!chat.current) return;
+    // a model switch can make thinking unavailable (or available again),
+    // so the toggle is re-read either way — including before any
+    // conversation exists, where there is nothing to PATCH
+    if (!chat.current) { renderChatThinking(); return; }
     chat.current = await api(`/api/conversations/${chat.current.id}`,
       { method: "PATCH", body: { llm_model: e.target.value } });
+    renderChatThinking();
     renderConvList();
+  });
+  $("#chat-thinking").addEventListener("change", async (e) => {
+    const on = e.target.checked;
+    if (!chat.current) {
+      chat.pendingThinking = on;
+      return;
+    }
+    chat.current = await api(`/api/conversations/${chat.current.id}`,
+      { method: "PATCH", body: { thinking: on } });
+    renderChatThinking();
   });
   $("#chat-form").addEventListener("submit", async (e) => {
     e.preventDefault();

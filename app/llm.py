@@ -119,6 +119,8 @@ class Translator(Protocol):
         question: str,
         catalog: list[ModelCatalogEntry],
         prior_context: list[PriorTurn],
+        *,
+        thinking: bool | None = None,
     ) -> Iterator[StreamEvent]: ...
 
 
@@ -529,7 +531,8 @@ class LLMTranslator:
         """The request shared by translate() and translate_streaming() — the
         two differ only in streaming itself and in asking for extended
         thinking, which is worth its latency only when there is a live view
-        to show it in."""
+        to show it in (and, there, only when the user has left the THINKING
+        toggle on)."""
         return llmclient.ChatRequest(
             model=self.model,
             max_tokens=1024,
@@ -556,6 +559,8 @@ class LLMTranslator:
         question: str,
         catalog: list[ModelCatalogEntry],
         prior_context: list[PriorTurn],
+        *,
+        thinking: bool | None = None,
     ) -> Iterator[StreamEvent]:
         """Same call as translate(), but yields StreamEvents for live display
         (extended thinking on models that support it, and the tool call's
@@ -563,8 +568,16 @@ class LLMTranslator:
         carrying exactly what translate() would have returned outright. A
         caller that only wants the final decision can skip every event but
         "done" — nothing here is trusted any more than translate()'s return
-        value is; the re-validation in nlq.py is unchanged."""
-        request = self._request(question, catalog, prior_context, thinking=True)
+        value is; the re-validation in nlq.py is unchanged.
+
+        `thinking` is the UI's THINKING toggle: None means the caller has no
+        opinion and the server default (config.LLM_THINKING_DEFAULT) applies.
+        Asking for it on a model that can't do it is still filtered out one
+        layer down (app/llmclient.py's LLM_THINKING_MODELS check), so a
+        toggle left on while switching to a model that doesn't support
+        thinking cannot 400 the request."""
+        want_thinking = config.LLM_THINKING_DEFAULT if thinking is None else thinking
+        request = self._request(question, catalog, prior_context, thinking=want_thinking)
         try:
             for event in self.client.stream(request):
                 if event.kind == "done":

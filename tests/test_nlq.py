@@ -17,12 +17,17 @@ class FakeTranslator:
     list of display-only StreamEvents (`stream_events`, one list per queued
     response; omitted/exhausted just means "no live progress events, go
     straight to the final decision") so resolve_streaming() can be exercised
-    with zero network calls too."""
+    with zero network calls too.
+
+    `thinking_calls` records what each streaming call asked for — None for
+    "no opinion, use the server default", so a test can tell a UI toggle
+    left alone from one deliberately switched off."""
 
     def __init__(self, responses, stream_events=None):
         self.responses = list(responses)
         self.stream_events = list(stream_events or [])
         self.calls = []
+        self.thinking_calls = []
 
     def translate(self, question, catalog, prior_context):
         self.calls.append((question, catalog, prior_context))
@@ -32,8 +37,9 @@ class FakeTranslator:
             raise resp
         return resp
 
-    def translate_streaming(self, question, catalog, prior_context):
+    def translate_streaming(self, question, catalog, prior_context, *, thinking=None):
         self.calls.append((question, catalog, prior_context))
+        self.thinking_calls.append(thinking)
         assert self.responses, "FakeTranslator ran out of scripted responses"
         resp = self.responses.pop(0)
         events = self.stream_events.pop(0) if self.stream_events else []

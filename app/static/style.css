@@ -1498,14 +1498,17 @@ body.portal-dash #dash-name { pointer-events: none; }
    The indicator carries no data-role: a portal viewer sees the same badge an
    author does, since "is this tile instant, and how big is it" is the honest
    answer to "why did that feel slow" for either of them. */
-.dash-instant {
+/* .flag-toggle is the same control in the CHAT / COMPOSER / modelling-panel
+   headers (the THINKING opt-in) — one look for "a header-level switch", so a
+   second one never invents a third appearance. */
+.dash-instant, .flag-toggle {
   display: inline-flex; align-items: center; gap: 5px; margin-left: 14px;
   font-size: var(--text-xs); letter-spacing: var(--track-label); color: var(--pink); cursor: pointer;
   user-select: none;
 }
-.dash-instant input { accent-color: var(--ok); cursor: pointer; }
-.dash-instant:has(input:checked) { color: var(--ok); }
-.dash-instant:has(input:disabled) { opacity: .5; cursor: default; }
+.dash-instant input, .flag-toggle input { accent-color: var(--ok); cursor: pointer; }
+.dash-instant:has(input:checked), .flag-toggle:has(input:checked) { color: var(--ok); }
+.dash-instant:has(input:disabled), .flag-toggle:has(input:disabled) { opacity: .5; cursor: default; }
 .tile-head .mode-tag { border-color: currentColor; letter-spacing: var(--track-name); }
 
 /* ── modelling workspace ────────────────────────────── */

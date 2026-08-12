@@ -22,6 +22,10 @@ CREATE TABLE IF NOT EXISTS conversations (
     title TEXT NOT NULL DEFAULT '',
     model_scope TEXT NOT NULL DEFAULT '[]',
     llm_model TEXT,
+    -- the THINKING toggle: 1/0 once the user has had an opinion, NULL while
+    -- the conversation is still following the server default, exactly like
+    -- llm_model above being NULL until a model is picked
+    thinking INTEGER,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -52,6 +56,8 @@ class ConversationStore:
             cols = {r["name"] for r in conn.execute("PRAGMA table_info(conversations)")}
             if "llm_model" not in cols:
                 conn.execute("ALTER TABLE conversations ADD COLUMN llm_model TEXT")
+            if "thinking" not in cols:
+                conn.execute("ALTER TABLE conversations ADD COLUMN thinking INTEGER")
 
     def _conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -91,6 +97,10 @@ class ConversationStore:
             "title": row["title"],
             "model_scope": json.loads(row["model_scope"]),
             "llm_model": row["llm_model"],
+            # None (rather than a resolved true/false) so a conversation that
+            # has never been toggled keeps following the server default as it
+            # changes, instead of freezing whatever it was when created
+            "thinking": None if row["thinking"] is None else bool(row["thinking"]),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
@@ -120,20 +130,22 @@ class ConversationStore:
             return self._conversation_to_dict(conn, row) if row else None
 
     def create(self, user_id: int, model_scope: Optional[list[str]] = None,
-               llm_model: Optional[str] = None) -> dict:
+               llm_model: Optional[str] = None, thinking: Optional[bool] = None) -> dict:
         now = self._now()
         with self._conn() as conn:
             cur = conn.execute(
-                "INSERT INTO conversations (user_id, title, model_scope, llm_model, created_at, updated_at) "
-                "VALUES (?, '', ?, ?, ?, ?)",
-                (user_id, json.dumps(model_scope or []), llm_model, now, now),
+                "INSERT INTO conversations "
+                "(user_id, title, model_scope, llm_model, thinking, created_at, updated_at) "
+                "VALUES (?, '', ?, ?, ?, ?, ?)",
+                (user_id, json.dumps(model_scope or []), llm_model,
+                 None if thinking is None else int(thinking), now, now),
             )
             row = conn.execute("SELECT * FROM conversations WHERE id = ?", (cur.lastrowid,)).fetchone()
             return self._conversation_to_dict(conn, row)
 
     def update(self, conversation_id: int, user_id: int, *,
                title: Optional[str] = None, model_scope: Optional[list[str]] = None,
-               llm_model: Optional[str] = None) -> Optional[dict]:
+               llm_model: Optional[str] = None, thinking: Optional[bool] = None) -> Optional[dict]:
         if not self.get(conversation_id, user_id):
             return None
         fields, params = [], []
@@ -146,6 +158,9 @@ class ConversationStore:
         if llm_model is not None:
             fields.append("llm_model = ?")
             params.append(llm_model)
+        if thinking is not None:
+            fields.append("thinking = ?")
+            params.append(int(thinking))
         if fields:
             fields.append("updated_at = ?")
             params.append(self._now())

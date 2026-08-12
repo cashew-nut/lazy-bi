@@ -195,6 +195,22 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+def _bool(name: str, default: bool) -> bool:
+    """A yes/no env override for a flag setting.
+
+    Empty falls back to the default for the same reason _csv's does: empty
+    is what an unset variable looks like after a `${VAR:-}` in
+    docker-compose.yml. An unrecognized value falls back too rather than
+    reading as false, so a typo can't quietly turn a feature off.
+    """
+    raw = (os.environ.get(name) or "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return default
+
+
 # Extra allowance on the OpenAI wire only, where max_completion_tokens is a
 # single budget for reasoning tokens *and* the answer. The per-feature limits
 # below (and app/llm.py's, app/composer.py's) size the answer alone, the way
@@ -242,16 +258,26 @@ if LLM_MODEL and LLM_MODEL not in LLM_MODEL_CHOICES:
     # back (app/api/chat.py's _validate_llm_model) would 400
     LLM_MODEL_CHOICES = [LLM_MODEL, *LLM_MODEL_CHOICES]
 
-# Models to request extended thinking/reasoning from. Sent as Anthropic's
-# adaptive thinking or as OpenAI's reasoning_effort depending on the wire;
-# a model that doesn't support it rejects the whole request rather than
-# ignoring the parameter, which is why this is a declared list and not a
-# blanket flag. Same discipline as LLM_MODEL_CHOICES: only the Claude
-# defaults are assumed, anything else has to be named.
+# Models that *can* be asked for extended thinking/reasoning — a capability
+# declaration, not a preference. Sent as Anthropic's adaptive thinking or as
+# OpenAI's reasoning_effort depending on the wire; a model that doesn't
+# support it rejects the whole request rather than ignoring the parameter,
+# which is why this stays a declared list and not a blanket flag. Same
+# discipline as LLM_MODEL_CHOICES: only the Claude defaults are assumed,
+# anything else has to be named.
+#
+# *Whether* to ask is the UI's THINKING toggle (per conversation in chat,
+# per session in the modelling panel and the Composer) — this list decides
+# where that toggle is offered at all, and a request for thinking on a model
+# that isn't listed is dropped rather than sent (app/llmclient.py).
 LLM_THINKING_MODELS = set(_csv(
     "CI_LLM_THINKING_MODELS",
     [m for m in ("claude-opus-4-8", "claude-sonnet-5") if m in LLM_MODEL_CHOICES],
 ))
+# The state that toggle starts in: a new conversation's default, and what
+# any caller that never touches the toggle (the MCP skills seam, an API
+# client that omits the field) gets.
+LLM_THINKING_DEFAULT = _bool("CI_LLM_THINKING_DEFAULT", True)
 LLM_REASONING_EFFORT = os.environ.get("CI_LLM_REASONING_EFFORT", "medium").strip()
 
 # Sandbox coding agent (app/sandbox_agent.py) — writes polars for the open

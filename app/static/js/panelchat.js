@@ -10,7 +10,10 @@
    progress all look and behave identically in both places. */
 "use strict";
 
-import { fmtPartialQuery, isChatEnabled, parseSSE, renderLearnedNote, renderMessage, TOOL_LABELS } from "./chat.js";
+import {
+  fmtPartialQuery, isChatEnabled, parseSSE, renderLearnedNote, renderMessage,
+  renderThinkingToggle, supportsThinking, thinkingDefault, TOOL_LABELS,
+} from "./chat.js";
 import { $, el } from "./lib.js";
 
 // Mirrors app/api/chat.py's _PRIOR_CONTEXT_TURNS — trimmed client-side too
@@ -24,6 +27,7 @@ const panel = {
   description: "",       // live (possibly unsaved) description text — sent as extra context
   messages: [],           // ephemeral thread, lost on close/model switch
   history: [],             // resolved turns kept for follow-up context (never sent to storage)
+  thinking: null,          // THINKING toggle for this session; null = server default
   busy: false,
 };
 
@@ -61,6 +65,19 @@ function renderPanelChrome() {
   const panelEl = $("#mf-chat-panel");
   if (panelEl) panelEl.hidden = !panel.open || !panel.modelName;
   if (toggle) toggle.classList.toggle("on", panel.open);
+  renderPanelThinking();
+}
+
+// The panel always asks with the server's default LLM (it sends no
+// llm_model), so unlike the CHAT header — where the user picks the model and
+// a dead toggle explains itself — there's nothing to explain here: the
+// control is simply absent when that model can't think.
+function renderPanelThinking() {
+  const box = $("#mf-chat-thinking-box");
+  if (!box) return;
+  box.hidden = !supportsThinking();
+  renderThinkingToggle("#mf-chat-thinking-box", "#mf-chat-thinking", null,
+    panel.thinking == null ? thinkingDefault() : panel.thinking);
 }
 
 export function togglePanelChat() {
@@ -118,7 +135,8 @@ async function askPanel(question) {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Requested-With": "fetch" },
       body: JSON.stringify({
-        question, model_scope: [panel.modelName], description: panel.description, history: panel.history,
+        question, model_scope: [panel.modelName], description: panel.description,
+        history: panel.history, thinking: panel.thinking,
       }),
     });
     if (!res.ok) {
@@ -170,6 +188,7 @@ export function attachPanelChat() {
   $("#mf-chat-toggle").addEventListener("click", togglePanelChat);
   $("#mf-chat-close").addEventListener("click", closePanelChat);
   $("#mf-chat-clear").addEventListener("click", clearPanelThread);
+  $("#mf-chat-thinking").addEventListener("change", (e) => { panel.thinking = e.target.checked; });
   $("#mf-chat-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const input = $("#mf-chat-input");
