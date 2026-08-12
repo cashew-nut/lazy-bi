@@ -53,8 +53,18 @@ providers are supported, and what it sends to whichever one you configure.
 ```bash
 python3 -m venv .venv          # Python 3.10+
 .venv/bin/pip install -r requirements.txt
+cp .env.example .env           # optional: LLM settings/secrets, gitignored
 ./run.sh                       # or: .venv/bin/uvicorn app.main:app --port 8080
 ```
+
+`.env` is read by both ways of running the app — Docker Compose loads it, and
+`app/config.py` loads it for `./run.sh` and a bare `uvicorn`. A real
+environment variable always wins over a value in the file, so
+`CI_LLM_MODEL=gpt-5 ./run.sh` overrides one line without editing it. Values
+are taken literally (no shell expansion), so a key containing `$`, `#` or
+spaces needs no escaping. `CI_ENV_FILE` points somewhere else, or disables
+file loading entirely when set empty — which is what the test suite does, so
+a real key in your `.env` can't change what a test run sees.
 
 **Tests:**
 
@@ -1438,11 +1448,17 @@ export CI_LLM_MODEL=qwen2.5-coder:32b
 | `CI_LLM_MODEL` | a model id that endpoint actually serves (on Azure, the deployment name) |
 | `CI_LLM_PROVIDER` | `auto` (default) / `anthropic` / `openai` / `azure` / `bedrock` — override the guess |
 | `CI_LLM_MODEL_CHOICES` | comma-separated ids the CHAT model picker offers |
-| `CI_LLM_THINKING_MODELS` | comma-separated ids to request extended thinking/reasoning from; empty = never |
+| `CI_LLM_THINKING_MODELS` | comma-separated ids to request extended thinking/reasoning from; `none` = never |
 | `CI_LLM_REASONING_EFFORT` | `reasoning_effort` for those models on the OpenAI wire (default `medium`) |
 | `CI_LLM_API_VERSION` | only for Azure's older dated surface; set `CI_LLM_BASE_URL` to the bare resource root with it |
 | `CI_LLM_AWS_REGION` | region for native Bedrock (defaults to `AWS_REGION`) |
 | `CI_LLM_MAX_TOKENS_PARAM` | `auto` (default) / `max_tokens` / `max_completion_tokens` — see below |
+| `CI_ENV_FILE` | read settings from a different file than `./.env`; empty = read none |
+
+All of these can live in `.env` instead of your shell. A *blank* value there
+means "use the default", not "empty" — blank is what an unset variable looks
+like after `${VAR:-}` interpolation, so the list settings take the literal
+`none` to mean none.
 
 Detection is by URL because a URL is the only thing a deployer reliably has:
 `*.anthropic.com` → the Anthropic wire, `*.azure.com` / `*.azure-api.net` →

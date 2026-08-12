@@ -4,11 +4,67 @@ Everything defaults to a fully local demo: an embedded moto S3 emulator,
 a bundled semantic-model directory and a sqlite db in the project root.
 Point CI_S3_ENDPOINT at a real (or external emulator) endpoint to skip
 the embedded server.
+
+Settings come from the environment, optionally seeded from a `.env` file in
+the project root (_load_env_file below) so secrets — CI_LLM_API_KEY above
+all — can live in a gitignored file instead of a shell profile or a command
+line. Docker Compose already loads that same file on its own; this makes
+`./run.sh` and a bare `uvicorn` behave the same way. The test suite opts out
+(tests/conftest.py), so a real key sitting in a developer's `.env` can't
+change what a test run sees.
+
+The load happens before anything below reads os.environ, so a `.env` entry
+is indistinguishable from an exported variable — including for settings whose
+meaning depends on mere presence, like CI_S3_ENDPOINT disabling the embedded
+emulator.
 """
 import os
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _load_env_file() -> None:
+    """Seed os.environ from a `.env` file, without overriding anything the
+    real environment already sets — an explicit `export` (or a `-e` on a
+    container) always wins over the file, which is what makes a one-off
+    override possible without editing it.
+
+    Deliberately a literal parser, not a shell: a value is taken exactly as
+    written, so an API key containing `$`, `#`, backticks or spaces needs no
+    escaping and can never be mangled by expansion. The accepted subset is
+    the one `.env.example` documents — `KEY=value`, `#` comment lines, blank
+    lines, an optional `export ` prefix, and optional matching single or
+    double quotes around the value (stripped; useful only for preserving
+    leading/trailing whitespace).
+
+    Set CI_ENV_FILE to point somewhere else, or to an empty value to skip
+    file loading entirely (what the tests do, so a developer's own `.env`
+    can't change what a test run sees).
+    """
+    configured = os.environ.get("CI_ENV_FILE")
+    if configured is not None and not configured.strip():
+        return
+    path = Path(configured.strip()) if configured else PROJECT_ROOT / ".env"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return          # absent or unreadable: the environment alone decides
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.removeprefix("export ").strip()
+        if not key or key in os.environ:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        os.environ[key] = value
+
+
+_load_env_file()
 
 # S3 / emulator
 S3_ENDPOINT = os.environ.get("CI_S3_ENDPOINT", "http://127.0.0.1:9600")
@@ -121,11 +177,20 @@ LLM_ENABLED = bool(LLM_API_KEY) or LLM_PROVIDER == "bedrock"
 
 def _csv(name: str, default: list[str]) -> list[str]:
     """A comma-separated env override for a list setting, empty entries
-    dropped. An explicitly empty value means the empty list, not the default
-    — that's how CI_LLM_THINKING_MODELS turns extended thinking off."""
-    raw = os.environ.get(name)
-    if raw is None:
+    dropped.
+
+    An *empty* value falls back to the default rather than meaning the empty
+    list, because empty is what an unset variable looks like after passing
+    through a `${VAR:-}` in docker-compose.yml or a bare `KEY=` in a .env —
+    neither of which is someone asking to turn a feature off. To actually
+    mean "none", write `none`: explicit, and impossible to produce by
+    accident.
+    """
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
         return list(default)
+    if raw.lower() == "none":
+        return []
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 

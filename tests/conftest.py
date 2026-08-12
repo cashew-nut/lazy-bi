@@ -16,6 +16,10 @@ from pathlib import Path
 
 TEST_ENDPOINT = "http://127.0.0.1:9700"
 _tmpdir = tempfile.mkdtemp(prefix="cash_intel_test_")
+# empty = don't read any .env file, so a developer's own (gitignored, and
+# quite likely to hold a real CI_LLM_API_KEY) can't change what a test run
+# sees — the LLM features are flagged on by that key's mere presence
+os.environ["CI_ENV_FILE"] = ""
 os.environ["CI_S3_ENDPOINT"] = TEST_ENDPOINT          # also disables the embedded emulator
 os.environ["CI_DB_PATH"] = str(Path(_tmpdir) / "test.db")
 os.environ["CI_LOCAL_DATA_DIR"] = str(Path(_tmpdir) / "local_data")

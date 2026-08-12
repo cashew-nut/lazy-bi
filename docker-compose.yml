@@ -24,10 +24,8 @@ services:
       CI_LLM_MODEL: ${CI_LLM_MODEL:-claude-sonnet-5}
       CI_LLM_BASE_URL: ${CI_LLM_BASE_URL:-}
       CI_LLM_PROVIDER: ${CI_LLM_PROVIDER:-auto}
-      # no `:-` default on these two: an empty value means "none", so they
-      # must stay *unset* rather than be set empty when the host has no value
-      CI_LLM_MODEL_CHOICES:
-      CI_LLM_THINKING_MODELS:
+      CI_LLM_MODEL_CHOICES: ${CI_LLM_MODEL_CHOICES:-}
+      CI_LLM_THINKING_MODELS: ${CI_LLM_THINKING_MODELS:-}
       CI_LLM_API_VERSION: ${CI_LLM_API_VERSION:-}
       CI_LLM_AWS_REGION: ${CI_LLM_AWS_REGION:-}
     volumes:
@@ -68,10 +66,8 @@ services:
       CI_LLM_MODEL: ${CI_LLM_MODEL:-claude-sonnet-5}
       CI_LLM_BASE_URL: ${CI_LLM_BASE_URL:-}
       CI_LLM_PROVIDER: ${CI_LLM_PROVIDER:-auto}
-      # no `:-` default on these two: an empty value means "none", so they
-      # must stay *unset* rather than be set empty when the host has no value
-      CI_LLM_MODEL_CHOICES:
-      CI_LLM_THINKING_MODELS:
+      CI_LLM_MODEL_CHOICES: ${CI_LLM_MODEL_CHOICES:-}
+      CI_LLM_THINKING_MODELS: ${CI_LLM_THINKING_MODELS:-}
       CI_LLM_API_VERSION: ${CI_LLM_API_VERSION:-}
       CI_LLM_AWS_REGION: ${CI_LLM_AWS_REGION:-}
     volumes:

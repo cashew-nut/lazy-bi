@@ -488,9 +488,12 @@ _LLM_ENV = (
 def reloaded_config(monkeypatch):
     import importlib
 
-    def reload(**env):
+    def reload(_env_file=None, **env):
         for key in _LLM_ENV:
             monkeypatch.delenv(key, raising=False)
+        # empty = read no .env file at all (conftest sets the same thing for
+        # the whole run); a test that wants one passes its path
+        monkeypatch.setenv("CI_ENV_FILE", str(_env_file) if _env_file else "")
         for key, value in env.items():
             monkeypatch.setenv(key, value)
         return importlib.reload(config)
@@ -536,11 +539,85 @@ def test_the_default_model_is_always_selectable(reloaded_config):
     assert cfg.LLM_MODEL_CHOICES == ["gpt-5", "gpt-4o"]
 
 
-def test_thinking_can_be_turned_off_entirely(reloaded_config):
-    """An explicitly empty list means none, not "fall back to the default" —
-    the escape hatch for a gateway that rejects the parameter."""
-    cfg = reloaded_config(CI_LLM_API_KEY="k", CI_LLM_THINKING_MODELS="")
+def test_thinking_can_be_turned_off_with_none(reloaded_config):
+    """The escape hatch for a gateway that rejects the parameter."""
+    cfg = reloaded_config(CI_LLM_API_KEY="k", CI_LLM_THINKING_MODELS="none")
     assert cfg.LLM_THINKING_MODELS == set()
+
+
+def test_an_empty_list_setting_is_not_read_as_none(reloaded_config):
+    """Empty is what an *unset* variable looks like after passing through
+    docker-compose's `${VAR:-}` or a bare `KEY=` in a .env — neither is
+    someone asking to turn a feature off, so it must fall back to the
+    default rather than silently emptying the list."""
+    cfg = reloaded_config(CI_LLM_API_KEY="k", CI_LLM_THINKING_MODELS="", CI_LLM_MODEL_CHOICES="")
+    assert cfg.LLM_THINKING_MODELS == {"claude-opus-4-8", "claude-sonnet-5"}
+    assert cfg.LLM_MODEL_CHOICES == ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001"]
+
+
+# ── .env file loading ─────────────────────────────────────────────────────
+
+def test_env_file_supplies_settings(tmp_path, reloaded_config):
+    """The point of the whole thing: a key in a gitignored file, with no
+    export and no command line."""
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "# a comment\n"
+        "\n"
+        "CI_LLM_API_KEY=sk-from-file\n"
+        "export CI_LLM_MODEL=gpt-4o\n"
+        "CI_LLM_MODEL_CHOICES = gpt-4o, gpt-5 \n"
+        'CI_LLM_BASE_URL="https://api.openai.com/v1"\n'
+        "not a setting line\n",
+        encoding="utf-8",
+    )
+    cfg = reloaded_config(env_file)
+    assert cfg.LLM_API_KEY == "sk-from-file"
+    assert cfg.LLM_MODEL == "gpt-4o"
+    assert cfg.LLM_MODEL_CHOICES == ["gpt-4o", "gpt-5"]
+    assert cfg.LLM_BASE_URL == "https://api.openai.com/v1"
+    assert cfg.LLM_ENABLED is True
+
+
+def test_real_environment_wins_over_the_env_file(tmp_path, reloaded_config):
+    """So a one-off `CI_LLM_MODEL=... ./run.sh` overrides the file without
+    editing it — the same precedence every other dotenv loader uses."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("CI_LLM_API_KEY=sk-from-file\nCI_LLM_MODEL=gpt-4o\n", encoding="utf-8")
+    cfg = reloaded_config(env_file, CI_LLM_MODEL="gpt-5")
+    assert cfg.LLM_MODEL == "gpt-5"
+    assert cfg.LLM_API_KEY == "sk-from-file"      # not overridden, so still read
+
+
+def test_env_file_values_are_literal_not_shell_expanded(tmp_path, reloaded_config):
+    """A key is taken exactly as written — `$`, `#`, spaces and quotes inside
+    it are data, not syntax. Mangling a secret by expanding it would fail in
+    a way that looks like a bad key rather than a parsing bug."""
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "CI_LLM_API_KEY=sk-$HOME-a#b`c`-end\n"
+        "CI_LLM_MODEL='  spaced  '\n",
+        encoding="utf-8",
+    )
+    cfg = reloaded_config(env_file)
+    assert cfg.LLM_API_KEY == "sk-$HOME-a#b`c`-end"
+    assert cfg.LLM_MODEL == "  spaced  "
+
+
+def test_a_missing_env_file_is_not_an_error(tmp_path, reloaded_config):
+    """A fresh clone has no .env — the demo has to start anyway."""
+    cfg = reloaded_config(tmp_path / "nope.env")
+    assert cfg.LLM_ENABLED is False
+    assert cfg.LLM_MODEL == "claude-sonnet-5"
+
+
+def test_env_file_loading_can_be_disabled(tmp_path, reloaded_config):
+    """What the test suite itself relies on (tests/conftest.py), so a
+    developer's own .env can't change what a test run sees."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("CI_LLM_API_KEY=sk-from-file\n", encoding="utf-8")
+    assert reloaded_config(env_file).LLM_ENABLED is True
+    assert reloaded_config().LLM_ENABLED is False
 
 
 def test_bedrock_is_enabled_without_an_api_key(reloaded_config):
