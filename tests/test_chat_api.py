@@ -1,6 +1,6 @@
 """POST /api/conversations* — conversational analytics HTTP surface
 (specs/012-conversational-analytics/, US1 T012-T014, US4 T023, US3 T027,
-US2 T032, Polish T036). The real AnthropicTranslator is swapped for a
+US2 T032, Polish T036). The real LLMTranslator is swapped for a
 FakeTranslator on app.api.chat._translator for the duration of each test —
 no network calls, deterministic scripted decisions."""
 from __future__ import annotations
@@ -206,7 +206,7 @@ def test_ask_uses_a_dedicated_translator_for_a_non_default_model(viewer_client, 
         made.append(model)
         return t
 
-    monkeypatch.setattr(chat_api, "AnthropicTranslator", lambda model=None: fake_make(model))
+    monkeypatch.setattr(chat_api, "LLMTranslator", lambda model=None: fake_make(model))
     conv = viewer_client.post("/api/conversations", json={"llm_model": "claude-opus-4-8"}).json()
     res = viewer_client.post(f"/api/conversations/{conv['id']}/ask", json={"question": "revenue by category"})
     assert res.json()["response"]["outcome"] == "answered"

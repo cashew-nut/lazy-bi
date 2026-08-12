@@ -10,7 +10,7 @@ can drift out of sync with them again.
 """
 from __future__ import annotations
 
-from app import config, engine, llm
+from app import config, engine, llm, llmclient
 from app.semantic import TIME_GRAINS
 
 
@@ -259,32 +259,44 @@ def test_tools_for_catalog_does_not_mutate_the_shared_tools_list():
     assert propose["input_schema"]["properties"]["model"] == {"type": "string"}
 
 
-# ── adaptive thinking is only sent to models that support it (the bug this
+# ── extended thinking is only sent to models that support it (the bug this
 # fixes: Haiku doesn't, and got adaptive thinking unconditionally, 400ing
 # with "adaptive thinking is not supported on this model") ────────────────
 
 def test_thinking_kwargs_enabled_for_adaptive_capable_models():
+    client = llmclient.AnthropicClient()
     for model in ("claude-opus-4-8", "claude-sonnet-5"):
-        assert llm._thinking_kwargs(model) == {"thinking": {"type": "adaptive", "display": "summarized"}}
+        request = llmclient.ChatRequest(model=model, max_tokens=1, system="", tools=[], prompt="", thinking=True)
+        assert client._thinking_kwargs(request) == {"thinking": {"type": "adaptive", "display": "summarized"}}
 
 
 def test_thinking_kwargs_omitted_for_haiku():
-    assert llm._thinking_kwargs("claude-haiku-4-5-20251001") == {}
+    request = llmclient.ChatRequest(
+        model="claude-haiku-4-5-20251001", max_tokens=1, system="", tools=[], prompt="", thinking=True)
+    assert llmclient.AnthropicClient()._thinking_kwargs(request) == {}
 
 
-def test_adaptive_thinking_models_are_a_subset_of_llm_model_choices():
+def test_thinking_kwargs_omitted_when_the_caller_did_not_ask():
+    """translate() (non-streamed) has nothing to display thinking in, so it
+    never asks for it — even on a model that supports it."""
+    request = llmclient.ChatRequest(
+        model="claude-sonnet-5", max_tokens=1, system="", tools=[], prompt="", thinking=False)
+    assert llmclient.AnthropicClient()._thinking_kwargs(request) == {}
+
+
+def test_thinking_models_are_a_subset_of_llm_model_choices():
     """Guards against a typo drifting the two lists apart — every entry here
     must be one of the actually-selectable models (config.LLM_MODEL_CHOICES'
     own comment asks for the same discipline)."""
-    assert llm._ADAPTIVE_THINKING_MODELS <= set(config.LLM_MODEL_CHOICES)
+    assert config.LLM_THINKING_MODELS <= set(config.LLM_MODEL_CHOICES)
 
 
 def test_translate_streaming_wires_thinking_and_model_enum_into_the_real_call(monkeypatch):
     """Integration-level guard, not just the pure helpers in isolation: proves
-    AnthropicTranslator.translate_streaming() actually passes _thinking_kwargs()
-    and _tools_for_catalog() through to messages.stream() — thinking omitted
-    for a non-adaptive model (haiku; the exact reported 400), and
-    propose_query's `model` constrained to the catalog's own names."""
+    LLMTranslator.translate_streaming() actually passes its thinking request
+    and _tools_for_catalog() all the way through to messages.stream() —
+    thinking omitted for a non-adaptive model (haiku; the exact reported 400),
+    and propose_query's `model` constrained to the catalog's own names."""
     import anthropic
 
     captured = {}
@@ -309,19 +321,71 @@ def test_translate_streaming_wires_thinking_and_model_enum_into_the_real_call(mo
             return FakeStream()
 
     class FakeClient:
-        def __init__(self, api_key=None):
+        def __init__(self, **kwargs):
             self.messages = FakeMessages()
 
     monkeypatch.setattr(anthropic, "Anthropic", FakeClient)
     catalog = [llm.ModelCatalogEntry(name="sales", label="Sales", description="", dimensions=[], measures=[])]
 
-    haiku = llm.AnthropicTranslator(api_key="x", model="claude-haiku-4-5-20251001")
+    haiku = llm.LLMTranslator(api_key="x", model="claude-haiku-4-5-20251001")
     list(haiku.translate_streaming("q", catalog, []))
     assert "thinking" not in captured
     propose = next(t for t in captured["tools"] if t["name"] == "propose_query")
     assert propose["input_schema"]["properties"]["model"] == {"type": "string", "enum": ["sales"]}
 
     captured.clear()
-    sonnet = llm.AnthropicTranslator(api_key="x", model="claude-sonnet-5")
+    sonnet = llm.LLMTranslator(api_key="x", model="claude-sonnet-5")
     list(sonnet.translate_streaming("q", catalog, []))
     assert captured["thinking"] == {"type": "adaptive", "display": "summarized"}
+
+
+def test_translate_streaming_reaches_an_openai_endpoint_unchanged(monkeypatch):
+    """The same translator, the same prompt and tools, against an OpenAI-format
+    endpoint — the point of the whole abstraction. Asserts the wire translation
+    the OpenAI side needs: function-shaped tools carrying the *same* JSON
+    Schema (model enum included), forced tool choice, and a system message
+    rather than a system parameter."""
+    monkeypatch.setattr(config, "LLM_BASE_URL", "https://gateway.internal/v1")
+    monkeypatch.setattr(config, "LLM_PROVIDER", "auto")
+    captured = {}
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
+        return iter(())
+
+    _install_fake_openai(monkeypatch, fake_create)
+    catalog = [llm.ModelCatalogEntry(name="sales", label="Sales", description="", dimensions=[], measures=[])]
+
+    translator = llm.LLMTranslator(api_key="x", model="gpt-4o")
+    try:
+        list(translator.translate_streaming("q", catalog, []))
+    except llm.TranslatorError:
+        pass    # the empty stream ends with "model did not call any tool"
+
+    assert captured["tool_choice"] == "required"
+    assert captured["max_tokens"] == 1024
+    assert [m["role"] for m in captured["messages"]] == ["system", "user"]
+    assert captured["messages"][0]["content"] == llm._SYSTEM_PROMPT
+    propose = next(t for t in captured["tools"] if t["function"]["name"] == "propose_query")
+    assert propose["type"] == "function"
+    assert propose["function"]["parameters"]["properties"]["model"] == {"type": "string", "enum": ["sales"]}
+    # Anthropic-only hints must not leak through as unknown parameters
+    assert "eager_input_streaming" not in propose["function"]
+
+
+def _install_fake_openai(monkeypatch, create):
+    """Stand-in for the openai SDK's client, for tests that only care about
+    what reaches chat.completions.create()."""
+    import openai
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            kwargs.pop("stream", None)
+            return create(**kwargs)
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr(openai, "OpenAI", FakeClient)

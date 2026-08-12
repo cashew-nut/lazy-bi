@@ -278,9 +278,23 @@ def test_lineage_prompt_says_when_there_was_no_run():
 def test_system_prompt_is_sent_as_a_cached_block():
     """The doctrine block is long, static and resent every turn — the cache
     breakpoint is this feature's main cost lever, so it's asserted, not
-    assumed."""
-    blocks = sandbox_agent._system_blocks("hello")
-    assert blocks == [{"type": "text", "text": "hello",
+    assumed: the agent must ask for it, and the Anthropic wire must turn that
+    request into a real cache_control block."""
+    from app import llmclient
+
+    captured = {}
+
+    class RecordingClient:
+        def stream(self, req):
+            captured["request"] = req
+            yield llmclient.ClientEvent(kind="done", final=llmclient.ToolCall(name="answer", args={"text": "x"}))
+
+    agent = sandbox_agent.LLMSandboxAgent(api_key="x", client=RecordingClient())
+    list(agent.assist_streaming("do it", sandbox_agent.NotebookContext(name="nb"), []))
+    assert captured["request"].cache_system is True
+
+    system = llmclient.AnthropicClient()._system(captured["request"])
+    assert system == [{"type": "text", "text": sandbox_agent._ASSIST_SYSTEM_PROMPT,
                        "cache_control": {"type": "ephemeral"}}]
 
 

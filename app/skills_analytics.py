@@ -18,13 +18,13 @@ from dataclasses import asdict
 
 from . import config
 from .auth import User
-from .llm import AnthropicTranslator, TranslatorError
+from .llm import LLMTranslator, TranslatorError
 from .nlq import build_catalog, handle_decision, handle_translator_error, resolve, start_ask
 from .skills import Skill, register_skill
 
 # A dedicated instance (not app.api.chat's `_translator`) so tests can
 # monkeypatch this module's translator without reaching into chat.py's.
-_translator = AnthropicTranslator()
+_translator = LLMTranslator()
 
 _NOT_CONFIGURED_TEXT = "conversational analytics is not configured"
 

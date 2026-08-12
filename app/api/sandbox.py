@@ -33,7 +33,7 @@ router = APIRouter(tags=["sandbox"])
 # One stateless client for the server-configured models; a request that picks
 # a different coding model gets its own (mirrors app/api/chat.py's
 # _translator / _translator_for pair).
-_agent = sandbox_agent.AnthropicSandboxAgent()
+_agent = sandbox_agent.LLMSandboxAgent()
 
 
 class Cell(BaseModel):
@@ -124,7 +124,7 @@ def _agent_for(llm_model: Optional[str]):
         )
     if llm_model == config.SANDBOX_AGENT_MODEL:
         return _agent
-    return sandbox_agent.AnthropicSandboxAgent(model=llm_model)
+    return sandbox_agent.LLMSandboxAgent(model=llm_model)
 
 
 def _bucket_files() -> list[dict]:

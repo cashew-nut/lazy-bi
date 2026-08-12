@@ -19,15 +19,15 @@ from pydantic import BaseModel
 from .. import config
 from ..auth import User, require_role
 from ..composer import (
-    TEMPLATE_IDS, TEMPLATES, AnthropicComposer, ComposeRequest, ComposerError,
-    HtmlValidationError, build_catalog, sanitize_notebook_html,
+    TEMPLATE_IDS, TEMPLATES, ComposeRequest, ComposerError, HtmlValidationError,
+    LLMComposer, build_catalog, sanitize_notebook_html,
 )
 from ..registry import registry
 
 router = APIRouter(tags=["composer"])
 
 # One stateless client, monkeypatched by tests — mirrors chat.py's _translator.
-_composer = AnthropicComposer()
+_composer = LLMComposer()
 
 # History turns re-sent by the client each call; trimmed server-side too so a
 # long tinkering session can't grow an unbounded prompt.

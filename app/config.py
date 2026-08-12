@@ -4,11 +4,79 @@ Everything defaults to a fully local demo: an embedded moto S3 emulator,
 a bundled semantic-model directory and a sqlite db in the project root.
 Point CI_S3_ENDPOINT at a real (or external emulator) endpoint to skip
 the embedded server.
+
+Settings come from the environment, optionally seeded from a `.env` file in
+the project root (_load_env_file below) so secrets — CI_LLM_API_KEY above
+all — can live in a gitignored file instead of a shell profile or a command
+line. Docker Compose already loads that same file on its own; this makes
+`./run.sh` and a bare `uvicorn` behave the same way. The test suite opts out
+(tests/conftest.py), so a real key sitting in a developer's `.env` can't
+change what a test run sees.
+
+The load happens before anything below reads os.environ, so a `.env` entry
+is indistinguishable from an exported variable — including for settings whose
+meaning depends on mere presence, like CI_S3_ENDPOINT disabling the embedded
+emulator.
 """
 import os
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _load_env_file() -> list[str]:
+    """Seed os.environ from a `.env` file, without overriding anything the
+    real environment already sets — an explicit `export` (or a `-e` on a
+    container) always wins over the file, which is what makes a one-off
+    override possible without editing it.
+
+    Returns the keys the file set that were ignored for that reason. A
+    forgotten `export CI_LLM_API_KEY=...` from an earlier experiment beats
+    the `.env` written to replace it, and the only symptom is the old value
+    being used — so the names of the shadowed settings get reported at
+    startup (app/main.py) rather than left to be discovered from a 401.
+
+    Deliberately a literal parser, not a shell: a value is taken exactly as
+    written, so an API key containing `$`, `#`, backticks or spaces needs no
+    escaping and can never be mangled by expansion. The accepted subset is
+    the one `.env.example` documents — `KEY=value`, `#` comment lines, blank
+    lines, an optional `export ` prefix, and optional matching single or
+    double quotes around the value (stripped; useful only for preserving
+    leading/trailing whitespace).
+
+    Set CI_ENV_FILE to point somewhere else, or to an empty value to skip
+    file loading entirely (what the tests do, so a developer's own `.env`
+    can't change what a test run sees).
+    """
+    configured = os.environ.get("CI_ENV_FILE")
+    if configured is not None and not configured.strip():
+        return []
+    path = Path(configured.strip()) if configured else PROJECT_ROOT / ".env"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []       # absent or unreadable: the environment alone decides
+    shadowed = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.removeprefix("export ").strip()
+        if not key:
+            continue
+        if key in os.environ:
+            shadowed.append(key)
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        os.environ[key] = value
+    return shadowed
+
+
+# names only — the values are the point of keeping them out of a log
+ENV_FILE_SHADOWED = _load_env_file()
 
 # S3 / emulator
 S3_ENDPOINT = os.environ.get("CI_S3_ENDPOINT", "http://127.0.0.1:9600")
@@ -84,16 +152,107 @@ SESSION_IDLE_DAYS = int(os.environ.get("CI_SESSION_IDLE_DAYS", "7"))
 SESSION_MAX_DAYS = int(os.environ.get("CI_SESSION_MAX_DAYS", "30"))
 COOKIE_SECURE = os.environ.get("CI_COOKIE_SECURE", "0") == "1"
 
-# Conversational analytics (specs/012-conversational-analytics/) — off unless
-# an API key is configured, so an unconfigured deployment never sends
-# question text/schema/results to a third party (research.md R7).
-LLM_API_KEY = os.environ.get("CI_LLM_API_KEY", "")
+# ── LLM provider ──────────────────────────────────────────────────────────
+# Conversational analytics (specs/012-conversational-analytics/), the
+# Composer and the sandbox coding agent all share one provider config. Off
+# unless it is configured, so an unconfigured deployment never sends question
+# text/schema/results to a third party (research.md R7).
+#
+# The intended way to point at anything other than Anthropic's own API is a
+# URL and a key: CI_LLM_BASE_URL decides the wire format (app/llmclient.py's
+# resolve_provider), CI_LLM_API_KEY authenticates, CI_LLM_MODEL names a model
+# that endpoint actually serves. CI_LLM_PROVIDER overrides the detection for
+# the one case a URL can't express — a self-hosted gateway speaking the
+# Anthropic format on a neutral host — and selects AWS SigV4 auth for native
+# Bedrock, which has no API key to give.
+# .strip() because a key that picked up a trailing newline or space on its
+# way here (a CRLF-edited .env, a `$(cat key.txt)`, a copy-paste) is sent
+# verbatim otherwise, and every provider answers that with a flat 401 — which
+# reads as "wrong key" rather than "right key, wrong bytes". Whitespace is
+# never part of a real key, so trimming it can only help.
+LLM_API_KEY = os.environ.get("CI_LLM_API_KEY", "").strip()
+LLM_BASE_URL = os.environ.get("CI_LLM_BASE_URL", "").strip()
+LLM_PROVIDER = os.environ.get("CI_LLM_PROVIDER", "auto").strip().lower()
 LLM_MODEL = os.environ.get("CI_LLM_MODEL", "claude-sonnet-5")
-LLM_ENABLED = bool(LLM_API_KEY)
+
+# Azure's dated api-version surface (deployment name in the path). Leave
+# unset for Azure's newer /openai/v1/ endpoint, which needs only URL + key.
+LLM_API_VERSION = os.environ.get("CI_LLM_API_VERSION", "").strip()
+# Native Bedrock (CI_LLM_PROVIDER=bedrock) signs with the standard AWS
+# credential chain; only the region has to be stated, and it defaults to the
+# one the object store already uses.
+LLM_AWS_REGION = os.environ.get("CI_LLM_AWS_REGION", "").strip() or AWS_REGION
+# Reasoning models renamed max_tokens -> max_completion_tokens on the OpenAI
+# wire. "auto" guesses from the model id and self-corrects on the provider's
+# first 400 (app/llmclient.py); pin it if a gateway's error text is unclear.
+LLM_MAX_TOKENS_PARAM = os.environ.get("CI_LLM_MAX_TOKENS_PARAM", "auto").strip()
+
+
+def _int(name: str, default: int) -> int:
+    try:
+        return int((os.environ.get(name) or "").strip())
+    except ValueError:
+        return default
+
+
+# Extra allowance on the OpenAI wire only, where max_completion_tokens is a
+# single budget for reasoning tokens *and* the answer. The per-feature limits
+# below (and app/llm.py's, app/composer.py's) size the answer alone, the way
+# Anthropic's max_tokens does, so a reasoning model needs room on top or it
+# spends the lot thinking and never reaches the tool call.
+LLM_REASONING_TOKENS = _int("CI_LLM_REASONING_TOKENS", 8192)
+
+# Native Bedrock authenticates by IAM role rather than by key, so an empty
+# CI_LLM_API_KEY does not mean "unconfigured" there.
+LLM_ENABLED = bool(LLM_API_KEY) or LLM_PROVIDER == "bedrock"
+
+
+def _csv(name: str, default: list[str]) -> list[str]:
+    """A comma-separated env override for a list setting, empty entries
+    dropped.
+
+    An *empty* value falls back to the default rather than meaning the empty
+    list, because empty is what an unset variable looks like after passing
+    through a `${VAR:-}` in docker-compose.yml or a bare `KEY=` in a .env —
+    neither of which is someone asking to turn a feature off. To actually
+    mean "none", write `none`: explicit, and impossible to produce by
+    accident.
+    """
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return list(default)
+    if raw.lower() == "none":
+        return []
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 # User-selectable per conversation (app/api/chat.py); CI_LLM_MODEL above is
-# just the default a new conversation starts with. Keep in sync with the
-# id's actually valid for the configured provider.
-LLM_MODEL_CHOICES = ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001"]
+# just the default a new conversation starts with. The Claude defaults only
+# apply while CI_LLM_MODEL is one of them — point CI_LLM_MODEL at another
+# provider's model and the picker narrows to that model alone unless
+# CI_LLM_MODEL_CHOICES names the rest, since no list of model ids is valid
+# across providers.
+_DEFAULT_MODEL_CHOICES = ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001"]
+LLM_MODEL_CHOICES = _csv(
+    "CI_LLM_MODEL_CHOICES",
+    _DEFAULT_MODEL_CHOICES if LLM_MODEL in _DEFAULT_MODEL_CHOICES else [LLM_MODEL],
+)
+if LLM_MODEL and LLM_MODEL not in LLM_MODEL_CHOICES:
+    # the default must always be selectable, or every request that echoes it
+    # back (app/api/chat.py's _validate_llm_model) would 400
+    LLM_MODEL_CHOICES = [LLM_MODEL, *LLM_MODEL_CHOICES]
+
+# Models to request extended thinking/reasoning from. Sent as Anthropic's
+# adaptive thinking or as OpenAI's reasoning_effort depending on the wire;
+# a model that doesn't support it rejects the whole request rather than
+# ignoring the parameter, which is why this is a declared list and not a
+# blanket flag. Same discipline as LLM_MODEL_CHOICES: only the Claude
+# defaults are assumed, anything else has to be named.
+LLM_THINKING_MODELS = set(_csv(
+    "CI_LLM_THINKING_MODELS",
+    [m for m in ("claude-opus-4-8", "claude-sonnet-5") if m in LLM_MODEL_CHOICES],
+))
+LLM_REASONING_EFFORT = os.environ.get("CI_LLM_REASONING_EFFORT", "medium").strip()
 
 # Sandbox coding agent (app/sandbox_agent.py) — writes polars for the open
 # notebook, and fills in a converted pipeline's lineage. Shares CI_LLM_API_KEY
@@ -106,9 +265,14 @@ LLM_MODEL_CHOICES = ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-202
 # anything itself.
 SANDBOX_AGENT_MODEL = os.environ.get("CI_SANDBOX_AGENT_MODEL", LLM_MODEL)
 # Lineage generation is mechanical summarization of a script the platform
-# already parsed, so it defaults to the cheapest/fastest choice rather than
-# to whatever the coding agent uses.
-SANDBOX_LINEAGE_MODEL = os.environ.get("CI_SANDBOX_LINEAGE_MODEL", "claude-haiku-4-5-20251001")
+# already parsed, so it defaults to the cheapest/fastest choice available —
+# but only when that choice is actually selectable, since a hardcoded Claude
+# id is not a valid model on any other provider.
+_CHEAPEST_MODEL = "claude-haiku-4-5-20251001"
+SANDBOX_LINEAGE_MODEL = os.environ.get(
+    "CI_SANDBOX_LINEAGE_MODEL",
+    _CHEAPEST_MODEL if _CHEAPEST_MODEL in LLM_MODEL_CHOICES else LLM_MODEL,
+)
 SANDBOX_AGENT_MAX_TOKENS = 2048
 SANDBOX_LINEAGE_MAX_TOKENS = 1024
 # Context budget: how much of the live notebook is sent per request. Cell
@@ -122,7 +286,7 @@ SANDBOX_AGENT_HISTORY_TURNS = 6
 
 # Agent/Skills MCP server (specs/017-agent-skills-mcp-server/) — per-identity
 # rate limit on skill invocations that call the LLM backend (ask_question),
-# so a single session/token can't drive unbounded Anthropic API cost/load
+# so a single session/token can't drive unbounded LLM API cost/load
 # through the external /mcp surface (research.md R3). In-process only — no
 # shared store needed, matching the single-uvicorn-worker deployment model.
 MCP_RATE_LIMIT_PER_MIN = int(os.environ.get("CI_MCP_RATE_LIMIT_PER_MIN", "20"))

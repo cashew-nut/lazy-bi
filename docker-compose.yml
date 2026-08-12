@@ -7,11 +7,13 @@
 # Behind a TLS proxy, pass CI_COOKIE_SECURE=1 (and optionally
 # CI_SESSION_IDLE_DAYS / CI_SESSION_MAX_DAYS) via `environment:`.
 # Conversational analytics (specs/012-conversational-analytics/) is off
-# unless CI_LLM_API_KEY (an Anthropic API key, "sk-ant-...") is set. Export it
-# in your shell, or put it in a .env file next to this compose file (copy
-# .env.example), and it's picked up below — no compose edits needed. See the
-# README's "Conversational analytics" section for exactly what that sends to
-# the configured LLM provider.
+# unless CI_LLM_API_KEY is set. Any OpenAI- or Anthropic-compatible endpoint
+# works — set CI_LLM_BASE_URL and CI_LLM_MODEL to match your provider, and
+# leave the URL unset for Anthropic's own API. Export them in your shell, or
+# put them in a .env file next to this compose file (copy .env.example), and
+# they're picked up below — no compose edits needed. See the README's
+# "Conversational analytics" section for the full provider list and for
+# exactly what this sends to whichever one you configure.
 services:
   app:
     build: .
@@ -20,6 +22,12 @@ services:
     environment:
       CI_LLM_API_KEY: ${CI_LLM_API_KEY:-}
       CI_LLM_MODEL: ${CI_LLM_MODEL:-claude-sonnet-5}
+      CI_LLM_BASE_URL: ${CI_LLM_BASE_URL:-}
+      CI_LLM_PROVIDER: ${CI_LLM_PROVIDER:-auto}
+      CI_LLM_MODEL_CHOICES: ${CI_LLM_MODEL_CHOICES:-}
+      CI_LLM_THINKING_MODELS: ${CI_LLM_THINKING_MODELS:-}
+      CI_LLM_API_VERSION: ${CI_LLM_API_VERSION:-}
+      CI_LLM_AWS_REGION: ${CI_LLM_AWS_REGION:-}
     volumes:
       - app-data:/data              # sqlite: visuals, dashboards, users, sessions
       - ./models:/srv/models        # edit semantic models from the host, live
@@ -56,6 +64,12 @@ services:
       AWS_SECRET_ACCESS_KEY: cashintel-secret
       CI_LLM_API_KEY: ${CI_LLM_API_KEY:-}
       CI_LLM_MODEL: ${CI_LLM_MODEL:-claude-sonnet-5}
+      CI_LLM_BASE_URL: ${CI_LLM_BASE_URL:-}
+      CI_LLM_PROVIDER: ${CI_LLM_PROVIDER:-auto}
+      CI_LLM_MODEL_CHOICES: ${CI_LLM_MODEL_CHOICES:-}
+      CI_LLM_THINKING_MODELS: ${CI_LLM_THINKING_MODELS:-}
+      CI_LLM_API_VERSION: ${CI_LLM_API_VERSION:-}
+      CI_LLM_AWS_REGION: ${CI_LLM_AWS_REGION:-}
     volumes:
       - app-data:/data
       - ./models:/srv/models

@@ -1,6 +1,6 @@
 """The Composer: sanitize_notebook_html's contract (the single gate between
 raw LLM output and anything a caller may save) + the /api/composer surface.
-The real AnthropicComposer is swapped for a FakeComposer on
+The real LLMComposer is swapped for a FakeComposer on
 app.api.composer._composer, mirroring test_chat_api's FakeTranslator — no
 network calls, deterministic scripted pages."""
 from __future__ import annotations

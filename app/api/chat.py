@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 from .. import config, engine, nlq, semantic
 from ..auth import User, require_role
-from ..llm import AnthropicTranslator, PriorTurn, StreamEvent, TranslatorError
+from ..llm import LLMTranslator, PriorTurn, StreamEvent, TranslatorError
 from ..registry import registry
 from .visuals import _validate_visual_spec
 
@@ -27,7 +27,7 @@ router = APIRouter(tags=["chat"])
 # The default translator (server-configured model) — a thin, stateless API
 # client, so one instance is enough. A conversation that picks a non-default
 # model gets its own instance from _translator_for() below.
-_translator = AnthropicTranslator()
+_translator = LLMTranslator()
 
 # How many prior turns feed into follow-up context (research.md R5).
 _PRIOR_CONTEXT_TURNS = 5
@@ -96,7 +96,7 @@ def _translator_for(llm_model: Optional[str]):
     unmodified."""
     if not llm_model or llm_model == config.LLM_MODEL:
         return _translator
-    return AnthropicTranslator(model=llm_model)
+    return LLMTranslator(model=llm_model)
 
 
 def _get_owned(conversation_id: int, user: User) -> dict:
