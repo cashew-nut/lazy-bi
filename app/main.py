@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse, Response
 
-from . import auth, config, emulator, mcpserver, pipeline_jobs, seed
+from . import auth, config, emulator, llmclient, mcpserver, pipeline_jobs, seed
 # Registers ask_question/list_models into app/skills.py's registry as a
 # module-import side effect — must happen before mcpserver.create_asgi_app()
 # below reads that registry (specs/017-agent-skills-mcp-server/research.md
@@ -100,6 +100,28 @@ class NoCacheStaticFiles(StaticFiles):
         return response
 
 
+def _llm_banner() -> str:
+    """What the LLM settings actually resolved to, printed on every start.
+
+    Every one of these is a value a deployer *believes* they set and cannot
+    otherwise confirm: which wire format their URL was detected as, and
+    whether the key that reached the process is the key they configured (as a
+    fingerprint — see llmclient.key_fingerprint). Both stay invisible until a
+    request fails, and neither is guessable from the 401 or 404 that follows.
+    """
+    if not config.LLM_ENABLED:
+        return "LLM features off (set CI_LLM_API_KEY to enable)"
+    parts = [
+        f"provider={llmclient.configured_provider()}",
+        f"model={config.LLM_MODEL}",
+        f"url={config.LLM_BASE_URL or 'https://api.anthropic.com (default)'}",
+    ]
+    if config.LLM_API_VERSION:
+        parts.append(f"api-version={config.LLM_API_VERSION}")
+    parts.append(f"key={llmclient.key_fingerprint(config.LLM_API_KEY)}")
+    return "LLM: " + " ".join(parts)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # mcp_app's own lifespan (its Streamable HTTP session manager's task
@@ -114,6 +136,7 @@ async def lifespan(app: FastAPI):
         registry.init()
         print(f"[cash-intel] loaded models: {', '.join(registry.models) or '(none)'}")
         print(f"[cash-intel] loaded agents: {', '.join(registry.agents) or '(none)'}")
+        print(f"[cash-intel] {_llm_banner()}")
         seed.seed_bootstrap_admin()
         if seed.seed_notebook_demo():
             print("[cash-intel] seeded demo notebook: Sales Overview")

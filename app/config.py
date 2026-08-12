@@ -153,7 +153,12 @@ COOKIE_SECURE = os.environ.get("CI_COOKIE_SECURE", "0") == "1"
 # the one case a URL can't express — a self-hosted gateway speaking the
 # Anthropic format on a neutral host — and selects AWS SigV4 auth for native
 # Bedrock, which has no API key to give.
-LLM_API_KEY = os.environ.get("CI_LLM_API_KEY", "")
+# .strip() because a key that picked up a trailing newline or space on its
+# way here (a CRLF-edited .env, a `$(cat key.txt)`, a copy-paste) is sent
+# verbatim otherwise, and every provider answers that with a flat 401 — which
+# reads as "wrong key" rather than "right key, wrong bytes". Whitespace is
+# never part of a real key, so trimming it can only help.
+LLM_API_KEY = os.environ.get("CI_LLM_API_KEY", "").strip()
 LLM_BASE_URL = os.environ.get("CI_LLM_BASE_URL", "").strip()
 LLM_PROVIDER = os.environ.get("CI_LLM_PROVIDER", "auto").strip().lower()
 LLM_MODEL = os.environ.get("CI_LLM_MODEL", "claude-sonnet-5")

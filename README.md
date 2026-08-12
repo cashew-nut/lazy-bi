@@ -1493,6 +1493,29 @@ who is behind it:
   the OpenAI wire names this explicitly, alongside the provider and the exact
   path that was sent.
 
+**Checking what actually resolved.** Startup prints one line with everything
+a misconfiguration hides — the detected provider, the model, the URL, and a
+*fingerprint* of the key that reached the process:
+
+```
+[cash-intel] LLM: provider=azure model=gpt-5 url=https://gw.example.net/azure-openai api-version=2025-02-01-preview key=len=32 sha256=dfd5e83e
+```
+
+The fingerprint exists for the one failure a 401 can't describe: a key that
+is correct where you copied it from and *damaged in transit* — truncated by
+`$` expansion, carrying its own quotes, or line-wrapped. All of those look
+exactly like a wrong key. Compare it against the key at its source:
+
+```bash
+python -c "import hashlib,sys; print(len(sys.argv[1]), hashlib.sha256(sys.argv[1].encode()).hexdigest()[:8])" "$KEY"
+```
+
+Same length and hash means the key arrived intact and is genuinely being
+rejected — look at entitlement for that deployment rather than at the key.
+Different means it was mangled on the way in, and the length usually says
+how. (Leading/trailing whitespace is trimmed before use, so that one is
+already handled.) Auth failures log the same fingerprint.
+
 Three details the abstraction absorbs rather than pushing onto you:
 
 - **Model ids aren't portable, so the Claude defaults get out of the way.**

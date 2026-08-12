@@ -442,6 +442,44 @@ def test_a_failure_logs_which_provider_and_url_it_was(monkeypatch, caplog):
     assert "CI_LLM_API_VERSION" in logged
 
 
+def test_key_fingerprint_identifies_a_key_without_disclosing_it():
+    """The point is to make "but that key works elsewhere" checkable: same
+    key -> same label, any difference at all -> a different one, and the key
+    itself never appears."""
+    key = "sk-a-real-looking-secret-value"
+    label = llmclient.key_fingerprint(key)
+    assert llmclient.key_fingerprint(key) == label          # stable
+    assert key not in label and key[4:] not in label        # and not reversible
+    assert f"len={len(key)}" in label
+
+    # the mangling this exists to catch is invisible in a 401
+    assert llmclient.key_fingerprint(key + "\n") != label   # trailing newline
+    assert llmclient.key_fingerprint(f'"{key}"') != label   # quotes kept in the value
+    assert llmclient.key_fingerprint(key[:12]) != label     # truncated by expansion
+    assert llmclient.key_fingerprint("") == "(none)"
+
+
+def test_an_auth_failure_reports_the_key_that_was_actually_sent(monkeypatch, caplog):
+    """A 401 says nothing about the key it rejected, so a deployer can't tell
+    a wrong key from a right one that arrived damaged."""
+    import openai
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": type("C", (), {
+                "create": lambda s, **k: (_ for _ in ()).throw(
+                    _status_error(401, "https://x/chat/completions")),
+            })()})()
+
+    monkeypatch.setattr(openai, "OpenAI", FakeClient)
+    with caplog.at_level("WARNING", logger="app.llmclient"):
+        with pytest.raises(llmclient.LLMError):
+            llmclient.OpenAIClient(api_key="sk-secret-value").call(_request())
+
+    assert llmclient.key_fingerprint("sk-secret-value") in caplog.text
+    assert "sk-secret-value" not in caplog.text     # the label, never the key
+
+
 def test_the_azure_hint_is_not_offered_for_unrelated_failures(monkeypatch, caplog):
     """A 401, or a 404 we already routed to Azure, is a different problem —
     pointing at the api-version there would send a deployer the wrong way."""
@@ -729,6 +767,17 @@ def test_env_file_loading_can_be_disabled(tmp_path, reloaded_config):
     env_file.write_text("CI_LLM_API_KEY=sk-from-file\n", encoding="utf-8")
     assert reloaded_config(env_file).LLM_ENABLED is True
     assert reloaded_config().LLM_ENABLED is False
+
+
+def test_an_api_key_is_trimmed_of_whitespace(reloaded_config):
+    """A CRLF-edited .env, a `$(cat key.txt)` or a stray copy-paste space
+    otherwise goes into the auth header verbatim and 401s, which reads as
+    "wrong key" rather than "right key, wrong bytes"."""
+    cfg = reloaded_config(CI_LLM_API_KEY="  sk-real-key\r\n")
+    assert cfg.LLM_API_KEY == "sk-real-key"
+    assert cfg.LLM_ENABLED is True
+    # whitespace alone is not a key, so it must not flag the features on
+    assert reloaded_config(CI_LLM_API_KEY="   \n").LLM_ENABLED is False
 
 
 def test_bedrock_is_enabled_without_an_api_key(reloaded_config):
