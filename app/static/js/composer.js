@@ -10,7 +10,7 @@
    the composer never writes a notebook behind the user's back. */
 "use strict";
 
-import { parseSSE } from "./chat.js";
+import { parseSSE, renderThinkingToggle, supportsThinking, thinkingDefault } from "./chat.js";
 import { $, api, el } from "./lib.js";
 import { hydrate, stripScripts } from "./notebook.js";
 import { navigate, paths } from "./router.js";
@@ -31,8 +31,20 @@ const cp = {
   savedHtml: null,    // last html persisted to the notebooks store
   savedName: null,
   history: [],        // [{instruction, summary}] for follow-up context
+  thinking: null,     // THINKING toggle for this draft; null = server default
   busy: false,
 };
+
+// The composer always composes with the server's default LLM, so — like the
+// modelling panel's — the toggle is shown only when that model can think at
+// all (chat.js owns both the capability list and the toggle's look).
+function renderComposerThinking() {
+  const box = $("#cp-thinking-box");
+  if (!box) return;
+  box.hidden = !supportsThinking();
+  renderThinkingToggle("#cp-thinking-box", "#cp-thinking", null,
+    cp.thinking == null ? thinkingDefault() : cp.thinking);
+}
 
 const dirty = () => (cp.html && cp.html !== cp.savedHtml) || (cp.name && cp.name !== cp.savedName);
 
@@ -52,6 +64,7 @@ export async function openComposer(notebookId) {
   cp.savedHtml = null;
   cp.savedName = null;
   cp.history = [];
+  cp.thinking = null;
   cp.busy = false;
 
   const thread = $("#cp-thread");
@@ -59,6 +72,7 @@ export async function openComposer(notebookId) {
   $("#cp-narrative").value = "";
   $("#cp-name").value = "";
   $("#cp-open").disabled = notebookId == null;
+  renderComposerThinking();
   setStatus("");
 
   try {
@@ -209,6 +223,7 @@ async function composeTurn(instruction) {
         dashboard_ids: [...cp.dashIds],
         current_html: cp.html,
         history: cp.history.slice(-HISTORY_TURNS),
+        thinking: cp.thinking,
       }),
     });
     if (!res.ok) {
@@ -305,6 +320,7 @@ export function attachComposer() {
       input.focus();
     }
   });
+  $("#cp-thinking").addEventListener("change", (e) => { cp.thinking = e.target.checked; });
   $("#cp-save").addEventListener("click", () => saveDraft(false));
   $("#cp-save-as").addEventListener("click", () => saveDraft(true));
   // navigate() runs the leave guard, so an unsaved draft still prompts here

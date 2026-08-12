@@ -7,6 +7,30 @@ def test_health(client):
     assert data["ok"] and "sales" in data["models"]
 
 
+def test_health_reports_where_the_thinking_toggle_applies(client, monkeypatch):
+    """The UI never hardcodes which models can think — it asks health, so the
+    THINKING toggle can't offer a model whose provider would 400 on the
+    parameter. Reported in picker order, and only for models actually
+    selectable."""
+    from app.api import explorer
+
+    monkeypatch.setattr(explorer.config, "LLM_ENABLED", True)
+    monkeypatch.setattr(explorer.config, "LLM_MODEL_CHOICES", ["a-thinker", "b-plain", "c-thinker"])
+    monkeypatch.setattr(explorer.config, "LLM_THINKING_MODELS", {"c-thinker", "a-thinker", "unlisted"})
+    monkeypatch.setattr(explorer.config, "LLM_THINKING_DEFAULT", False)
+
+    data = client.get("/api/health").json()
+    assert data["llm_thinking_models"] == ["a-thinker", "c-thinker"]
+    assert data["llm_thinking_default"] is False
+
+
+def test_health_offers_no_thinking_models_when_llm_is_unconfigured(client, monkeypatch):
+    from app.api import explorer
+
+    monkeypatch.setattr(explorer.config, "LLM_ENABLED", False)
+    assert client.get("/api/health").json()["llm_thinking_models"] == []
+
+
 def test_models_public_shape(client):
     models = client.get("/api/models").json()
     sales = next(m for m in models if m["name"] == "sales")

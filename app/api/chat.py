@@ -36,12 +36,17 @@ _PRIOR_CONTEXT_TURNS = 5
 class ConversationIn(BaseModel):
     model_scope: list[str] = []
     llm_model: Optional[str] = None
+    # the CHAT header's THINKING toggle; omitted/null = follow the server
+    # default (config.LLM_THINKING_DEFAULT), same as llm_model omitted means
+    # "follow config.LLM_MODEL"
+    thinking: Optional[bool] = None
 
 
 class ConversationPatch(BaseModel):
     title: Optional[str] = None
     model_scope: Optional[list[str]] = None
     llm_model: Optional[str] = None
+    thinking: Optional[bool] = None
 
 
 class AskIn(BaseModel):
@@ -65,6 +70,7 @@ class PanelAskIn(BaseModel):
     question: str
     model_scope: list[str] = []
     llm_model: Optional[str] = None
+    thinking: Optional[bool] = None
     description: Optional[str] = None
     history: list[dict] = []
 
@@ -128,7 +134,8 @@ def list_conversations(user: User = Depends(require_role("viewer"))):
 def create_conversation(body: ConversationIn, user: User = Depends(require_role("viewer"))):
     _validate_scope(body.model_scope)
     _validate_llm_model(body.llm_model)
-    return registry.conversation_store.create(user.id, body.model_scope, body.llm_model)
+    return registry.conversation_store.create(
+        user.id, body.model_scope, body.llm_model, body.thinking)
 
 
 @router.get("/conversations/{conversation_id}", dependencies=[Depends(_require_enabled)])
@@ -146,7 +153,7 @@ def update_conversation(conversation_id: int, body: ConversationPatch,
         _validate_llm_model(body.llm_model)
     updated = registry.conversation_store.update(
         conversation_id, user.id, title=body.title, model_scope=body.model_scope,
-        llm_model=body.llm_model)
+        llm_model=body.llm_model, thinking=body.thinking)
     if not updated:
         raise HTTPException(status_code=404, detail="conversation not found")
     return updated
@@ -274,7 +281,7 @@ def ask_stream(conversation_id: int, body: AskIn, user: User = Depends(require_r
         try:
             for item in nlq.resolve_streaming(
                 body.question, catalog, prior_context, registry.models, translator,
-                scope=conv["model_scope"],
+                scope=conv["model_scope"], thinking=conv.get("thinking"),
             ):
                 if not isinstance(item, StreamEvent):
                     decision = item
@@ -438,13 +445,17 @@ def panel_ask_stream(body: PanelAskIn, user: User = Depends(require_role("viewer
     translator = _translator_for(body.llm_model)
     question = body.question
     scope = body.model_scope
+    # the panel has no conversation row to remember a toggle in, so its
+    # THINKING state rides along with each request (as llm_model already does)
+    thinking = body.thinking
 
     def gen():
         yield _sse("question", {"question": _panel_message("user", question_text=question)})
         decision = None
         try:
             for item in nlq.resolve_streaming(
-                question, catalog, prior_context, registry.models, translator, scope=scope,
+                question, catalog, prior_context, registry.models, translator,
+                scope=scope, thinking=thinking,
             ):
                 if not isinstance(item, StreamEvent):
                     decision = item

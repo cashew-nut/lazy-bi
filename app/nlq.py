@@ -465,6 +465,7 @@ def resolve_streaming(
     models: dict[str, semantic.Model],
     translator: Translator,
     scope: list[str] | None = None,
+    thinking: bool | None = None,
 ) -> Iterator[StreamEvent | Decision]:
     """Streaming twin of resolve(): yields every StreamEvent from
     translator.translate_streaming() verbatim, for a caller to render live
@@ -472,10 +473,16 @@ def resolve_streaming(
     Decision as the last item — re-validated by the very same _dispatch()
     resolve() uses, so streaming can never make a caller trust anything
     resolve() wouldn't. Raises TranslatorError only for the LLM call itself
-    failing, exactly like resolve()."""
+    failing, exactly like resolve().
+
+    `thinking` carries the caller's THINKING toggle through to the
+    translator untouched; None means "no opinion", i.e. the server default.
+    It only ever changes how much the model deliberates before answering —
+    never what the answer is allowed to be, which is _dispatch()'s call
+    either way."""
     scope = scope or []
     raw = None
-    for event in translator.translate_streaming(question, catalog, prior_context):
+    for event in translator.translate_streaming(question, catalog, prior_context, thinking=thinking):
         if event.kind == "done":
             raw = event.final
         else:

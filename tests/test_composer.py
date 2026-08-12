@@ -184,7 +184,36 @@ def test_prompt_carries_catalog_selection_draft_and_history():
     assert prompt.rstrip().endswith("Instruction: make it tabbed")
 
 
+def test_thinking_flag_reaches_the_wire_request(monkeypatch):
+    """The composer header's THINKING toggle, at the seam that builds the
+    provider request: unset follows the server default, set wins over it."""
+    from app import composer as composer_mod
+
+    composer = composer_mod.LLMComposer(api_key="x", model="claude-sonnet-5", client=object())
+    catalog = ComposerCatalog(visuals=[], dashboards=[])
+
+    def asked_for(thinking):
+        req = ComposeRequest(instruction="a page", catalog=catalog, thinking=thinking)
+        return composer._request(req).thinking
+
+    monkeypatch.setattr(composer_mod.config, "LLM_THINKING_DEFAULT", True)
+    assert asked_for(None) is True
+    assert asked_for(False) is False
+    monkeypatch.setattr(composer_mod.config, "LLM_THINKING_DEFAULT", False)
+    assert asked_for(None) is False
+    assert asked_for(True) is True
+
+
 # ── /api/composer surface ───────────────────────────────────────────────────
+
+def test_compose_stream_passes_the_thinking_flag_through(author_client, monkeypatch):
+    fake = _fake(monkeypatch, final=RawComposition(name="p", html="<p>hi</p>", summary="s"))
+    author_client.post("/api/composer/compose/stream", json={"instruction": "a page"})
+    assert fake.requests[-1].thinking is None
+    author_client.post("/api/composer/compose/stream",
+                       json={"instruction": "a page", "thinking": False})
+    assert fake.requests[-1].thinking is False
+
 
 def test_context_disabled_without_llm_key(author_client, monkeypatch):
     monkeypatch.setattr(composer_api.config, "LLM_ENABLED", False)

@@ -145,6 +145,9 @@
           <span class="editor-file">COMPOSER</span>
           <input id="cp-name" placeholder="untitled_page" spellcheck="false">
           <span id="cp-status" class="cp-status"></span>
+          <label id="cp-thinking-box" class="flag-toggle" hidden>
+            <input type="checkbox" id="cp-thinking"><span>THINKING</span>
+          </label>
           <button class="btn plain" id="cp-open" title="open the saved page">▤ OPEN PAGE</button>
           <button class="btn alt" id="cp-save-as" data-role="author">SAVE AS NEW</button>
           <button class="btn" id="cp-save" data-role="author">SAVE</button>
@@ -511,6 +514,9 @@
           <div id="mf-chat-panel" class="mf-chat-panel" hidden>
             <div class="mf-chat-head">
               <span class="field-label">CHAT · <span id="mf-chat-model-label"></span></span>
+              <label id="mf-chat-thinking-box" class="flag-toggle" hidden>
+                <input type="checkbox" id="mf-chat-thinking"><span>THINKING</span>
+              </label>
               <button class="btn plain" id="mf-chat-clear" title="clear this exploratory conversation">CLEAR</button>
               <button class="btn plain" id="mf-chat-close" title="close chat panel">✕</button>
             </div>
@@ -641,6 +647,9 @@
         <div class="chart-head">
           <span class="editor-file">CHAT</span>
           <select id="chat-model" title="which model answers this conversation"></select>
+          <label id="chat-thinking-box" class="flag-toggle">
+            <input type="checkbox" id="chat-thinking"><span>THINKING</span>
+          </label>
           <button class="btn plain" id="chat-new">+ NEW CONVERSATION</button>
         </div>
         <div class="chat-body">

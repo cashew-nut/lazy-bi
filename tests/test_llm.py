@@ -338,6 +338,34 @@ def test_translate_streaming_wires_thinking_and_model_enum_into_the_real_call(mo
     list(sonnet.translate_streaming("q", catalog, []))
     assert captured["thinking"] == {"type": "adaptive", "display": "summarized"}
 
+    # …and the UI's THINKING toggle, off, keeps it off on the very same model
+    captured.clear()
+    list(sonnet.translate_streaming("q", catalog, [], thinking=False))
+    assert "thinking" not in captured
+
+
+def test_translate_streaming_thinking_flag_beats_the_server_default(monkeypatch):
+    """The toggle is the last word in both directions: an explicit False on a
+    deployment that defaults thinking on, and an explicit True on one that
+    defaults it off. None (the caller with no opinion) follows the default."""
+    seen = []
+
+    class RecordingClient:
+        def stream(self, req):
+            seen.append(req.thinking)
+            yield llmclient.ClientEvent(kind="done", final=llmclient.ToolCall(name="decline", args={}))
+
+    translator = llm.LLMTranslator(api_key="x", model="claude-sonnet-5", client=RecordingClient())
+    catalog = [llm.ModelCatalogEntry(name="sales", label="Sales", description="", dimensions=[], measures=[])]
+
+    monkeypatch.setattr(config, "LLM_THINKING_DEFAULT", True)
+    list(translator.translate_streaming("q", catalog, []))
+    list(translator.translate_streaming("q", catalog, [], thinking=False))
+    monkeypatch.setattr(config, "LLM_THINKING_DEFAULT", False)
+    list(translator.translate_streaming("q", catalog, []))
+    list(translator.translate_streaming("q", catalog, [], thinking=True))
+    assert seen == [True, False, False, True]
+
 
 def test_translate_streaming_reaches_an_openai_endpoint_unchanged(monkeypatch):
     """The same translator, the same prompt and tools, against an OpenAI-format

@@ -387,6 +387,8 @@ class ComposeRequest:
     selected_dashboard_ids: list[int] = field(default_factory=list)
     current_html: str = ""
     history: list[dict] = field(default_factory=list)   # [{instruction, summary}]
+    # the composer header's THINKING toggle; None = follow the server default
+    thinking: bool | None = None
 
 
 _COMPOSE_TOOL = {
@@ -529,7 +531,10 @@ class LLMComposer:
             system=_SYSTEM_PROMPT,
             tools=[_COMPOSE_TOOL],
             prompt=build_user_prompt(request),
-            thinking=True,
+            # the UI's toggle, with the server default standing in for a
+            # caller that has no opinion — a page is the heaviest thing this
+            # app asks a model for, so thinking is on unless turned off
+            thinking=config.LLM_THINKING_DEFAULT if request.thinking is None else request.thinking,
         )
 
     def compose_streaming(self, request: ComposeRequest) -> Iterator[ComposeStreamEvent]:
