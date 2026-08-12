@@ -31,9 +31,17 @@ _COMPARE_OPS = {
 }
 
 # ── dynamic ("relative") date filter values ──────────────────────
-# A time filter's value may be a keyword like "today" or "start_of_month"
-# instead of a fixed ISO date. It's resolved against the current date on
-# every query, so a saved "today" keeps meaning today on every future run.
+# A time filter's value may be a relative token like "today" or
+# "start_of_month" instead of a fixed ISO date. It's resolved against the
+# current date on every query, so a saved "today" keeps meaning today on
+# every future run.
+#
+# The grammar is small and closed, and this module is its only definition —
+# everything that describes it to a human or an LLM (the tool schema and
+# system prompt in app/llm.py, the builder's filter control in
+# static/js/filters.js) is built from the constants below rather than
+# restating them, so the accepted vocabulary can't drift from the enforced
+# one. See RELATIVE_DATE_SYNTAX for the prose form.
 
 def _end_of_month(d: date) -> date:
     return d.replace(day=calendar.monthrange(d.year, d.month)[1])
@@ -62,7 +70,36 @@ RELATIVE_DATE_KEYWORDS = {
     "end_of_year": lambda d: d.replace(month=12, day=31),
 }
 
-_RELATIVE_OFFSET_RE = re.compile(r"^today([+-])(\d+)(d|w|mo|y)$")
+# units for the optional offset suffix, written as <n><unit> ("90d", "1mo")
+RELATIVE_OFFSET_UNITS = {
+    "d": "days", "w": "weeks", "mo": "months", "q": "quarters", "y": "years",
+}
+
+# <keyword><+|-><n><unit>. Every keyword takes an offset, not just "today":
+# "start of last year" has no expressible form otherwise (today-1y is the
+# same day last year, not 1 January), so an LLM asked for one had to either
+# hardcode an ISO date — which freezes a saved query to the day it was
+# written — or invent syntax the engine then choked on.
+_KEYWORD_ALT = "|".join(sorted(RELATIVE_DATE_KEYWORDS, key=len, reverse=True))
+_UNIT_ALT = "|".join(sorted(RELATIVE_OFFSET_UNITS, key=len, reverse=True))
+_RELATIVE_OFFSET_RE = re.compile(rf"^({_KEYWORD_ALT})([+-])(\d+)({_UNIT_ALT})$")
+
+RELATIVE_DATE_SYNTAX = (
+    "A relative date is one keyword, optionally followed by exactly one "
+    "offset: <keyword> or <keyword><+|-><n><unit>. Keywords: "
+    + ", ".join(RELATIVE_DATE_KEYWORDS)
+    + ". Units: " + ", ".join(f"{u} ({name})" for u, name in RELATIVE_OFFSET_UNITS.items())
+    + ". The offset shifts today first and the keyword then takes that "
+    "shifted date's period edge, so 'start_of_year-1y' is 1 January last "
+    "year, 'end_of_quarter-1q' is the last day of last quarter, and "
+    "'start_of_month-1mo' is the 1st of last month. Anything outside that "
+    "grammar is not a relative date and must be written as an ISO date "
+    "(YYYY-MM-DD): there is no 'last_year'/'last_month'/'ytd'/'mtd' keyword, "
+    "no spelled-out arithmetic ('start_of_year - 1 year'), no second offset "
+    "('today-1y+2d'), and no units beyond the five above. A whole period is "
+    "two filters — gte its first day and lte its last, e.g. last year is "
+    "gte 'start_of_year-1y' and lte 'end_of_year-1y'."
+)
 
 
 def _add_months(d: date, n: int) -> date:
@@ -73,26 +110,72 @@ def _add_months(d: date, n: int) -> date:
     return date(year, month, day)
 
 
+def _shift(d: date, n: int, unit: str) -> date:
+    """`d` moved by `n` whole `unit`s (a key of RELATIVE_OFFSET_UNITS)."""
+    if unit == "d":
+        return d + timedelta(days=n)
+    if unit == "w":
+        return d + timedelta(weeks=n)
+    if unit == "mo":
+        return _add_months(d, n)
+    if unit == "q":
+        return _add_months(d, n * 3)
+    return _add_months(d, n * 12)  # "y"
+
+
 def resolve_relative_date(value: Any, today: Optional[date] = None) -> Optional[date]:
-    """Resolve a relative-date keyword to a concrete date, or return None if
-    `value` isn't one (the caller then falls back to parsing a fixed date)."""
+    """Resolve a relative-date token (RELATIVE_DATE_SYNTAX) to a concrete
+    date, or return None if `value` isn't one — the caller then falls back to
+    parsing a fixed date.
+
+    An offset is applied to `today` *before* its keyword, never after, so a
+    composed token always lands on a real period edge: "end_of_month+1mo" is
+    the last day of next month, which shifting this month's last day forward
+    would get wrong whenever the two months differ in length."""
     key = str(value).strip().lower()
+    base = today or date.today()
     keyword = RELATIVE_DATE_KEYWORDS.get(key)
     if keyword:
-        return keyword(today or date.today())
+        return keyword(base)
     m = _RELATIVE_OFFSET_RE.match(key)
     if not m:
         return None
-    sign, n, unit = m.group(1), int(m.group(2)), m.group(3)
-    n = n if sign == "+" else -n
-    base = today or date.today()
-    if unit == "d":
-        return base + timedelta(days=n)
-    if unit == "w":
-        return base + timedelta(weeks=n)
-    if unit == "mo":
-        return _add_months(base, n)
-    return _add_months(base, n * 12)  # "y"
+    sign, n, unit = m.group(2), int(m.group(3)), m.group(4)
+    return RELATIVE_DATE_KEYWORDS[m.group(1)](_shift(base, n if sign == "+" else -n, unit))
+
+
+def parse_date_value(value: Any, today: Optional[date] = None) -> Optional[date]:
+    """The date a filter value denotes — a relative token resolved against
+    today, or a fixed ISO date — or None if it's neither."""
+    relative = resolve_relative_date(value, today)
+    if relative is not None:
+        return relative
+    try:
+        return date.fromisoformat(str(value))
+    except ValueError:
+        return None
+
+
+def _bad_date_message(value: Any) -> str:
+    return f"'{value}' isn't a valid date filter value. {RELATIVE_DATE_SYNTAX}"
+
+
+def date_value_error(value: Any) -> Optional[str]:
+    """Why `value` can't be a time filter's value, or None if it can be.
+
+    Lets a caller *upstream* of the engine — nlq's re-validation of an LLM
+    proposal — reject a bad value by the engine's own rule and in the
+    engine's own words, rather than letting it reach _coerce and surface as
+    a failed query. Deliberately more permissive than _resolve_date_value
+    about a time component ('2025-01-31T09:00'), which is valid against a
+    datetime column and whose dtype isn't known this far up."""
+    if value is None or parse_date_value(value) is not None:
+        return None
+    try:
+        datetime.fromisoformat(str(value))
+    except ValueError:
+        return _bad_date_message(value)
+    return None
 
 
 class QueryError(Exception):
@@ -446,11 +529,19 @@ def _interval_binding_for(model: Model, dimension: str) -> Optional[ImportBindin
 
 
 def _resolve_date_value(value: Any) -> date:
-    """A filter value as a concrete date: a relative keyword/offset resolved
-    against today, or else a fixed ISO date. Raises ValueError if it's
-    neither."""
-    relative = resolve_relative_date(value)
-    return relative if relative is not None else date.fromisoformat(str(value))
+    """A filter value as a concrete date: a relative token resolved against
+    today, or else a fixed ISO date.
+
+    Raises QueryError — never the bare ValueError date.fromisoformat throws
+    — if it's neither. Nothing above the engine handles ValueError: it went
+    all the way up as an unhandled exception, which on the SSE ask endpoint
+    means a mid-stream ASGI crash with no error event for the client, so an
+    unresolvable date value took the whole request down instead of failing
+    the one query."""
+    resolved = parse_date_value(value)
+    if resolved is None:
+        raise QueryError(_bad_date_message(value))
+    return resolved
 
 
 def _coerce(value: Any, dtype: pl.DataType) -> Any:
@@ -463,7 +554,10 @@ def _coerce(value: Any, dtype: pl.DataType) -> Any:
         relative = resolve_relative_date(value)
         if relative is not None:
             return datetime.combine(relative, datetime.min.time())
-        return datetime.fromisoformat(str(value))
+        try:  # QueryError, not ValueError — see _resolve_date_value
+            return datetime.fromisoformat(str(value))
+        except ValueError:
+            raise QueryError(_bad_date_message(value)) from None
     if dtype.is_integer():
         return int(value)
     if dtype.is_float():

@@ -439,6 +439,64 @@ def test_resolve_accepts_valid_grain(models):
     assert isinstance(decision, nlq.ProposeQuery)
 
 
+# ── relative date filter values, same defense in depth: an invented token
+# ('last_year') is neither an ISO date nor anything the engine resolves, and
+# reaching engine._coerce with one crashed the request outright ──────────
+
+@pytest.mark.parametrize("value", ["last_year", "start_of_year - 1 year", "today-1y+2d"])
+def test_resolve_rejects_unresolvable_relative_date(models, value):
+    translator = FakeTranslator([
+        RawToolCall("propose_query", {
+            "model": "sales", "dimensions": [], "measures": ["revenue"],
+            "filters": [{"field": "order_date", "op": "gte", "value": value}],
+        }),
+    ])
+    decision = nlq.resolve("revenue last year", _catalog(models), [], models, translator)
+    assert isinstance(decision, nlq.Decline)
+    assert value in decision.reason_text
+    # the decline tells the model what it should have written instead
+    assert "start_of_year-1y" in decision.reason_text
+
+
+def test_resolve_rejects_unresolvable_relative_date_in_a_values_list(models):
+    translator = FakeTranslator([
+        RawToolCall("propose_query", {
+            "model": "sales", "dimensions": [], "measures": ["revenue"],
+            "filters": [{"field": "order_date", "op": "in", "values": ["today", "last_tuesday"]}],
+        }),
+    ])
+    decision = nlq.resolve("revenue today or last tuesday", _catalog(models), [], models, translator)
+    assert isinstance(decision, nlq.Decline)
+    assert "last_tuesday" in decision.reason_text
+
+
+@pytest.mark.parametrize("value", ["start_of_year-1y", "end_of_quarter-1q", "today-90d",
+                                   "start_of_month", "2025-01-31"])
+def test_resolve_accepts_valid_date_filter_values(models, value):
+    translator = FakeTranslator([
+        RawToolCall("propose_query", {
+            "model": "sales", "dimensions": [], "measures": ["revenue"],
+            "filters": [{"field": "order_date", "op": "gte", "value": value}],
+        }),
+    ])
+    decision = nlq.resolve("revenue since then", _catalog(models), [], models, translator)
+    assert isinstance(decision, nlq.ProposeQuery)
+    assert decision.filters[0]["value"] == value
+
+
+def test_resolve_leaves_non_time_filter_values_alone(models):
+    """The date rule is scoped to time dimensions — a categorical value that
+    happens to look nothing like a date must still pass."""
+    translator = FakeTranslator([
+        RawToolCall("propose_query", {
+            "model": "sales", "dimensions": [], "measures": ["revenue"],
+            "filters": [{"field": "category", "op": "eq", "value": "last_year"}],
+        }),
+    ])
+    decision = nlq.resolve("revenue for the last_year category", _catalog(models), [], models, translator)
+    assert isinstance(decision, nlq.ProposeQuery)
+
+
 # ── show_last_query ──────────────────────────────────────────────────────
 
 def test_resolve_show_last_query_returns_most_recent_prior_turn(models):

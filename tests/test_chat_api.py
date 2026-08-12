@@ -293,6 +293,48 @@ def test_ask_invalid_filter_op_declines_instead_of_raw_engine_error(viewer_clien
     assert res.json()["response"]["outcome"] == "declined"
 
 
+# ── relative dates (reported: asking the same question twice sometimes
+# blew up with ValueError: Invalid isoformat string: 'start_of_year-1y' —
+# the model reaching, non-deterministically, for the only sensible spelling
+# of "last year", which the engine's offset form didn't accept) ──────────
+
+def test_ask_with_a_keyword_offset_date_filter_answers(viewer_client, fake_translator):
+    fake_translator.responses.append(RawToolCall("propose_query", {
+        "model": "sales", "dimensions": [], "measures": ["revenue"],
+        "filters": [
+            {"field": "order_date", "op": "gte", "value": "start_of_year-1y"},
+            {"field": "order_date", "op": "lte", "value": "end_of_year-1y"},
+        ],
+    }))
+    conv = viewer_client.post("/api/conversations", json={}).json()
+    res = viewer_client.post(f"/api/conversations/{conv['id']}/ask",
+                              json={"question": "revenue last year"})
+    body = res.json()
+    assert body["response"]["outcome"] in ("answered", "answered_empty")
+    # stored relative, not frozen to the dates it resolved to today
+    assert body["response"]["resolved_query"]["filters"][0]["value"] == "start_of_year-1y"
+
+
+def test_ask_stream_unresolvable_date_declines_instead_of_crashing(viewer_client, fake_translator):
+    """The reported traceback: an unresolvable date value raised a bare
+    ValueError inside the SSE generator, which no caller handles — it took
+    the whole ASGI request down mid-stream, so the client got a truncated
+    body and no error event. It must now come back as a normal terminal
+    response event."""
+    fake_translator.responses.append(RawToolCall("propose_query", {
+        "model": "sales", "dimensions": [], "measures": ["revenue"],
+        "filters": [{"field": "order_date", "op": "gte", "value": "last_year"}],
+    }))
+    conv = viewer_client.post("/api/conversations", json={}).json()
+    res = viewer_client.post(f"/api/conversations/{conv['id']}/ask/stream",
+                              json={"question": "revenue last year"})
+    assert res.status_code == 200
+    events = _parse_sse(res.text)
+    assert events[-1][0] == "response"
+    assert events[-1][1]["response"]["outcome"] == "declined"
+    assert "last_year" in events[-1][1]["response"]["answer_text"]
+
+
 # ── inline measures execute through the real engine (running_total()/lag())
 
 def test_ask_with_inline_running_total_executes(viewer_client, fake_translator):

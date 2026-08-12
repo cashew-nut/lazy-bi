@@ -1007,7 +1007,35 @@ Query shape:
 }
 ```
 
-Filter ops: `eq ne gt gte lt lte in not_in contains`. `parameters` declares
+Filter ops: `eq ne gt gte lt lte in not_in contains`.
+
+**Relative dates.** A filter on a date/time field takes either a fixed ISO
+date (`"2025-01-31"`) or a *relative* value, re-resolved against the current
+date on every run so a saved query keeps meaning the same thing. The grammar
+is one keyword, optionally followed by exactly one offset — `<keyword>` or
+`<keyword><+|-><n><unit>`:
+
+- keywords: `today` `yesterday` `tomorrow` `start_of_week` `end_of_week`
+  `start_of_month` `end_of_month` `start_of_quarter` `end_of_quarter`
+  `start_of_year` `end_of_year`
+- units: `d` days, `w` weeks, `mo` months, `q` quarters, `y` years
+
+The offset shifts *today* first and the keyword then takes that shifted
+date's period edge — so `start_of_year-1y` is 1 January last year, and
+`end_of_month+1mo` is the last day of next month (a real month end, whatever
+its length). A whole period is two filters: last year is `gte`
+`start_of_year-1y` plus `lte` `end_of_year-1y`.
+
+Nothing outside that grammar parses: there is no `last_year`/`ytd` keyword,
+no spelled-out arithmetic, and no second offset. `app/engine.py`'s
+`RELATIVE_DATE_KEYWORDS`/`RELATIVE_OFFSET_UNITS` are the single definition —
+the chat tool schema and system prompt (`app/llm.py`) and the builder's
+filter control (`static/js/filters.js`) are all built from them rather than
+restating them, so what an LLM is told it may write can't drift from what
+the engine accepts. A value that still doesn't resolve is rejected as a
+`QueryError` (a 400, or a declined chat turn), never a bare `ValueError`.
+
+`parameters` declares
 a visual's parameters (travels with the query the same way `inline_measures`
 does) — `type` is `int`/`float`/`string`, omitted meaning `int`; `parameter_values`
 is the caller's current pick per parameter — missing a name falls back to
