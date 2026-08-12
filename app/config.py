@@ -187,6 +187,21 @@ LLM_AWS_REGION = os.environ.get("CI_LLM_AWS_REGION", "").strip() or AWS_REGION
 # first 400 (app/llmclient.py); pin it if a gateway's error text is unclear.
 LLM_MAX_TOKENS_PARAM = os.environ.get("CI_LLM_MAX_TOKENS_PARAM", "auto").strip()
 
+
+def _int(name: str, default: int) -> int:
+    try:
+        return int((os.environ.get(name) or "").strip())
+    except ValueError:
+        return default
+
+
+# Extra allowance on the OpenAI wire only, where max_completion_tokens is a
+# single budget for reasoning tokens *and* the answer. The per-feature limits
+# below (and app/llm.py's, app/composer.py's) size the answer alone, the way
+# Anthropic's max_tokens does, so a reasoning model needs room on top or it
+# spends the lot thinking and never reaches the tool call.
+LLM_REASONING_TOKENS = _int("CI_LLM_REASONING_TOKENS", 8192)
+
 # Native Bedrock authenticates by IAM role rather than by key, so an empty
 # CI_LLM_API_KEY does not mean "unconfigured" there.
 LLM_ENABLED = bool(LLM_API_KEY) or LLM_PROVIDER == "bedrock"

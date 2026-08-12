@@ -351,6 +351,38 @@ def key_fingerprint(api_key: str) -> str:
     return f"len={len(api_key)} sha256={hashlib.sha256(api_key.encode('utf-8')).hexdigest()[:8]}"
 
 
+def _no_tool_call(reason: str | None, model: str, provider: str = "openai") -> LLMError:
+    """Forced tool use produced no tool call, and *why* matters enormously.
+
+    "Ran out of budget mid-thought" is a settings problem with a one-line
+    fix, but it reaches the user as the same "model did not call any tool" as
+    a model that genuinely declined — which sends whoever is debugging it to
+    the prompts instead of to the one number that fixes it. `reason` is the
+    normalized stop reason ("length" on either wire).
+    """
+    if reason == "length":
+        # by wire, not by provider name: "azure" and "openai" share the
+        # pooled-budget parameter, and only one of them is spelled "openai"
+        if provider not in _ANTHROPIC_WIRE:
+            logger.warning(
+                "%s stopped at its token budget before calling a tool. max_completion_tokens "
+                "covers reasoning tokens as well as the answer, and a reasoning model can "
+                "spend the whole allowance thinking: raise CI_LLM_REASONING_TOKENS "
+                "(currently %d) or ask for less reasoning with CI_LLM_REASONING_EFFORT=low.",
+                model, config.LLM_REASONING_TOKENS,
+            )
+        else:
+            logger.warning(
+                "%s hit max_tokens before calling a tool — extended thinking draws on the "
+                "same budget as the answer, so the seam's limit has to cover both.", model,
+            )
+        return LLMError("the model used its whole token budget before calling a tool")
+    if reason == "content_filter":
+        return LLMError("the request was stopped by a content filter")
+    logger.warning("model %s returned no tool call (stop reason=%s)", model, reason)
+    return LLMError("model did not call any tool")
+
+
 def _wrap(exc: Exception, provider: str = "", key_fp: str = "") -> LLMError:
     """Shared failure path for every provider: the user only ever sees a
     generic "temporarily unavailable" message, so log the real cause
@@ -395,6 +427,13 @@ def _wrap(exc: Exception, provider: str = "", key_fp: str = "") -> LLMError:
 
 
 # ── Anthropic wire (api.anthropic.com, Bedrock, Anthropic-format gateways) ─
+
+def _anthropic_reason(message) -> str | None:
+    """Anthropic's stop_reason in the OpenAI wire's vocabulary, so one
+    exhausted budget reads the same whichever endpoint hit it."""
+    stop = getattr(message, "stop_reason", None)
+    return "length" if stop == "max_tokens" else stop
+
 
 class AnthropicClient:
     """Anthropic Messages API with forced tool use. `base_url` covers any
@@ -459,7 +498,7 @@ class AnthropicClient:
         for block in response.content:
             if block.type == "tool_use":
                 return ToolCall(name=block.name, args=block.input or {})
-        raise LLMError("model did not call any tool")
+        raise _no_tool_call(_anthropic_reason(response), req.model, self.provider)
 
     def stream(self, req: ChatRequest) -> Iterator[ClientEvent]:
         import anthropic
@@ -486,7 +525,7 @@ class AnthropicClient:
             if block.type == "tool_use":
                 yield ClientEvent(kind="done", final=ToolCall(name=block.name, args=block.input or {}))
                 return
-        raise LLMError("model did not call any tool")
+        raise _no_tool_call(_anthropic_reason(message), req.model, self.provider)
 
 
 # ── OpenAI wire (OpenAI, Azure, Bedrock's /openai surface, any gateway) ────
@@ -590,7 +629,17 @@ class OpenAIClient:
                 if req.force_tool else "required"
             ),
         )
-        kwargs[self._max_tokens_param(req.model)] = req.max_tokens
+        param = self._max_tokens_param(req.model)
+        # The budget each seam asks for is how much *answer* it needs (1024
+        # for a query proposal, 8192 for a composed page) — which is what
+        # Anthropic's max_tokens means. max_completion_tokens does not: it
+        # covers the model's reasoning tokens as well, and a reasoning model
+        # will happily spend the entire allowance thinking and stop before it
+        # ever emits the tool call. So add headroom on exactly the wire where
+        # the two are pooled, keeping the callers' number meaning one thing.
+        kwargs[param] = req.max_tokens + (
+            config.LLM_REASONING_TOKENS if param == "max_completion_tokens" else 0
+        )
         if req.thinking and req.model in config.LLM_THINKING_MODELS and config.LLM_REASONING_EFFORT:
             kwargs["reasoning_effort"] = config.LLM_REASONING_EFFORT
         return kwargs
@@ -612,12 +661,14 @@ class OpenAIClient:
 
     def call(self, req: ChatRequest) -> ToolCall:
         response = self._create(req, stream=False)
+        finish_reason = None
         for choice in getattr(response, "choices", None) or []:
+            finish_reason = getattr(choice, "finish_reason", None) or finish_reason
             for tool_call in getattr(choice.message, "tool_calls", None) or []:
                 function = getattr(tool_call, "function", None)
                 if function is not None and function.name:
                     return ToolCall(name=function.name, args=_final_args(function.arguments or "{}"))
-        raise LLMError("model did not call any tool")
+        raise _no_tool_call(finish_reason, req.model, self.provider)
 
     def stream(self, req: ChatRequest) -> Iterator[ClientEvent]:
         """Same call as call(), yielding events as the arguments arrive.
@@ -635,11 +686,13 @@ class OpenAIClient:
         name: str | None = None
         index: int | None = None
         buffer = ""
+        finish_reason: str | None = None
         try:
             for chunk in stream:
                 choices = getattr(chunk, "choices", None) or []
                 if not choices:
                     continue                       # e.g. a usage-only final chunk
+                finish_reason = getattr(choices[0], "finish_reason", None) or finish_reason
                 delta = getattr(choices[0], "delta", None)
                 if delta is None:
                     continue
@@ -669,5 +722,5 @@ class OpenAIClient:
             raise _wrap(exc, self.provider, key_fingerprint(self.api_key)) from exc
 
         if not name:
-            raise LLMError("model did not call any tool")
+            raise _no_tool_call(finish_reason, req.model, self.provider)
         yield ClientEvent(kind="done", final=ToolCall(name=name, args=_final_args(buffer)))

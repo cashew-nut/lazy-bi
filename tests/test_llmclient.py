@@ -11,6 +11,7 @@ live cells are built on).
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -378,6 +379,73 @@ def test_openai_stream_without_a_tool_call_is_an_error(monkeypatch):
         list(_stream_client(monkeypatch, [_Chunk()]).stream(_request()))
 
 
+def test_running_out_of_budget_while_reasoning_says_so(monkeypatch):
+    """A reasoning model that spends max_completion_tokens thinking emits no
+    tool call at all. Reported as "did not call any tool" it reads as a model
+    that declined, which sends a deployer looking at prompts instead of at
+    the one setting that fixes it."""
+    truncated = _Chunk()
+    truncated.choices[0].finish_reason = "length"
+    with pytest.raises(llmclient.LLMError, match="whole token budget"):
+        list(_stream_client(monkeypatch, [truncated]).stream(_request()))
+
+    # and the same distinction on the non-streaming path
+    class Message:
+        tool_calls = None
+
+    class Choice:
+        finish_reason = "length"
+        message = Message()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": type("C", (), {
+                "create": lambda s, **k: type("R", (), {"choices": [Choice()]})(),
+            })()})()
+
+    import openai
+    monkeypatch.setattr(openai, "OpenAI", FakeClient)
+    with pytest.raises(llmclient.LLMError, match="whole token budget"):
+        llmclient.OpenAIClient(api_key="k").call(_request())
+
+
+@pytest.mark.parametrize("provider,expected", [
+    ("openai", "max_completion_tokens"),
+    ("azure", "max_completion_tokens"),      # same wire, different name
+    ("anthropic", "extended thinking"),
+    ("bedrock", "extended thinking"),
+])
+def test_the_budget_remedy_is_chosen_by_wire_not_by_provider_name(provider, expected, caplog):
+    """Only one of the two providers on the OpenAI wire is *called* "openai",
+    so keying the advice off the name sends every Azure deployment — the
+    likeliest place to meet this — the remedy for the other wire."""
+    with caplog.at_level("WARNING", logger="app.llmclient"):
+        llmclient._no_tool_call("length", "gpt-5", provider)
+    assert expected in caplog.text
+
+
+def test_reasoning_models_get_headroom_above_the_answer_budget(monkeypatch):
+    """A seam's max_tokens means "how much answer do I need" — which is what
+    Anthropic's max_tokens means and what max_completion_tokens does not,
+    since it also has to cover the reasoning the model does first."""
+    monkeypatch.setattr(config, "LLM_REASONING_TOKENS", 8192)
+    monkeypatch.setattr(config, "LLM_MAX_TOKENS_PARAM", "auto")
+    req = _request()
+
+    reasoning = llmclient.OpenAIClient(api_key="k")._kwargs(
+        llmclient.ChatRequest(model="gpt-5", max_tokens=1024, system=req.system,
+                              tools=req.tools, prompt=req.prompt))
+    assert reasoning["max_completion_tokens"] == 1024 + 8192
+    assert "max_tokens" not in reasoning
+
+    # a non-reasoning model pools nothing, so its budget is left exactly alone
+    plain = llmclient.OpenAIClient(api_key="k")._kwargs(
+        llmclient.ChatRequest(model="gpt-4o", max_tokens=1024, system=req.system,
+                              tools=req.tools, prompt=req.prompt))
+    assert plain["max_tokens"] == 1024
+    assert "max_completion_tokens" not in plain
+
+
 def test_openai_stream_tolerates_a_usage_only_final_chunk(monkeypatch):
     """Many gateways end a stream with a chunk carrying no choices at all."""
     chunks = [
@@ -634,21 +702,31 @@ _LLM_ENV = (
 
 
 @pytest.fixture
-def reloaded_config(monkeypatch):
+def reloaded_config():
+    """Reload config.py against a chosen environment, then put both back.
+
+    os.environ is snapshotted and restored wholesale rather than driven
+    through monkeypatch, because _load_env_file() writes into os.environ
+    itself: a test that exercises a `.env` file injects variables monkeypatch
+    never recorded and so cannot undo, which would leak a stale CI_LLM_MODEL
+    into every test that runs afterwards.
+    """
     import importlib
+
+    original = dict(os.environ)
 
     def reload(_env_file=None, **env):
         for key in _LLM_ENV:
-            monkeypatch.delenv(key, raising=False)
+            os.environ.pop(key, None)
         # empty = read no .env file at all (conftest sets the same thing for
         # the whole run); a test that wants one passes its path
-        monkeypatch.setenv("CI_ENV_FILE", str(_env_file) if _env_file else "")
-        for key, value in env.items():
-            monkeypatch.setenv(key, value)
+        os.environ["CI_ENV_FILE"] = str(_env_file) if _env_file else ""
+        os.environ.update(env)
         return importlib.reload(config)
 
     yield reload
-    monkeypatch.undo()
+    os.environ.clear()
+    os.environ.update(original)
     importlib.reload(config)
 
 

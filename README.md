@@ -1462,6 +1462,7 @@ export CI_LLM_MODEL=qwen2.5-coder:32b
 | `CI_LLM_API_VERSION` | Azure's dated deployment surface; setting it also *implies* `azure`, on any host |
 | `CI_LLM_AWS_REGION` | region for native Bedrock (defaults to `AWS_REGION`) |
 | `CI_LLM_MAX_TOKENS_PARAM` | `auto` (default) / `max_tokens` / `max_completion_tokens` — see below |
+| `CI_LLM_REASONING_TOKENS` | headroom added for reasoning on the OpenAI wire (default `8192`) |
 | `CI_ENV_FILE` | read settings from a different file than `./.env`; empty = read none |
 
 All of these can live in `.env` instead of your shell. A *blank* value there
@@ -1542,7 +1543,7 @@ for k, v in sorted(env.items()):
 `unset CI_LLM_API_KEY` clears a stale export for the current shell; if it
 came from `~/.bashrc` or `~/.zshrc` it will return on the next one.
 
-Three details the abstraction absorbs rather than pushing onto you:
+Four details the abstraction absorbs rather than pushing onto you:
 
 - **Model ids aren't portable, so the Claude defaults get out of the way.**
   `LLM_MODEL_CHOICES` and `LLM_THINKING_MODELS` only keep their built-in
@@ -1555,6 +1556,16 @@ Three details the abstraction absorbs rather than pushing onto you:
   provider's own 400 on the first request, so an unrecognized id on an
   unfamiliar gateway still works. Pin `CI_LLM_MAX_TOKENS_PARAM` if a
   gateway's error text is too vague to key off.
+- **`max_completion_tokens` is one budget for thinking *and* answering.**
+  Each feature asks for the answer it needs (1024 for a query proposal, 8192
+  for a composed page) the way Anthropic's `max_tokens` means it, so on that
+  wire `CI_LLM_REASONING_TOKENS` (default 8192) is added on top. Without the
+  headroom a reasoning model spends the entire allowance thinking and stops
+  before it ever calls a tool — which surfaces as a bare "model did not call
+  any tool". That case is now reported as what it is, on both wires, and the
+  log names the two settings that fix it (raise `CI_LLM_REASONING_TOKENS`, or
+  `CI_LLM_REASONING_EFFORT=low` for a model listed in
+  `CI_LLM_THINKING_MODELS`).
 - **Live streaming works on both wires.** The Anthropic SDK hands over
   already-parsed partial tool input; the OpenAI wire streams raw JSON
   fragments, so `llmclient.parse_partial_json` reassembles them into the same
