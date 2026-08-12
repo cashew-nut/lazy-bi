@@ -322,7 +322,7 @@ def _validate_propose_query(args: dict, models: dict[str, semantic.Model],
                 continue
             model.measure(m)
         for f in filters:
-            model.dimension(f.get("field", ""))
+            dim = model.dimension(f.get("field", ""))
             op = f.get("op")
             # defense in depth alongside llm.py's schema/prompt: a proposal
             # that still names an op outside engine.FILTER_OPS (e.g. '='
@@ -331,6 +331,15 @@ def _validate_propose_query(args: dict, models: dict[str, semantic.Model],
             if op not in engine.FILTER_OPS:
                 return bad(f"filter op '{op}' isn't supported "
                            f"(use one of {', '.join(sorted(engine.FILTER_OPS))})")
+            # same, for a time filter's value: an invented relative token
+            # ('last_year', 'start_of_year - 1 year') is neither an ISO date
+            # nor anything engine.resolve_relative_date accepts, and used to
+            # reach _coerce and raise a bare ValueError mid-query
+            if dim.type == "time":
+                values = f.get("values") or [] if op in ("in", "not_in") else [f.get("value")]
+                for problem in (engine.date_value_error(v) for v in values):
+                    if problem:
+                        return bad(problem)
     except semantic.ModelError as exc:
         return bad(str(exc))
 

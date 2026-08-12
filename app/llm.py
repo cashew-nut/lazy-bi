@@ -25,12 +25,17 @@ ToolKind = Literal["propose_query", "ask_clarification", "decline", "show_last_q
 # Reused (not copied) from the engine/semantic modules that actually enforce
 # these, so the tool schema/prompt can never drift from what a proposal is
 # re-validated against (nlq._validate_propose_query) and executed against
-# (engine.run_query) — see the bug this fixes: filters[].op previously had
-# no declared vocabulary at all (the model guessed '=' instead of 'eq'), and
-# grain's only guidance was a wrong example ("1qtr" isn't a real grain).
+# (engine.run_query) — see the bugs this fixes: filters[].op previously had
+# no declared vocabulary at all (the model guessed '=' instead of 'eq'),
+# grain's only guidance was a wrong example ("1qtr" isn't a real grain), and
+# a date filter's relative values were described loosely enough ("a keyword
+# … or an offset like 'today-90d'") that the model composed the two into
+# tokens the engine had never accepted ('start_of_year-1y'). The engine now
+# accepts that composition *and* states the whole grammar in one place, so
+# both sides of the contract move together.
 _FILTER_OPS = sorted(engine.FILTER_OPS)
 _GRAINS = list(TIME_GRAINS)
-_RELATIVE_DATE_KEYWORDS = list(engine.RELATIVE_DATE_KEYWORDS)
+_RELATIVE_DATE_SYNTAX = engine.RELATIVE_DATE_SYNTAX
 
 
 @dataclass(frozen=True)
@@ -206,12 +211,18 @@ _TOOLS = [
                             },
                             "value": {
                                 "description": (
-                                    "for eq/ne/gt/gte/lt/lte/contains. A date/time field also "
-                                    f"accepts a relative keyword ({', '.join(_RELATIVE_DATE_KEYWORDS)}) "
-                                    "or an offset like 'today-90d' / 'today+2mo', besides an ISO date."
+                                    "for eq/ne/gt/gte/lt/lte/contains. A date/time field takes "
+                                    "either a fixed ISO date ('2025-01-31') or a relative date. "
+                                    + _RELATIVE_DATE_SYNTAX
                                 ),
                             },
-                            "values": {"type": "array", "description": "for in/not_in only."},
+                            "values": {
+                                "type": "array",
+                                "description": (
+                                    "for in/not_in only. Each element of a date/time field's "
+                                    "list follows the same rules as `value`."
+                                ),
+                            },
                         },
                         "required": ["field", "op"],
                     },
@@ -387,9 +398,18 @@ _SYSTEM_PROMPT = (
     "- eq/ne/gt/gte/lt/lte/contains compare against `value`; in/not_in "
     "compare against `values` (a list). contains is a case-insensitive "
     "substring match.\n"
-    "- A date/time filter's `value` may be an ISO date ('2025-01-31') or a "
-    f"relative keyword ({', '.join(_RELATIVE_DATE_KEYWORDS)}), or an offset "
-    "like 'today-90d' / 'today+2mo'.\n"
+    "- A date/time filter's `value` is EITHER a fixed ISO date "
+    "('2025-01-31') OR a relative date. Use the relative form whenever the "
+    "question itself is relative ('last quarter', 'in the last 90 days'), so "
+    "the saved query still means the same thing when it's re-run months "
+    f"later; use an ISO date only for a fixed calendar point ('in March "
+    f"2024'). {_RELATIVE_DATE_SYNTAX}\n"
+    "- Worked relative-date filters, to copy exactly: 'so far this year' → "
+    "gte 'start_of_year'; 'the last 90 days' → gte 'today-90d'; 'last "
+    "month' → gte 'start_of_month-1mo' and lte 'end_of_month-1mo'; 'last "
+    "year' → gte 'start_of_year-1y' and lte 'end_of_year-1y'; 'the previous "
+    "quarter' → gte 'start_of_quarter-1q' and lte 'end_of_quarter-1q'; "
+    "'since this time last year' → gte 'today-1y'.\n"
     f"- A time dimension's `grain` (when given) must be one of: {', '.join(_GRAINS)}.\n"
     "- sort.by must name one of the query's own dimensions or measures; "
     "sort.desc defaults to true (descending) when omitted.\n\n"

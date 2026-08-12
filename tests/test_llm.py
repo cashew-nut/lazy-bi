@@ -40,6 +40,49 @@ def test_system_prompt_declares_filter_ops_and_grains():
         assert grain in llm._SYSTEM_PROMPT
 
 
+# ── relative dates (the bug this fixes: the prompt described "a keyword …
+# or an offset like 'today-90d'" as two separate things, so the model
+# composed them into 'start_of_year-1y' — the only sensible spelling of
+# "last year" — and the engine, which only accepted offsets on "today",
+# crashed the request on it) ─────────────────────────────────────────────
+
+def test_relative_date_syntax_is_the_engine_s_own_statement_of_it():
+    """One definition, quoted verbatim by schema and prompt alike — not a
+    second hand-written copy that can drift from what the engine parses."""
+    assert llm._RELATIVE_DATE_SYNTAX is engine.RELATIVE_DATE_SYNTAX
+    value_schema = _tool("propose_query")["input_schema"]["properties"]["filters"]["items"]["properties"]["value"]
+    assert engine.RELATIVE_DATE_SYNTAX in value_schema["description"]
+    assert engine.RELATIVE_DATE_SYNTAX in llm._SYSTEM_PROMPT
+
+
+def test_relative_date_syntax_declares_every_keyword_and_unit():
+    for keyword in engine.RELATIVE_DATE_KEYWORDS:
+        assert keyword in engine.RELATIVE_DATE_SYNTAX
+    for unit, name in engine.RELATIVE_OFFSET_UNITS.items():
+        assert f"{unit} ({name})" in engine.RELATIVE_DATE_SYNTAX
+
+
+def test_relative_date_syntax_rules_out_what_the_model_kept_inventing():
+    syntax = engine.RELATIVE_DATE_SYNTAX
+    for invented in ("last_year", "last_month", "ytd", "today-1y+2d"):
+        assert invented in syntax, "the prompt must name the forms that don't parse"
+        assert engine.resolve_relative_date(invented) is None, "…and they must really not parse"
+
+
+def test_system_prompt_shows_worked_relative_date_filters_that_all_resolve():
+    """Every example the prompt tells the model to copy has to be a token
+    the engine actually accepts — a wrong example is how the grain field's
+    '1qtr' bug happened."""
+    prompt = llm._SYSTEM_PROMPT
+    examples = ["start_of_year", "start_of_year-1y", "end_of_year-1y", "start_of_month-1mo",
+                "end_of_month-1mo", "start_of_quarter-1q", "end_of_quarter-1q", "today-90d", "today-1y"]
+    for token in examples:
+        assert f"'{token}'" in prompt
+        assert engine.resolve_relative_date(token) is not None
+    # and that a whole period is two filters, which is what "last year" needs
+    assert "gte 'start_of_year-1y' and lte 'end_of_year-1y'" in prompt
+
+
 def test_show_last_query_tool_is_declared_with_no_required_args():
     tool = _tool("show_last_query")
     assert tool["input_schema"].get("required", []) == []

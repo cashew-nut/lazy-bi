@@ -88,6 +88,87 @@ def test_resolve_relative_date_month_and_quarter_boundaries():
     assert engine.resolve_relative_date("today-8mo", today=ref) == date(2025, 11, 11)
 
 
+# ── offsets on any keyword, not just "today" (the reported bug: chat kept
+# proposing 'start_of_year-1y' for "last year" — the only sensible way to
+# say it — and the engine raised a bare ValueError that crashed the SSE
+# stream, because the offset form was hardcoded to the "today" keyword) ──
+
+@pytest.mark.parametrize("token,expected", [
+    ("start_of_year-1y", date(2025, 1, 1)),      # 1 Jan last year
+    ("end_of_year-1y", date(2025, 12, 31)),      # 31 Dec last year
+    ("start_of_month-1mo", date(2026, 6, 1)),    # 1st of last month
+    ("end_of_month-1mo", date(2026, 6, 30)),     # last day of last month
+    ("start_of_quarter-1q", date(2026, 4, 1)),   # start of last quarter
+    ("end_of_quarter-1q", date(2026, 6, 30)),    # end of last quarter
+    ("start_of_week+1w", date(2026, 7, 13)),     # Monday of next week
+    ("today-90d", date(2026, 4, 12)),            # the pre-existing form
+    ("START_OF_YEAR-1Y", date(2025, 1, 1)),      # case-insensitive, as bare keywords are
+])
+def test_resolve_relative_date_keyword_with_offset(token, expected):
+    assert engine.resolve_relative_date(token, today=date(2026, 7, 11)) == expected
+
+
+def test_keyword_offset_applies_the_offset_before_the_keyword():
+    """A composed token always lands on a real period edge, because the
+    offset shifts *today* and the keyword then takes that date's boundary.
+    Shifting the resolved boundary instead would drag the month-length of
+    the starting month along with it."""
+    # end of next month from a 28-day month: March's own end, not Feb 28 + 1mo
+    assert engine.resolve_relative_date("end_of_month+1mo", today=date(2026, 2, 15)) == date(2026, 3, 31)
+    # and from a 31-day month into a 30-day one
+    assert engine.resolve_relative_date("end_of_month+1mo", today=date(2026, 8, 3)) == date(2026, 9, 30)
+    # last quarter across a year boundary
+    assert engine.resolve_relative_date("end_of_quarter-1q", today=date(2026, 1, 5)) == date(2025, 12, 31)
+
+
+@pytest.mark.parametrize("token", [
+    "last_year", "last_month", "ytd",       # keywords that don't exist
+    "start_of_year - 1 year",               # spelled-out arithmetic
+    "today-1y+2d",                          # two offsets
+    "start_of_year-1",                      # no unit
+    "today-3x",                             # unit outside the five
+])
+def test_unresolvable_relative_tokens_are_not_dates(token):
+    assert engine.resolve_relative_date(token, today=date(2026, 7, 11)) is None
+    assert engine.date_value_error(token)  # …and are reported, not silently kept
+
+
+def test_date_value_error_accepts_real_values():
+    assert engine.date_value_error("2025-01-31") is None
+    assert engine.date_value_error("start_of_year-1y") is None
+    # a time component is invalid for a Date column but fine for a Datetime
+    # one, and the dtype isn't known this far upstream
+    assert engine.date_value_error("2025-01-31T09:00") is None
+    assert engine.date_value_error(None) is None
+
+
+def test_bad_date_filter_value_raises_query_error_not_value_error(models):
+    """The crash this fixes: date.fromisoformat's bare ValueError went all
+    the way up as an unhandled exception (a mid-stream ASGI failure on the
+    chat SSE endpoint). Callers handle QueryError; none handle ValueError."""
+    with pytest.raises(engine.QueryError) as exc:
+        run(models, "sales", dimensions=[], measures=["revenue"],
+            filters=[{"field": "order_date", "op": "gte", "value": "last_year"}])
+    assert "last_year" in str(exc.value)
+    # the message carries the grammar, so the failure is self-explaining
+    assert "start_of_year" in str(exc.value)
+
+
+def test_keyword_offset_filter_matches_the_equivalent_fixed_dates(models):
+    """A composed token filters exactly as the dates it resolves to."""
+    start = engine.resolve_relative_date("start_of_year-1y")
+    end = engine.resolve_relative_date("end_of_year-1y")
+    dynamic = run(models, "sales", dimensions=[], measures=["revenue"], filters=[
+        {"field": "order_date", "op": "gte", "value": "start_of_year-1y"},
+        {"field": "order_date", "op": "lte", "value": "end_of_year-1y"},
+    ])
+    fixed = run(models, "sales", dimensions=[], measures=["revenue"], filters=[
+        {"field": "order_date", "op": "gte", "value": start.isoformat()},
+        {"field": "order_date", "op": "lte", "value": end.isoformat()},
+    ])
+    assert dynamic["rows"] == fixed["rows"]
+
+
 def test_join_columns_usable(models):
     r = run(models, "sales", dimensions=["supplier"], measures=["revenue"],
             filters=[{"field": "tier", "op": "ne", "value": "street-grade"}])

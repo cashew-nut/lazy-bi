@@ -68,7 +68,14 @@ export const RELATIVE_DATE_OPTIONS = [
   ["end_of_year", "End of this year"],
 ];
 
-const RELATIVE_OFFSET_RE = /^today[+-]\d+(d|w|mo|y)$/;
+// …optionally carrying one offset suffix: any keyword above, then
+// <+|-><n><unit> ("today-90d", "start_of_year-1y"). Mirrors
+// engine._RELATIVE_OFFSET_RE — chat writes these (see app/llm.py's prompt),
+// so the builder has to recognise one when a chat-authored query is opened
+// here, or it would read as a fixed date and blank the value out.
+const RELATIVE_OFFSET_RE = new RegExp(
+  `^(${RELATIVE_DATE_OPTIONS.map(([k]) => k).join("|")})[+-]\\d+(d|w|mo|q|y)$`,
+);
 
 export const isRelativeDate = (v) =>
   RELATIVE_DATE_OPTIONS.some(([k]) => k === v) || RELATIVE_OFFSET_RE.test(String(v ?? ""));
@@ -92,7 +99,12 @@ export function timeValueControl(flt, onChange) {
     wrap.append(mode);
     if (relative) {
       const sel = el("select", { onchange: (e) => { flt.value = e.target.value; onChange(); } });
-      for (const [v, label] of RELATIVE_DATE_OPTIONS) sel.append(el("option", { value: v }, label));
+      const options = [...RELATIVE_DATE_OPTIONS];
+      // an offset token has no entry of its own: keep it as its own option
+      // rather than dropping it, so opening a chat-authored filter here
+      // shows the real value and leaving the control alone preserves it
+      if (!options.some(([k]) => k === flt.value)) options.push([flt.value, flt.value]);
+      for (const [v, label] of options) sel.append(el("option", { value: v }, label));
       sel.value = flt.value;
       wrap.append(sel);
     } else {
