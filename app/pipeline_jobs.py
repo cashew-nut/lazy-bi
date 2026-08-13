@@ -18,7 +18,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Optional
 
-from . import config, semantic
+from . import cache, config, semantic
 from . import pipelines as pipelines_mod
 from .pipelines import Pipeline
 from .pipelinestore import PipelineStore
@@ -131,6 +131,13 @@ def _execute(run_id: int, pipeline: Pipeline, registry) -> None:
         return
 
     if result.get("ok"):
+        # the run wrote to the bucket, from a subprocess this one can't see
+        # into, so anything this process is holding for the written path is
+        # now stale. app/engine.py caches source *contents*, not just derived
+        # schemas, which is what makes this a correctness step rather than a
+        # freshness nicety: without it a model reading the pipeline's target
+        # would keep answering from pre-run rows until the TTL lapsed.
+        cache.clear()
         lineage_ok, lineage_issues = _sync_lineage(registry, pipeline, result.get("output_schema"))
         store.finish_run(
             run_id, "succeeded",

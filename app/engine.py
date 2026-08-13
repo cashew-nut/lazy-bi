@@ -1,12 +1,20 @@
 """Query engine: turns a semantic-layer query into a lazy polars scan over S3.
 
-Nothing is downloaded eagerly — scan_parquet/scan_csv against the object store
-lets polars push projections and predicates down, so only the columns and row
-groups a query needs leave the (emulated) bucket.
+Large sources are never downloaded whole — scan_parquet/scan_csv against the
+object store lets polars push projections and predicates down, so only the
+columns and row groups a query needs leave the bucket.
+
+That is the right shape for bytes and the wrong shape for *round trips*, which
+is what a real endpoint charges for: left alone, every query re-lists every
+glob, re-reads every parquet footer and re-reads every joined lookup file, tens
+of sequential requests deep. So small sources — the lookup tables in `joins:`
+and the datasets behind a dimension bundle, overwhelmingly — are read once and
+held as whole frames instead. See the _scan_source block below.
 """
 from __future__ import annotations
 
 import calendar
+import fnmatch
 import json
 import re
 import time
@@ -15,7 +23,7 @@ from typing import Any, Optional
 
 import polars as pl
 
-from . import cache, config, iceberg_util, measure_dsl, semantic
+from . import cache, config, iceberg_util, measure_dsl, s3, semantic
 from .semantic import Dimension, ImportBinding, Model, ModelError, Source, TIME_GRAINS, compile_frame
 
 FILTER_OPS = {"eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in", "contains"}
@@ -182,7 +190,91 @@ class QueryError(Exception):
     pass
 
 
-def _scan_source(source: Source) -> pl.LazyFrame:
+# ── reading a source ─────────────────────────────────────────────
+# Every byte a query reads enters through _scan_source below, which makes it
+# the one place a cache can sit. It needs to be one, because polars' laziness
+# is about bytes, not round trips: a collect() re-lists a glob, re-reads every
+# parquet footer and re-reads every joined CSV from scratch, and does so on
+# every single query. Against the loopback emulator this platform was built on
+# that is free. Against a real endpoint each of those is a 30-80ms round trip,
+# tens of them deep, and one visual takes seconds. See config's
+# SOURCE_CACHE_TTL block for the staleness contract all of this trades on.
+
+
+def _split_s3(path: str) -> Optional[tuple[str, str]]:
+    """(bucket, key) for an s3:// url, or None for anything else — a local
+    path in a test, or a form this module shouldn't be second-guessing."""
+    if not path.startswith("s3://"):
+        return None
+    bucket, _, key = path[len("s3://"):].partition("/")
+    return (bucket, key) if bucket else None
+
+
+def _glob_match(pattern: str, key: str) -> bool:
+    """Does object key `key` match glob `pattern`?
+
+    Matched one `/`-delimited segment at a time, so a `*` never crosses a
+    separator and `**` matches any run of segments — polars' own glob
+    semantics. Getting this wrong is not cosmetic: plain fnmatch would let
+    `sales/*.parquet` swallow `sales/archive/old.parquet`, and this listing
+    decides which files a query reads, so the extra rows would land in
+    someone's revenue number. fnmatchcase because S3 keys are case-sensitive
+    and fnmatch honours the *host* filesystem's rules."""
+    def match(pat: list[str], seg: list[str]) -> bool:
+        if not pat:
+            return not seg
+        if pat[0] == "**":
+            return any(match(pat[1:], seg[i:]) for i in range(len(seg) + 1))
+        return bool(seg) and fnmatch.fnmatchcase(seg[0], pat[0]) and match(pat[1:], seg[1:])
+
+    return match(pattern.split("/"), key.split("/"))
+
+
+def _list_objects(path: str) -> Optional[tuple[list[str], int]]:
+    """The objects `path` resolves to as (s3:// urls, total bytes), or None if
+    that can't be determined cheaply.
+
+    `path` may be a glob (`.../sales/*.parquet`), a single object, or a table
+    root (delta/iceberg), and one LIST answers all three. The byte total is
+    the point as much as the file list: it is what lets _materialize decide
+    whether a source is worth holding in memory *before* reading it.
+
+    A table root's listing includes its log/metadata objects, so the total
+    over-counts there. That errs toward not caching, which is the safe way to
+    be wrong."""
+    split = _split_s3(path)
+    if split is None:
+        return None
+    bucket, key = split
+    prefix = re.split(r"[*?\[]", key, maxsplit=1)[0]
+    try:
+        pages = s3.client().get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix)
+        contents = [obj for page in pages for obj in page.get("Contents", [])]
+    except Exception:
+        return None    # no listing permission, wrong endpoint, ... — just scan
+    matches = (
+        [o for o in contents if _glob_match(key, o["Key"])] if prefix != key
+        else [o for o in contents if o["Key"] == key or o["Key"].startswith(key.rstrip("/") + "/")]
+    )
+    return ([f"s3://{bucket}/{o['Key']}" for o in sorted(matches, key=lambda o: o["Key"])],
+            sum(o["Size"] for o in matches))
+
+
+def _source_objects(source: Source) -> Optional[tuple[list[str], int]]:
+    """_list_objects, once per source per SOURCE_CACHE_TTL rather than on
+    every query that scans it."""
+    if config.SOURCE_CACHE_TTL <= 0:
+        return _list_objects(source.path)
+    return cache.get_or_set(("source_objects", source.path), config.SOURCE_CACHE_TTL,
+                            lambda: _list_objects(source.path))
+
+
+def _lazy_source(source: Source) -> pl.LazyFrame:
+    """Scan a source straight from the object store, no caching.
+
+    Parquet is handed the already-resolved file list rather than its own glob
+    when one is available: polars would otherwise re-LIST the prefix itself on
+    every collect, and that listing is a thing we just cached."""
     opts = config.storage_options()
     if source.format == "csv":
         return pl.scan_csv(source.path, storage_options=opts)
@@ -190,7 +282,38 @@ def _scan_source(source: Source) -> pl.LazyFrame:
         return pl.scan_delta(source.path, storage_options=opts)
     if source.format == "iceberg":
         return iceberg_util.scan(source.path)
-    return pl.scan_parquet(source.path, storage_options=opts)
+    listing = _source_objects(source)
+    paths = listing[0] if listing and listing[0] else source.path
+    return pl.scan_parquet(paths, storage_options=opts)
+
+
+def _materialize(source: Source) -> Optional[pl.DataFrame]:
+    """`source` read once, whole, if it is small enough to be worth keeping —
+    else None, meaning "stream it from S3 like before".
+
+    Two gates, and they guard different things. The object-store byte total
+    decides whether to read at all, so an oversized source is never downloaded
+    just to discover it was oversized. The resident-size check afterwards
+    decides whether to *keep* what was read, since columnar data expands when
+    it decompresses and a source can pass the first gate and still be too big
+    to hold."""
+    listing = _source_objects(source)
+    if listing is None or not listing[0] or listing[1] > config.SOURCE_CACHE_MAX_BYTES:
+        return None
+    df = _lazy_source(source).collect()
+    return df if df.estimated_size() <= config.SOURCE_CACHE_MAX_RESIDENT_BYTES else None
+
+
+def _scan_source(source: Source) -> pl.LazyFrame:
+    """A lazy frame over one source — from memory when the source is small
+    enough to have been materialized, otherwise straight from the object
+    store. Either way it is a LazyFrame the caller can project, filter and
+    join exactly as before; only where the bytes come from changes."""
+    if config.SOURCE_CACHE_TTL <= 0:
+        return _lazy_source(source)
+    df = cache.get_or_set(("source_frame", source.path, source.format),
+                          config.SOURCE_CACHE_TTL, lambda: _materialize(source))
+    return _lazy_source(source) if df is None else df.lazy()
 
 
 def scan_source(source: Source) -> pl.LazyFrame:

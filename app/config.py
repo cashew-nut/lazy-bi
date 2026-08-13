@@ -180,8 +180,53 @@ MAX_ROWS = 10_000
 # know when new data lands; registry.reload_all() also clears the cache
 # outright on every model/bundle edit, since that changes what a path
 # resolves to, not just its data.
-SCHEMA_CACHE_TTL = float(os.environ.get("CI_SCHEMA_CACHE_TTL", "30"))
-BOUNDS_CACHE_TTL = float(os.environ.get("CI_BOUNDS_CACHE_TTL", "30"))
+#
+# A schema is the shape of a source, not its contents: it only changes when
+# someone rewrites the data with different columns, which is exactly the
+# case reload_all()'s clear() already covers for anything the platform did
+# itself. So this TTL is only protecting against a schema change made
+# *outside* the app, and 30s of that protection cost a full cold metadata
+# walk on every editor interaction slower than half a minute — i.e. on every
+# one with a human thinking in it. Minutes is the honest setting.
+SCHEMA_CACHE_TTL = float(os.environ.get("CI_SCHEMA_CACHE_TTL", "300"))
+# Bounds are min/max over the data itself, so unlike a schema they move when
+# rows land. Raised much more modestly for that reason.
+BOUNDS_CACHE_TTL = float(os.environ.get("CI_BOUNDS_CACHE_TTL", "120"))
+
+# ── source read cache (app/engine.py's _scan_source) ──────────────────────
+# The one that matters against a real object store. polars is lazy about
+# *bytes* but not about *round trips*: every collect() re-lists a glob,
+# re-reads every parquet footer and re-reads every joined lookup file from
+# scratch, so one visual costs tens of sequential S3 requests and a real
+# endpoint's 30-80ms RTT turns that into seconds. The two caches above never
+# helped there — they memoize derived Python objects (a pl.Schema, a bounds
+# tuple), not the I/O inside collect().
+#
+# So: resolve each source's object listing once (SOURCE_CACHE_TTL), and hold
+# small sources in memory as whole frames instead of re-reading them per
+# query. Small is the common case for exactly the sources that hurt most —
+# the lookup tables in `joins:` and the datasets behind a dimension bundle
+# are read on every query that touches them and are usually kilobytes.
+#
+# TTL is the staleness contract: until an entry expires, a query can answer
+# from bytes read up to SOURCE_CACHE_TTL seconds ago. 60s keeps that well
+# inside "a person clicking around gets consistent answers" while still
+# collapsing an editing session's many queries onto one read. Raise it (600+)
+# when data lands hourly or nightly — that is where the biggest wins are —
+# and drop it to 0 to disable source caching entirely and get exactly the
+# old read-everything-every-time behaviour back.
+SOURCE_CACHE_TTL = float(os.environ.get("CI_SOURCE_CACHE_TTL", "60"))
+# Gate on the source's total size *in the object store*, which one LIST
+# already tells us, so an oversized source is never downloaded to discover
+# it was oversized.
+SOURCE_CACHE_MAX_BYTES = int(os.environ.get("CI_SOURCE_CACHE_MAX_BYTES", 16 * 1024 * 1024))
+# Second guard, applied after materializing: columnar data on disk is
+# compressed and dictionary-encoded, so an under-the-gate source can still
+# expand several-fold in memory. Anything past this is dropped again rather
+# than held (the read still happened — the gate above is what prevents the
+# expensive case, this only prevents *retaining* it).
+SOURCE_CACHE_MAX_RESIDENT_BYTES = int(
+    os.environ.get("CI_SOURCE_CACHE_MAX_RESIDENT_BYTES", 256 * 1024 * 1024))
 
 # Instant cross-filter extracts (specs/016-instant-cross-filter/) — the
 # per-tile size cap that decides whether a dashboard tile gets the
