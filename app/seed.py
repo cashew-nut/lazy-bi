@@ -15,6 +15,7 @@ import secrets
 from datetime import date, timedelta
 
 import polars as pl
+from botocore.exceptions import ClientError
 from deltalake import write_deltalake
 
 from . import auth, config, s3
@@ -291,6 +292,18 @@ def _create_bucket(client) -> None:
         client.create_bucket(**kwargs)
     except client.exceptions.BucketAlreadyOwnedByYou:
         pass
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "AccessDenied":
+            raise
+        # A read-only identity — the common case for a real, pre-existing
+        # bucket someone else already manages — has no s3:CreateBucket
+        # permission at all, by design: that's not this app's problem to
+        # work around, only to not treat as fatal. Assume the bucket
+        # already exists (true by construction of that use case) and move
+        # on; the list/read calls right after this fail loudly and
+        # specifically if that assumption turns out to be wrong.
+        print(f"[cash-intel] no s3:CreateBucket permission for {config.BUCKET!r} "
+              f"— assuming it already exists and continuing read-only")
 
 
 def seed_bucket() -> bool:
