@@ -100,6 +100,21 @@ class NoCacheStaticFiles(StaticFiles):
         return response
 
 
+def _s3_banner() -> str:
+    """Which S3 credential path actually resolved, printed on every start —
+    same guarantee as _llm_banner() below. Reports the profile name or a
+    fingerprint (see llmclient.key_fingerprint) rather than calling
+    config.resolve_credentials(): actually resolving a profile can hit the
+    network (an SSO token refresh) and fail outright (e.g. an expired SSO
+    session), and this line specifically must not be one more thing that can
+    crash before it prints — see the ENV_FILE_SHADOWED comment below for why
+    that already burned once.
+    """
+    auth = (f"profile={config.AWS_PROFILE}" if config.AWS_PROFILE
+            else f"key={llmclient.key_fingerprint(config.AWS_ACCESS_KEY_ID)}")
+    return f"S3: endpoint={config.S3_ENDPOINT} bucket={config.BUCKET} {auth}"
+
+
 def _llm_banner() -> str:
     """What the LLM settings actually resolved to, printed on every start.
 
@@ -138,6 +153,7 @@ async def lifespan(app: FastAPI):
         if config.ENV_FILE_SHADOWED:
             print(f"[cash-intel] .env ignored for {', '.join(config.ENV_FILE_SHADOWED)} "
                   f"— already set in the environment, which wins")
+        print(f"[cash-intel] {_s3_banner()}")
         if emulator.start_if_embedded():
             print(f"[cash-intel] embedded S3 emulator on {config.S3_ENDPOINT}")
         if seed.seed_bucket():
