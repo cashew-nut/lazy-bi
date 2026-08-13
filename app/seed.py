@@ -15,6 +15,7 @@ import secrets
 from datetime import date, timedelta
 
 import polars as pl
+from botocore.exceptions import ClientError
 from deltalake import write_deltalake
 
 from . import auth, config, s3
@@ -277,14 +278,39 @@ def _write_iceberg(table_root: str, df: pl.DataFrame) -> None:
     table.append(df.to_arrow())
 
 
+def _create_bucket(client) -> None:
+    """us-east-1 is the one region S3's CreateBucket API treats as the
+    implicit default: passing a LocationConstraint for it is *also*
+    rejected, so it's the one region this must be left out for. Every other
+    region needs it, or CreateBucket fails outright with
+    IllegalLocationConstraintException instead of creating anything — moto
+    enforces this exactly like real S3 does."""
+    kwargs = {"Bucket": config.BUCKET}
+    if config.AWS_REGION != "us-east-1":
+        kwargs["CreateBucketConfiguration"] = {"LocationConstraint": config.AWS_REGION}
+    try:
+        client.create_bucket(**kwargs)
+    except client.exceptions.BucketAlreadyOwnedByYou:
+        pass
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "AccessDenied":
+            raise
+        # A read-only identity — the common case for a real, pre-existing
+        # bucket someone else already manages — has no s3:CreateBucket
+        # permission at all, by design: that's not this app's problem to
+        # work around, only to not treat as fatal. Assume the bucket
+        # already exists (true by construction of that use case) and move
+        # on; the list/read calls right after this fail loudly and
+        # specifically if that assumption turns out to be wrong.
+        print(f"[cash-intel] no s3:CreateBucket permission for {config.BUCKET!r} "
+              f"— assuming it already exists and continuing read-only")
+
+
 def seed_bucket() -> bool:
     """Create the bucket and upload demo parquet files. Returns True if seeded,
     False if the bucket already had data."""
     client = s3.client()
-    try:
-        client.create_bucket(Bucket=config.BUCKET)
-    except client.exceptions.BucketAlreadyOwnedByYou:
-        pass
+    _create_bucket(client)
     existing = client.list_objects_v2(Bucket=config.BUCKET, MaxKeys=1)
     if existing.get("KeyCount", 0) > 0:
         return False

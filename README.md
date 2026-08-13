@@ -86,8 +86,25 @@ demo data — only if the bucket is empty. One dataset per source format:
 | `support/tickets` | Iceberg | `support` (15k support tickets) |
 
 To point at a real bucket or an external emulator (MinIO, LocalStack), set
-`CI_S3_ENDPOINT` (this also disables the embedded moto server) plus the usual
-`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, and `CI_BUCKET`.
+`CI_S3_ENDPOINT` (this also disables the embedded moto server) plus
+`CI_BUCKET` and credentials. Two ways to supply those:
+
+- **`AWS_PROFILE`** (recommended for a human's own access, especially AWS
+  SSO): set it to a profile name from `~/.aws/config` and every S3 call asks
+  boto3 for that profile's credentials fresh, the same way the AWS CLI
+  would — an SSO profile configured per the CLI's
+  [`sso-configure-profile-token-auto-sso`](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sso.html#sso-configure-profile-token-auto-sso)
+  guide keeps refreshing itself from the cached SSO token, so nothing
+  short-lived ever has to sit in `.env`. Takes priority over the static keys
+  below when both are set.
+- **`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`** (a long-lived IAM user):
+  the static fallback used when `AWS_PROFILE` is unset. Add
+  `AWS_SESSION_TOKEN` alongside them only if you're pasting in a temporary/
+  STS credential directly rather than using a profile — note that value
+  itself still expires without refreshing, which `AWS_PROFILE` handles for
+  you. A temporary access key (`ASIA...`) used without its paired token
+  fails as `InvalidAccessKeyId`, which reads like a wrong key rather than a
+  missing token.
 
 **Your own raw data**: drop a folder of `.csv`/`.parquet` files under
 `raw_data/<dataset-name>/` (committed to the repo, unlike the gitignored

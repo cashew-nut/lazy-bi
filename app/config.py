@@ -82,9 +82,58 @@ ENV_FILE_SHADOWED = _load_env_file()
 S3_ENDPOINT = os.environ.get("CI_S3_ENDPOINT", "http://127.0.0.1:9600")
 EMBEDDED_EMULATOR = "CI_S3_ENDPOINT" not in os.environ
 BUCKET = os.environ.get("CI_BUCKET", "cash-intel")
-AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID", "testing")
-AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY", "testing")
+
+# Optional: a ~/.aws/config profile name — including one backed by AWS SSO
+# (`aws configure sso`) with automatic token refresh, per the AWS CLI's
+# "sso-configure-profile-token-auto-sso" guide. Presence, not value, decides:
+# set this and resolve_credentials() below asks boto3 for that profile's
+# credentials fresh on every call instead of using the static keys, which is
+# what makes short-lived SSO credentials keep working without ever sitting
+# in .env — boto3 re-derives them from the (much longer-lived) cached SSO
+# token itself, the same way `aws s3 ls --profile ...` would. Takes priority
+# over AWS_ACCESS_KEY_ID/etc. below when both happen to be set.
+AWS_PROFILE = os.environ.get("AWS_PROFILE", "")
+
+# Static fallback, used as-is when AWS_PROFILE is unset. Defaults to the
+# demo emulator's dummy credentials unless a profile is configured, in which
+# case an unset key here means "let resolve_credentials() below ask boto3"
+# rather than silently sending "testing" to a real endpoint.
+_default_creds = "" if AWS_PROFILE else "testing"
+AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID", _default_creds)
+AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY", _default_creds)
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
+# Optional: a temporary/STS credential pasted in directly instead of going
+# through AWS_PROFILE above — a long-lived IAM user's access key + secret
+# work without one. Left out of every options dict below unless non-empty,
+# since object_store/boto3 treat an *empty* session token as a real
+# (invalid) one rather than "absent", which would break the far more common
+# no-token case. Prefer AWS_PROFILE for anything SSO-derived: a value here
+# is exactly the kind of copy-pasted, silently-expiring credential
+# AWS_PROFILE exists to avoid.
+AWS_SESSION_TOKEN = os.environ.get("AWS_SESSION_TOKEN", "")
+
+
+def resolve_credentials() -> tuple[str, str, str | None]:
+    """(access_key, secret_key, session_token) for this call.
+
+    Re-resolved every time rather than cached at import time: an
+    AWS_PROFILE credential (an SSO one especially) can expire, and asking
+    boto3 again — not caching it ourselves — is how it gets refreshed. The
+    static keys above never expire, so re-reading them costs nothing extra.
+    """
+    if not AWS_PROFILE:
+        return AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN or None
+    import boto3  # local: the static-keys path above never needs this
+
+    creds = boto3.Session(profile_name=AWS_PROFILE).get_credentials()
+    if creds is None:
+        raise RuntimeError(
+            f"AWS_PROFILE={AWS_PROFILE!r} has no resolvable credentials — "
+            f"check `aws sso login --profile {AWS_PROFILE}` (or the profile "
+            f"name itself) against ~/.aws/config"
+        )
+    frozen = creds.get_frozen_credentials()
+    return frozen.access_key, frozen.secret_key, frozen.token
 
 # Semantic models + persistence
 MODELS_DIR = Path(os.environ.get("CI_MODELS_DIR", PROJECT_ROOT / "models"))
@@ -320,13 +369,17 @@ MCP_RATE_LIMIT_PER_MIN = int(os.environ.get("CI_MCP_RATE_LIMIT_PER_MIN", "20"))
 
 def storage_options() -> dict:
     """storage_options passed to polars scan_* for the S3 object store."""
-    return {
-        "aws_access_key_id": AWS_ACCESS_KEY_ID,
-        "aws_secret_access_key": AWS_SECRET_ACCESS_KEY,
+    access_key, secret_key, session_token = resolve_credentials()
+    opts = {
+        "aws_access_key_id": access_key,
+        "aws_secret_access_key": secret_key,
         "aws_region": AWS_REGION,
         "aws_endpoint_url": S3_ENDPOINT,
         "aws_allow_http": "true",
     }
+    if session_token:
+        opts["aws_session_token"] = session_token
+    return opts
 
 
 def iceberg_storage_options() -> dict:
@@ -335,23 +388,31 @@ def iceberg_storage_options() -> dict:
     names pyiceberg expects (see https://py.iceberg.apache.org/configuration/
     #fileio). Path-style addressing is required against the moto/MinIO
     emulator and works fine against real S3 too."""
-    return {
-        "s3.access-key-id": AWS_ACCESS_KEY_ID,
-        "s3.secret-access-key": AWS_SECRET_ACCESS_KEY,
+    access_key, secret_key, session_token = resolve_credentials()
+    opts = {
+        "s3.access-key-id": access_key,
+        "s3.secret-access-key": secret_key,
         "s3.region": AWS_REGION,
         "s3.endpoint": S3_ENDPOINT,
         "s3.path-style-access": "true",
     }
+    if session_token:
+        opts["s3.session-token"] = session_token
+    return opts
 
 
 def delta_write_options() -> dict:
     """storage_options for deltalake writes (seeding). The unsafe-rename flag is
     fine here: single writer, emulated bucket."""
-    return {
-        "AWS_ACCESS_KEY_ID": AWS_ACCESS_KEY_ID,
-        "AWS_SECRET_ACCESS_KEY": AWS_SECRET_ACCESS_KEY,
+    access_key, secret_key, session_token = resolve_credentials()
+    opts = {
+        "AWS_ACCESS_KEY_ID": access_key,
+        "AWS_SECRET_ACCESS_KEY": secret_key,
         "AWS_REGION": AWS_REGION,
         "AWS_ENDPOINT_URL": S3_ENDPOINT,
         "AWS_ALLOW_HTTP": "true",
         "AWS_S3_ALLOW_UNSAFE_RENAME": "true",
     }
+    if session_token:
+        opts["AWS_SESSION_TOKEN"] = session_token
+    return opts

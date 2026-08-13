@@ -100,6 +100,21 @@ class NoCacheStaticFiles(StaticFiles):
         return response
 
 
+def _s3_banner() -> str:
+    """Which S3 credential path actually resolved, printed on every start —
+    same guarantee as _llm_banner() below. Reports the profile name or a
+    fingerprint (see llmclient.key_fingerprint) rather than calling
+    config.resolve_credentials(): actually resolving a profile can hit the
+    network (an SSO token refresh) and fail outright (e.g. an expired SSO
+    session), and this line specifically must not be one more thing that can
+    crash before it prints — see the ENV_FILE_SHADOWED comment below for why
+    that already burned once.
+    """
+    auth = (f"profile={config.AWS_PROFILE}" if config.AWS_PROFILE
+            else f"key={llmclient.key_fingerprint(config.AWS_ACCESS_KEY_ID)}")
+    return f"S3: endpoint={config.S3_ENDPOINT} bucket={config.BUCKET} {auth}"
+
+
 def _llm_banner() -> str:
     """What the LLM settings actually resolved to, printed on every start.
 
@@ -129,6 +144,16 @@ async def lifespan(app: FastAPI):
     # (research.md R2). Wraps the whole body so it's live for every request
     # this app ever serves, torn down after this app's own shutdown steps.
     async with mcp_app.lifespan(mcp_app):
+        # Reported first and unconditionally reachable: emulator.start_if_embedded()
+        # and seed.seed_bucket() below are the first things that touch S3, and a
+        # shadowed AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY is a common reason they
+        # fail outright (e.g. InvalidAccessKeyId) — this line is the only thing
+        # that explains why in that case, so it must print before either can crash
+        # the process and take the explanation down with it.
+        if config.ENV_FILE_SHADOWED:
+            print(f"[cash-intel] .env ignored for {', '.join(config.ENV_FILE_SHADOWED)} "
+                  f"— already set in the environment, which wins")
+        print(f"[cash-intel] {_s3_banner()}")
         if emulator.start_if_embedded():
             print(f"[cash-intel] embedded S3 emulator on {config.S3_ENDPOINT}")
         if seed.seed_bucket():
@@ -136,9 +161,6 @@ async def lifespan(app: FastAPI):
         registry.init()
         print(f"[cash-intel] loaded models: {', '.join(registry.models) or '(none)'}")
         print(f"[cash-intel] loaded agents: {', '.join(registry.agents) or '(none)'}")
-        if config.ENV_FILE_SHADOWED:
-            print(f"[cash-intel] .env ignored for {', '.join(config.ENV_FILE_SHADOWED)} "
-                  f"— already set in the environment, which wins")
         print(f"[cash-intel] {_llm_banner()}")
         seed.seed_bootstrap_admin()
         if seed.seed_notebook_demo():

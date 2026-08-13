@@ -7,10 +7,12 @@ from . import config
 
 
 def client():
+    access_key, secret_key, session_token = config.resolve_credentials()
     return boto3.client(
         "s3",
         endpoint_url=config.S3_ENDPOINT,
-        aws_access_key_id=config.AWS_ACCESS_KEY_ID,
-        aws_secret_access_key=config.AWS_SECRET_ACCESS_KEY,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        aws_session_token=session_token,
         region_name=config.AWS_REGION,
     )
