@@ -17,6 +17,23 @@ def test_seed_bucket_succeeds_without_raw_data_dir(seeded):
     assert not any(k.endswith(".md") for k in keys)
 
 
+def test_create_bucket_sets_location_constraint_outside_us_east_1(seeded, monkeypatch):
+    """Real S3 (and moto, faithfully) rejects a bare CreateBucket outside
+    us-east-1 with IllegalLocationConstraintException — this is what
+    surfaced as exactly that error the first time this app was pointed at a
+    real bucket outside us-east-1."""
+    from app import config, s3, seed
+
+    monkeypatch.setattr(config, "AWS_REGION", "eu-west-1")
+    monkeypatch.setattr(config, "BUCKET", "probe-bucket-eu-west-1")
+    client = s3.client()
+    try:
+        seed._create_bucket(client)  # must not raise
+        client.head_bucket(Bucket="probe-bucket-eu-west-1")  # must exist
+    finally:
+        client.delete_bucket(Bucket="probe-bucket-eu-west-1")
+
+
 def test_local_data_dir_reuploaded_on_seed(seeded):
     """config.LOCAL_DATA_DIR (app/api/datasets.py's upload disk cache) is
     re-synced into the bucket the same way app/load_taxi.py's data_cache/ is

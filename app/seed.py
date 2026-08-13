@@ -277,14 +277,27 @@ def _write_iceberg(table_root: str, df: pl.DataFrame) -> None:
     table.append(df.to_arrow())
 
 
+def _create_bucket(client) -> None:
+    """us-east-1 is the one region S3's CreateBucket API treats as the
+    implicit default: passing a LocationConstraint for it is *also*
+    rejected, so it's the one region this must be left out for. Every other
+    region needs it, or CreateBucket fails outright with
+    IllegalLocationConstraintException instead of creating anything — moto
+    enforces this exactly like real S3 does."""
+    kwargs = {"Bucket": config.BUCKET}
+    if config.AWS_REGION != "us-east-1":
+        kwargs["CreateBucketConfiguration"] = {"LocationConstraint": config.AWS_REGION}
+    try:
+        client.create_bucket(**kwargs)
+    except client.exceptions.BucketAlreadyOwnedByYou:
+        pass
+
+
 def seed_bucket() -> bool:
     """Create the bucket and upload demo parquet files. Returns True if seeded,
     False if the bucket already had data."""
     client = s3.client()
-    try:
-        client.create_bucket(Bucket=config.BUCKET)
-    except client.exceptions.BucketAlreadyOwnedByYou:
-        pass
+    _create_bucket(client)
     existing = client.list_objects_v2(Bucket=config.BUCKET, MaxKeys=1)
     if existing.get("KeyCount", 0) > 0:
         return False
