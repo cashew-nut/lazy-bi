@@ -803,8 +803,100 @@ stack (HTTP → semantic layer → polars lazy scan over emulated S3, x86 MacBoo
 | daily trend, filtered to 2 weeks | 17 | 932ms | 933ms |
 
 Predicate/projection pushdown does the heavy lifting: only referenced columns'
-row groups leave the bucket. Against real S3, network latency dominates —
-expect these numbers to grow with round-trips, not data size.
+row groups leave the bucket.
+
+#### Against a real object store: round trips, not bytes
+
+Laziness is about bytes, and a real endpoint charges for *round trips*. Left to
+itself polars re-lists every glob, re-reads every parquet footer and re-reads
+every joined lookup file on every `collect()` — so one visual costs tens of
+sequential S3 requests, and at a real endpoint's 30–80ms RTT that is seconds,
+however little data comes back. The schema/bounds caches never helped there:
+they memoize derived Python objects, not the I/O inside `collect()`.
+
+So `engine._scan_source` — the single function every query byte enters through
+— caches two things:
+
+- **The object listing.** One LIST per source per TTL resolves a glob to a file
+  list, which is then handed to `scan_parquet` already resolved instead of
+  being re-listed per query. The same listing yields the source's byte total.
+- **The source itself, when it's small.** Under `CI_SOURCE_CACHE_MAX_BYTES`
+  measured *in the object store*, a source is read once and held as a whole
+  frame. The gate is checked before reading, so a big table is never downloaded
+  just to discover it was too big; a second check after decoding drops anything
+  that expanded past `CI_SOURCE_CACHE_MAX_RESIDENT_BYTES`.
+
+This is aimed squarely at the sources that hurt most: the lookup tables in
+`joins:` and the datasets behind a dimension bundle are read by every query
+that touches them and are usually kilobytes. Large fact tables stay streamed
+with pushdown intact — the `taxi` model above never gets held.
+
+Measured through the engine against an S3 endpoint with 40ms of injected
+per-request latency, on the `sales` model (parquet glob + a CSV join + two
+dimension bundles):
+
+| | S3 requests | before | after |
+|---|---|---|---|
+| first query in a session | 40 → 31 | 1932ms | 1927ms |
+| the same visual re-run | 28 → 0 | 1114ms | **13ms** |
+| edit it: different dimensions/measures | 22 → 0 | 1010ms | **7ms** |
+| 6-tile dashboard | 168 → 0 | 6683ms | **72ms** |
+
+The first query is deliberately barely changed: nothing is prefetched, and a
+cold cache still pays for the data it has never read. What goes away is paying
+for it *again* on every interaction after.
+
+**The TTL is a staleness contract.** Until an entry expires, a query may answer
+from bytes read up to `CI_SOURCE_CACHE_TTL` seconds ago. The 60s default keeps
+that inside "clicking around gives consistent answers"; raise it to 600+ when
+data lands hourly or nightly, which is where the largest wins are. Set it to
+`0` to disable source caching entirely and get the old
+read-everything-every-time behaviour back exactly.
+
+The TTL is only the backstop for changes the app can't see. Everything the
+platform does to the bucket itself invalidates immediately, because this cache
+holds source *contents* and not just derived schemas: a model or bundle edit
+(`registry.reload_all()`, since a path can resolve somewhere new), a successful
+pipeline run (which writes from a subprocess this one can't see into), and a
+dataset upload or delete. So "run a pipeline, look at the dashboard" and
+"upload a file, see its columns" stay immediate — the TTL is what covers data
+that lands in the bucket from outside the app.
+
+**It needs `s3:ListBucket`.** The listing is what supplies both the file list
+and the byte total, so a bucket that grants `GetObject` and denies
+`ListBucket` gets no caching — each such source quietly falls back to
+streaming per query rather than failing, exactly as it behaved before. Grant
+`s3:ListBucket` on the prefixes your models read to get the speedup.
+
+**Memory ceiling** is the two caps multiplied by how many sources a
+deployment has: nothing is held above `CI_SOURCE_CACHE_MAX_RESIDENT_BYTES`
+each, and the set of sources is whatever `models/` and `dimensions/` declare,
+not something a query can grow. A 16MB parquet source typically decodes to
+50–160MB, so the 256MB resident cap is a safety net for pathological expansion
+rather than a number to expect.
+
+One caveat worth stating: holding a source changes how the data is chunked, and
+a parallel `sum()` reorders its additions when chunking changes. Float
+aggregates can therefore differ in their last bits — under 1e-14 relative
+(tens of ULP of a float64) across every model and query shape in the suite,
+varying from run to run rather than settling on one figure. Row *counts*, row
+*sets* and every non-float value are identical.
+
+This is not something the cache introduced: two identical runs of one query
+already differ the same way, because the reduction order depends on how the
+parallel aggregation happened to be scheduled. It is worth knowing about
+mainly so it isn't mistaken for a caching bug later — the engine has never
+been bit-reproducible on float aggregates.
+
+**Data layout still matters for anything past the gate.** A CSV costs three
+round trips (HEAD, a probe read, then the file) and supports neither predicate
+nor projection pushdown, so a *large* CSV source is re-read whole on every
+query and is the worst thing to put behind a model. The demo's `ref/*.csv`
+lookups stay CSV deliberately — they exercise that code path, and at a
+kilobyte each the cache serves them from memory anyway — but a reference table
+big enough to miss the gate should be written as parquet. Same for fact
+tables: fewer, larger parquet files beat many small ones, since each file
+costs a HEAD plus a footer read before any data moves.
 
 **Or author it in the app**: the **Modelling** workspace (see below) is the
 home for model authoring — *edit yaml* on any model card, or *+ MODEL* — opening

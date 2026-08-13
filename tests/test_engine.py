@@ -1240,3 +1240,276 @@ def test_unbounded_spine_query_reuses_cached_bounds_on_repeat(models, monkeypatc
 
     assert first["rows"] == second["rows"]  # caching must never change the result
     assert 0 < warm < cold
+
+
+# --- Source read cache (engine._scan_source) -------------------------------
+# The caches above memoize *derived* values — a schema, a bounds pair — and
+# never touched the I/O inside collect(), so every query still re-listed every
+# glob and re-read every joined lookup file from the object store. These cover
+# the layer that does: small sources are read once and held as whole frames,
+# large ones keep streaming, and neither may change an answer.
+#
+# Real object-store reads are counted through _lazy_source (the uncached path)
+# rather than _scan_source, which is still called every time and is exactly
+# what's expected to stop reaching S3.
+
+def _assert_same_rows(first: dict, second: dict, label: str = "") -> None:
+    """Row-by-row equality with a tolerance on floats.
+
+    polars aggregates in parallel, and a float sum is not associative, so two
+    identical runs of the same query can differ in a value's last bits purely
+    from how the reduction happened to be scheduled — under 1e-14 relative.
+    That is a property of the engine, not of anything these tests
+    change, so asserting bit-equality on floats would make them flaky without
+    testing anything real."""
+    assert first["row_count"] == second["row_count"], label
+    assert first["columns"] == second["columns"], label
+    for a, b in zip(first["rows"], second["rows"]):
+        assert set(a) == set(b), label
+        for column, value in a.items():
+            if isinstance(value, float) and isinstance(b[column], float):
+                assert value == pytest.approx(b[column], rel=1e-9), (label, column)
+            else:
+                assert value == b[column], (label, column)
+
+
+def _count_object_store_reads(monkeypatch):
+    reads = []
+    real = engine._lazy_source
+
+    def counting(source):
+        reads.append(source.path)
+        return real(source)
+
+    monkeypatch.setattr(engine, "_lazy_source", counting)
+    return reads
+
+
+def _sources_of(model):
+    return [model.source] + [j.source for j in model.joins]
+
+
+def test_small_source_is_read_from_the_object_store_once(models, monkeypatch):
+    cache.clear()
+    reads = _count_object_store_reads(monkeypatch)
+    source = semantic.Source(path="s3://cash-intel/ref/products.csv", format="csv")
+
+    first = engine._scan_source(source).collect()
+    engine._scan_source(source).collect()
+    engine._scan_source(source).collect()
+
+    assert reads == ["s3://cash-intel/ref/products.csv"]  # read once, then served from memory
+    assert first.height == 15
+
+
+def test_repeat_query_stops_touching_the_object_store(models, monkeypatch):
+    """The editing loop: the same visual re-run costs no object-store reads."""
+    cache.clear()
+    reads = _count_object_store_reads(monkeypatch)
+    query = {"dimensions": ["region"], "measures": ["revenue"]}
+
+    first = run(models, "sales", **query)
+    cold = len(reads)
+    reads.clear()
+    second = run(models, "sales", **query)
+
+    _assert_same_rows(first, second)
+    assert cold > 0 and reads == []
+
+
+def test_a_different_query_on_a_cached_model_also_stops_touching_s3(models, monkeypatch):
+    """Not just an identical repeat — the cache is on the *source*, so
+    re-dimensioning a visual mid-edit reads nothing either."""
+    cache.clear()
+    run(models, "sales", dimensions=["region"], measures=["revenue"])
+    reads = _count_object_store_reads(monkeypatch)
+
+    other = run(models, "sales", dimensions=["category"], measures=["profit", "units"])
+
+    assert other["row_count"] > 0
+    assert reads == []
+
+
+def test_source_cache_never_changes_an_answer(models, monkeypatch):
+    """Same queries, cache off then on. Float aggregates are compared with a
+    tolerance: a parallel sum reorders its additions when the data is chunked
+    differently, which moves the last bits of a float64 and nothing else."""
+    queries = [
+        ("sales", {"dimensions": ["region"], "measures": ["revenue", "margin_pct"]}),
+        ("sales", {"dimensions": ["supplier", "tier"], "measures": ["revenue", "orders"]}),
+        ("sales", {"dimensions": [{"name": "order_date", "grain": "1q"}],
+                   "measures": ["revenue", "revenue_running_total"]}),
+        ("commercial_overview", {"dimensions": [{"name": "calendar_date", "grain": "1mo"}],
+                                 "measures": ["revenue", "ad_spend", "mrr"]}),
+        ("logistics", {"dimensions": ["courier"], "measures": ["shipments"]}),
+    ]
+    for name, query in queries:
+        monkeypatch.setattr(config, "SOURCE_CACHE_TTL", 0)
+        cache.clear()
+        off = run(models, name, **query)
+        monkeypatch.setattr(config, "SOURCE_CACHE_TTL", 60.0)
+        cache.clear()
+        on = run(models, name, **query)
+
+        _assert_same_rows(off, on, name)
+
+
+def test_source_larger_than_the_gate_keeps_streaming(models, monkeypatch):
+    """The gate is the object store's own byte total, so an oversized source
+    is never downloaded just to find out it was oversized."""
+    monkeypatch.setattr(config, "SOURCE_CACHE_MAX_BYTES", 1)   # everything is "too big"
+    cache.clear()
+    reads = _count_object_store_reads(monkeypatch)
+    query = {"dimensions": ["region"], "measures": ["revenue"]}
+
+    first = run(models, "sales", **query)
+    reads.clear()
+    second = run(models, "sales", **query)
+
+    _assert_same_rows(first, second)
+    assert reads  # still going to S3 every time, exactly as before
+
+
+def test_frame_is_dropped_when_it_expands_past_the_resident_cap(models, monkeypatch):
+    """Second guard: compressed columnar data can pass the on-disk gate and
+    still be too big to hold once decoded."""
+    monkeypatch.setattr(config, "SOURCE_CACHE_MAX_RESIDENT_BYTES", 1)
+    cache.clear()
+    source = semantic.Source(path="s3://cash-intel/ref/products.csv", format="csv")
+
+    assert engine._materialize(source) is None
+
+
+def test_ttl_of_zero_restores_the_uncached_behaviour(models, monkeypatch):
+    monkeypatch.setattr(config, "SOURCE_CACHE_TTL", 0)
+    cache.clear()
+    reads = _count_object_store_reads(monkeypatch)
+    source = semantic.Source(path="s3://cash-intel/ref/products.csv", format="csv")
+
+    engine._scan_source(source).collect()
+    engine._scan_source(source).collect()
+
+    assert len(reads) == 2  # no caching at all
+
+
+def test_model_reload_drops_held_frames(models, monkeypatch):
+    """registry.reload_all() clears the cache outright — a model edit can
+    change what a path resolves to, and stale rows must not outlive it."""
+    cache.clear()
+    source = semantic.Source(path="s3://cash-intel/ref/products.csv", format="csv")
+    engine._scan_source(source).collect()
+
+    reads = _count_object_store_reads(monkeypatch)
+    cache.clear()                      # what reload_all() does
+    engine._scan_source(source).collect()
+
+    assert reads == ["s3://cash-intel/ref/products.csv"]
+
+
+def test_glob_is_listed_once_and_reused(models, monkeypatch):
+    """A parquet glob is resolved to a file list once per TTL and handed to
+    polars already resolved, instead of being re-listed on every collect."""
+    cache.clear()
+    lists = []
+    real = engine._list_objects
+    monkeypatch.setattr(engine, "_list_objects",
+                        lambda path: lists.append(path) or real(path))
+    source = semantic.Source(path="s3://cash-intel/sales/*.parquet", format="parquet")
+
+    paths, total = engine._source_objects(source)
+    engine._source_objects(source)
+    engine._source_objects(source)
+
+    assert lists == ["s3://cash-intel/sales/*.parquet"]
+    assert [p.rsplit("/", 1)[1] for p in paths] == ["2024.parquet", "2025.parquet", "2026.parquet"]
+    assert total > 0
+
+
+def test_listing_matches_the_glob_and_not_its_neighbours(seeded):
+    csvs, _ = engine._list_objects("s3://cash-intel/ref/*.csv")
+    assert all(p.endswith(".csv") for p in csvs)
+    assert "s3://cash-intel/ref/products.csv" in csvs
+    assert not any("sales/" in p for p in csvs)
+
+    exact, size = engine._list_objects("s3://cash-intel/ref/products.csv")
+    assert exact == ["s3://cash-intel/ref/products.csv"] and size > 0
+
+
+def test_a_non_s3_path_is_left_alone(tmp_path, monkeypatch):
+    """Nothing to list, so nothing to cache — the source just gets scanned,
+    which is what a local path in a test or a future backend needs."""
+    local = tmp_path / "rows.csv"
+    local.write_text("a,b\n1,2\n3,4\n")
+    cache.clear()
+    source = semantic.Source(path=str(local), format="csv")
+
+    assert engine._list_objects(str(local)) is None
+    assert engine._materialize(source) is None
+    assert engine._scan_source(source).collect().height == 2
+
+
+def test_glob_does_not_reach_into_a_nested_prefix(seeded):
+    """A `*` must not cross a `/`. The listing decides which files a query
+    reads, so a pattern that swallowed a nested archive directory would put
+    its rows in someone's totals. Asserted against polars' own glob rather
+    than against the expectation, so the two can't drift apart."""
+    client = s3.client()
+    frame = pl.DataFrame({"order_id": [1], "region": ["Nested"], "unit_price": [1.0],
+                          "quantity": [1], "unit_cost": [0.5]})
+    buf = io.BytesIO()
+    frame.write_parquet(buf)
+    client.put_object(Bucket=config.BUCKET, Key="sales/archive/old.parquet",
+                      Body=buf.getvalue())
+    try:
+        cache.clear()
+        listed, _ = engine._list_objects("s3://cash-intel/sales/*.parquet")
+        assert "s3://cash-intel/sales/archive/old.parquet" not in listed
+
+        # and the file list we hand polars must select exactly what polars'
+        # own glob would have selected
+        source = semantic.Source(path="s3://cash-intel/sales/*.parquet", format="parquet")
+        via_glob = pl.scan_parquet("s3://cash-intel/sales/*.parquet",
+                                   storage_options=config.storage_options()).collect()
+        assert engine._lazy_source(source).collect().height == via_glob.height
+        assert "Nested" not in via_glob["region"].unique().to_list()
+    finally:
+        client.delete_object(Bucket=config.BUCKET, Key="sales/archive/old.parquet")
+        cache.clear()
+
+
+def test_glob_match_segment_semantics():
+    assert engine._glob_match("sales/*.parquet", "sales/2024.parquet")
+    assert not engine._glob_match("sales/*.parquet", "sales/archive/old.parquet")
+    assert not engine._glob_match("sales/*.parquet", "sales/2024.csv")
+    assert not engine._glob_match("sales/*.parquet", "other/2024.parquet")
+    assert engine._glob_match("sales/**/*.parquet", "sales/archive/old.parquet")
+    assert engine._glob_match("ref/products.csv", "ref/products.csv")
+    assert not engine._glob_match("ref/Products.csv", "ref/products.csv")  # S3 is case-sensitive
+
+
+def test_denied_listing_falls_back_to_streaming(models, monkeypatch):
+    """A bucket may allow GetObject and deny ListBucket — a shape this app
+    supports (app/seed.py tolerates a denied CreateBucket for the same
+    reason). Without a listing there is no byte total to gate on and no file
+    list to pin, so the source cache simply switches itself off for that
+    source rather than failing the query."""
+    from botocore.exceptions import ClientError
+
+    denied = ClientError({"Error": {"Code": "AccessDenied",
+                                    "Message": "not authorized to perform s3:ListBucket"}},
+                         "ListObjectsV2")
+
+    class DeniedClient:
+        def get_paginator(self, _name):
+            raise denied
+
+    monkeypatch.setattr(s3, "client", lambda: DeniedClient())
+    cache.clear()
+
+    source = semantic.Source(path="s3://cash-intel/sales/*.parquet", format="parquet")
+    assert engine._list_objects(source.path) is None
+    assert engine._materialize(source) is None
+
+    # and a real query still answers, straight from the object store
+    result = run(models, "sales", dimensions=["region"], measures=["revenue"])
+    assert result["row_count"] == 5

@@ -697,3 +697,63 @@ script: |
     finally:
         client.delete(f"/api/pipelines/{name_x}")
         client.delete(f"/api/pipelines/{name_y}")
+
+
+def test_successful_run_invalidates_cached_source_reads(client):
+    """A pipeline writes to the bucket from a subprocess this process can't
+    see into, and app/engine.py holds small sources' *contents*. Without an
+    explicit invalidation, a model reading the target would keep answering
+    from pre-run rows until the TTL lapsed.
+
+    Only the pipeline's *input data* changes between the two runs — the
+    pipeline definition is written once. Editing it would call
+    registry.reload_all(), whose own cache.clear() would mask exactly the
+    invalidation under test."""
+    import io
+
+    import polars as pl
+
+    from app import cache, config, engine, s3, semantic
+
+    name = "test_api_run_invalidates_cache"
+    target = f"s3://cash-intel/pipeline_test/{name}"
+    feed_key = f"pipeline_test/{name}_feed/rows.parquet"
+    feed = f"s3://cash-intel/{feed_key}"
+    yaml_text = f"""
+name: {name}
+sources:
+  - name: feed
+    format: parquet
+    path: {feed}
+target:
+  path: {target}
+  format: delta
+materialization:
+  mode: replace
+script: |
+  output = sources["feed"]
+"""
+
+    def put_feed(rows: int):
+        buf = io.BytesIO()
+        pl.DataFrame({"order_id": list(range(rows))}).write_parquet(buf)
+        s3.client().put_object(Bucket=config.BUCKET, Key=feed_key, Body=buf.getvalue())
+
+    source = semantic.Source(path=target, format="delta")
+    try:
+        assert config.SOURCE_CACHE_TTL > 0, "this test is meaningless with caching off"
+        put_feed(2)
+        assert client.post("/api/pipelines", json={"yaml": yaml_text}).status_code == 201
+        assert _poll(client, client.post(f"/api/pipelines/{name}/run").json()["run_id"])["status"] == "succeeded"
+
+        # read the target so this process is holding it
+        assert engine._scan_source(source).collect().height == 2
+        assert cache.get_or_set(("source_frame", target, "delta"), 60.0, lambda: None) is not None
+
+        put_feed(5)          # straight to S3: no endpoint, so no reload_all()
+        second = _poll(client, client.post(f"/api/pipelines/{name}/run").json()["run_id"])
+        assert second["status"] == "succeeded" and second["rows_written"] == 5
+
+        assert engine._scan_source(source).collect().height == 5
+    finally:
+        client.delete(f"/api/pipelines/{name}")

@@ -15,11 +15,23 @@ from pathlib import PurePosixPath
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
-from .. import config, engine, s3, semantic
+from .. import cache, config, engine, s3, semantic
 from ..auth import require_role
 from ..registry import registry
 
 router = APIRouter(tags=["datasets"])
+
+
+def _invalidate_reads() -> None:
+    """Drop cached object listings and source frames after this process
+    changes what is in the bucket.
+
+    app/engine.py holds small sources' *contents*, not just their schemas, so
+    an upload that overwrites a path a model reads would otherwise keep
+    serving the old rows until the TTL lapsed — and an upload is precisely
+    the moment someone is standing there waiting to see the new ones."""
+    cache.clear()
+
 
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 _SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -147,6 +159,10 @@ async def upload_local_dataset(name: str = Form(...), files: list[UploadFile] = 
     if not uploaded:
         raise HTTPException(status_code=400, detail="no .csv/.parquet files found in the upload")
 
+    # before the source_schema() call below, so this upload's own introspection
+    # reads the bytes just written rather than a cached predecessor's
+    _invalidate_reads()
+
     # a representative path/format for the caller's "set this as my source"
     # convenience (app/static/js/modelform.js) — a single glob when every
     # uploaded file landed in the same directory (the common case: several
@@ -192,3 +208,4 @@ def delete_local_dataset(name: str):
         raise HTTPException(status_code=404, detail=f"no local dataset named '{name}'")
     client.delete_objects(Bucket=config.BUCKET, Delete={"Objects": [{"Key": k} for k in keys]})
     shutil.rmtree(config.LOCAL_DATA_DIR / name, ignore_errors=True)
+    _invalidate_reads()

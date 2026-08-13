@@ -1304,3 +1304,27 @@ def test_measures_check_rejects_float_param_as_lag_periods_even_when_whole(clien
     body = res.json()
     assert body["ok"] is False
     assert "int-typed param" in body["error"]
+
+
+def test_upload_then_reupload_serves_the_new_rows(client):
+    """An upload overwrites objects a model may already be reading, and
+    app/engine.py holds small sources' contents — so the upload endpoint has
+    to drop what it is holding, or the uploader sees their old file back."""
+    import io
+
+    from app import engine, semantic
+
+    def upload(body: bytes):
+        return client.post(
+            "/api/datasets/local", data={"name": "cache_probe"},
+            files=[("files", ("rows.csv", io.BytesIO(body), "text/csv"))])
+
+    try:
+        assert upload(b"a,b\n1,2\n").status_code == 201
+        source = semantic.Source(path="s3://cash-intel/local/cache_probe/rows.csv", format="csv")
+        assert engine._scan_source(source).collect().height == 1
+
+        assert upload(b"a,b\n1,2\n3,4\n5,6\n").status_code == 201
+        assert engine._scan_source(source).collect().height == 3
+    finally:
+        client.delete("/api/datasets/local/cache_probe")
