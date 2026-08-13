@@ -12,5 +12,6 @@ def client():
         endpoint_url=config.S3_ENDPOINT,
         aws_access_key_id=config.AWS_ACCESS_KEY_ID,
         aws_secret_access_key=config.AWS_SECRET_ACCESS_KEY,
+        aws_session_token=config.AWS_SESSION_TOKEN or None,
         region_name=config.AWS_REGION,
     )

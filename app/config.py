@@ -85,6 +85,12 @@ BUCKET = os.environ.get("CI_BUCKET", "cash-intel")
 AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID", "testing")
 AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY", "testing")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
+# Optional: only set for temporary/STS credentials (AWS SSO, an assumed role,
+# MFA) — a long-lived IAM user's access key + secret work without one. Left
+# out of every options dict below unless non-empty, since object_store/boto3
+# treat an *empty* session token as a real (invalid) one rather than "absent",
+# which would break the far more common no-token case.
+AWS_SESSION_TOKEN = os.environ.get("AWS_SESSION_TOKEN", "")
 
 # Semantic models + persistence
 MODELS_DIR = Path(os.environ.get("CI_MODELS_DIR", PROJECT_ROOT / "models"))
@@ -320,13 +326,16 @@ MCP_RATE_LIMIT_PER_MIN = int(os.environ.get("CI_MCP_RATE_LIMIT_PER_MIN", "20"))
 
 def storage_options() -> dict:
     """storage_options passed to polars scan_* for the S3 object store."""
-    return {
+    opts = {
         "aws_access_key_id": AWS_ACCESS_KEY_ID,
         "aws_secret_access_key": AWS_SECRET_ACCESS_KEY,
         "aws_region": AWS_REGION,
         "aws_endpoint_url": S3_ENDPOINT,
         "aws_allow_http": "true",
     }
+    if AWS_SESSION_TOKEN:
+        opts["aws_session_token"] = AWS_SESSION_TOKEN
+    return opts
 
 
 def iceberg_storage_options() -> dict:
@@ -335,19 +344,22 @@ def iceberg_storage_options() -> dict:
     names pyiceberg expects (see https://py.iceberg.apache.org/configuration/
     #fileio). Path-style addressing is required against the moto/MinIO
     emulator and works fine against real S3 too."""
-    return {
+    opts = {
         "s3.access-key-id": AWS_ACCESS_KEY_ID,
         "s3.secret-access-key": AWS_SECRET_ACCESS_KEY,
         "s3.region": AWS_REGION,
         "s3.endpoint": S3_ENDPOINT,
         "s3.path-style-access": "true",
     }
+    if AWS_SESSION_TOKEN:
+        opts["s3.session-token"] = AWS_SESSION_TOKEN
+    return opts
 
 
 def delta_write_options() -> dict:
     """storage_options for deltalake writes (seeding). The unsafe-rename flag is
     fine here: single writer, emulated bucket."""
-    return {
+    opts = {
         "AWS_ACCESS_KEY_ID": AWS_ACCESS_KEY_ID,
         "AWS_SECRET_ACCESS_KEY": AWS_SECRET_ACCESS_KEY,
         "AWS_REGION": AWS_REGION,
@@ -355,3 +367,6 @@ def delta_write_options() -> dict:
         "AWS_ALLOW_HTTP": "true",
         "AWS_S3_ALLOW_UNSAFE_RENAME": "true",
     }
+    if AWS_SESSION_TOKEN:
+        opts["AWS_SESSION_TOKEN"] = AWS_SESSION_TOKEN
+    return opts

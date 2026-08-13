@@ -87,7 +87,11 @@ demo data — only if the bucket is empty. One dataset per source format:
 
 To point at a real bucket or an external emulator (MinIO, LocalStack), set
 `CI_S3_ENDPOINT` (this also disables the embedded moto server) plus the usual
-`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, and `CI_BUCKET`.
+`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, and `CI_BUCKET`. Add
+`AWS_SESSION_TOKEN` too if those are temporary/STS credentials (AWS SSO, an
+assumed role, MFA) rather than a long-lived IAM user's — a temporary access
+key (`ASIA...`) used without its paired token fails as `InvalidAccessKeyId`,
+which reads like a wrong key rather than a missing token.
 
 **Your own raw data**: drop a folder of `.csv`/`.parquet` files under
 `raw_data/<dataset-name>/` (committed to the repo, unlike the gitignored
