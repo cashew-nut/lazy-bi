@@ -1,7 +1,7 @@
 """Instant cross-filter extracts (specs/016-instant-cross-filter/).
 
-Two halves: the parse-only roll-up decomposition in app/measure_dsl.py, and
-the POST /api/query/extract contract on top of it. The property that matters
+Two halves: the parse-only roll-up decomposition in app/sqlgrammar.py, and the
+POST /api/query/extract contract on top of it. The property that matters
 throughout is the one the browser depends on — an extract rolled back up to a
 tile's own grain has to equal what /query would have returned for that tile,
 not merely look plausible.
@@ -10,80 +10,99 @@ import base64
 import io
 import json
 
-import polars as pl
+import pyarrow as pa
+import pyarrow.ipc as pa_ipc
 import pytest
 
-from app import config, measure_dsl
+from app import config, sqlgrammar
 
 
 # ── roll-up decomposition ───────────────────────────────────────────────
 
-@pytest.mark.parametrize("text,agg", [
-    ("sum(revenue)", "sum"),
-    ("count()", "sum"),
-    ("count(order_id)", "sum"),
-    ("min(fare_amount)", "min"),
-    ("max(fare_amount)", "max"),
+@pytest.mark.parametrize("text,agg,emitted", [
+    ("SUM(revenue)", "sum", "sum(revenue)"),
+    ("COUNT(*)", "sum", "count_star()"),
+    ("COUNT(order_id)", "sum", "count(order_id)"),
+    ("MIN(fare_amount)", "min", "min(fare_amount)"),
+    ("MAX(fare_amount)", "max", "max(fare_amount)"),
 ])
-def test_single_aggregate_decomposes_to_itself(text, agg):
-    plan = measure_dsl.rollup_plan(text)
+def test_single_aggregate_decomposes_to_itself(text, agg, emitted):
+    plan = sqlgrammar.rollup_plan(text)
     assert plan["formula"] == {"ref": 0}
-    assert plan["components"] == [{"agg": agg, "expr": text}]
+    assert plan["components"] == [{"agg": agg, "expr": emitted}]
 
 
 def test_mean_decomposes_into_sum_over_count():
     """The whole reason decomposition exists: averaging per-bucket averages is
     wrong, but summing the two additive halves and dividing once is exact."""
-    plan = measure_dsl.rollup_plan("mean(fare_amount)")
+    plan = sqlgrammar.rollup_plan("AVG(fare_amount)")
     assert plan["components"] == [
-        {"agg": "sum", "expr": "sum(fare_amount)"},
-        {"agg": "sum", "expr": "count(fare_amount)"},
+        {"agg": "sum", "expr": "SUM(fare_amount)"},
+        {"agg": "sum", "expr": "COUNT(fare_amount)"},
     ]
     assert plan["formula"] == {"op": "/", "l": {"ref": 0}, "r": {"ref": 1}}
 
 
 def test_ratio_of_sums_decomposes():
-    plan = measure_dsl.rollup_plan("sum(tip_amount) / sum(fare_amount)")
-    assert [c["expr"] for c in plan["components"]] == ["sum(tip_amount)", "sum(fare_amount)"]
+    plan = sqlgrammar.rollup_plan("SUM(tip_amount) / SUM(fare_amount)")
+    assert [c["expr"] for c in plan["components"]] == ["SUM(tip_amount)", "SUM(fare_amount)"]
     assert plan["formula"] == {"op": "/", "l": {"ref": 0}, "r": {"ref": 1}}
 
 
 def test_constants_stay_in_the_formula_not_the_components():
-    plan = measure_dsl.rollup_plan("sum(spend) / (sum(impressions) / 1000)")
-    assert [c["expr"] for c in plan["components"]] == ["sum(spend)", "sum(impressions)"]
+    plan = sqlgrammar.rollup_plan("SUM(spend) / (SUM(impressions) / 1000)")
+    assert [c["expr"] for c in plan["components"]] == ["SUM(spend)", "SUM(impressions)"]
     assert plan["formula"]["r"] == {"op": "/", "l": {"ref": 1}, "r": {"const": 1000}}
 
 
+def test_decimal_constants_keep_their_scale():
+    """DuckDB serializes a DECIMAL literal as its unscaled integer plus a
+    scale, so reading the value alone turns 1.5 into 15 — and the browser
+    would then re-aggregate ten times too large while the live path stayed
+    right."""
+    plan = sqlgrammar.rollup_plan("SUM(x) * 1.5")
+    assert plan["formula"]["r"] == {"const": 1.5}
+
+
 def test_repeated_component_is_fetched_once():
-    plan = measure_dsl.rollup_plan("sum(a) / sum(a)")
+    plan = sqlgrammar.rollup_plan("SUM(a) / SUM(a)")
     assert len(plan["components"]) == 1
     assert plan["formula"] == {"op": "/", "l": {"ref": 0}, "r": {"ref": 0}}
 
 
+def test_filtered_aggregate_carries_its_filter_into_the_component():
+    plan = sqlgrammar.rollup_plan("SUM(revenue) FILTER (WHERE region = 'EU')")
+    assert plan["components"] == [
+        {"agg": "sum", "expr": "SUM(revenue) FILTER (WHERE (region = 'EU'))"}]
+
+
 @pytest.mark.parametrize("text", [
-    "count_distinct(order_id)",              # no combining function exists
-    "median(tenure_days)",
-    "std(x)", "var(x)", "first(x)", "last(x)",
-    "running_total(revenue)",                # reads neighbouring rows
-    "(revenue - lag(revenue, 1)) / lag(revenue, 1)",
-    "sum(monthly_fee) / count_distinct(customer_id)",   # one bad half poisons it
-    "param('k') * sum(a)",                   # needs a value the browser lacks
+    "COUNT(DISTINCT order_id)",              # no combining function exists
+    "MEDIAN(tenure_days)",
+    "STDDEV(x)", "VARIANCE(x)", "FIRST(x)", "LAST(x)",
+    "QUANTILE_CONT(x, 0.95)",
+    "SUM(revenue) OVER w",                   # reads neighbouring rows
+    "(revenue - LAG(revenue) OVER w) / LAG(revenue) OVER w",
+    "SUM(monthly_fee) / COUNT(DISTINCT customer_id)",   # one bad half poisons it
+    "param('k') * SUM(a)",                   # needs a value the browser lacks
     "revenue",                               # bare sibling reference
     "not valid syntax (",
 ])
 def test_undecomposable_measures_return_none(text):
-    assert measure_dsl.rollup_plan(text) is None
+    assert sqlgrammar.rollup_plan(text) is None
 
 
 def test_decomposition_never_evaluates_the_text(monkeypatch):
-    """Same posture as the rest of measure_dsl: parse only, never eval."""
+    """Same posture as the rest of the grammar module: parse only. The AST
+    comes back from json_serialize_sql, which plans nothing and binds
+    nothing."""
     for name in ("eval", "exec", "compile"):
         monkeypatch.setattr(
-            measure_dsl, name,
+            sqlgrammar, name,
             lambda *a, **k: pytest.fail("rollup_plan must never eval measure text"),
             raising=False,
         )
-    assert measure_dsl.rollup_plan("sum(revenue) / count()") is not None
+    assert sqlgrammar.rollup_plan("SUM(revenue) / COUNT(*)") is not None
 
 
 # ── the extract endpoint ────────────────────────────────────────────────
@@ -92,8 +111,29 @@ def _meta(res):
     return json.loads(base64.b64decode(res.headers["X-Extract-Meta"]))
 
 
+class _Frame:
+    """The bits of a frame these tests use, over a pyarrow Table."""
+
+    def __init__(self, table):
+        self.table = table
+        self.height = table.num_rows
+        self.columns = table.column_names
+        self.schema = {f.name: f.type for f in table.schema}
+
+    def __getitem__(self, name):
+        return self.table.column(name).to_pylist()
+
+    def to_dicts(self):
+        return self.table.to_pylist()
+
+    def sort(self, name):
+        order = sorted(range(self.height), key=lambda i: (self[name][i] is None, self[name][i]))
+        return _Frame(self.table.take(pa.array(order)))
+
+
 def _frame(res):
-    return pl.read_ipc_stream(io.BytesIO(res.content))
+    with pa_ipc.open_stream(io.BytesIO(res.content)) as reader:
+        return _Frame(reader.read_all())
 
 
 SALES = {"model": "sales", "dimensions": ["region"], "measures": ["revenue"]}
@@ -220,12 +260,11 @@ def test_hoisted_filter_applied_locally_equals_the_live_query(client):
         "filters": flt, "interactive_filters": ["region"]})
     meta, df = _meta(res), _frame(res)
     aggs = {c["col"]: c["agg"] for m in meta["measures"] for c in m["components"]}
-    rolled = (df.filter(pl.col("region").is_in(["Night City", "Pacifica"]))
-                .group_by("channel")
-                .agg([getattr(pl.col(col), agg)() for col, agg in aggs.items()]))
+    kept = [r for r in df.to_dicts() if r["region"] in ("Night City", "Pacifica")]
+    rolled = _rollup(kept, "channel", aggs)
     got = {r["channel"]: _evaluate(meta["measures"][0]["formula"],
                                    [r[c["col"]] for c in meta["measures"][0]["components"]])
-           for r in rolled.to_dicts()}
+           for r in rolled}
     assert got
     for row in live["rows"]:
         assert got[row["channel"]] == pytest.approx(row["revenue"], rel=1e-9)
@@ -275,11 +314,11 @@ def test_extract_rolled_back_up_equals_the_live_query(client):
     # an aggregate share one extract column, so this is what the browser
     # hands Perspective as its aggregate map
     aggs = {c["col"]: c["agg"] for m in meta["measures"] for c in m["components"]}
-    assert len(aggs) < sum(len(m["components"]) for m in meta["measures"]), \
+    assert len(aggs) < SUM(len(m["components"]) for m in meta["measures"]), \
         "revenue and margin_pct share sum(unit_price * quantity) — it should be fetched once"
-    rolled = df.group_by("region").agg([getattr(pl.col(col), agg)() for col, agg in aggs.items()])
+    rolled = _rollup(df.to_dicts(), "region", aggs)
     values = {}
-    for row in rolled.to_dicts():
+    for row in rolled:
         values[row["region"]] = {
             m["name"]: _evaluate(m["formula"], [row[c["col"]] for c in m["components"]])
             for m in meta["measures"]
@@ -287,6 +326,31 @@ def test_extract_rolled_back_up_equals_the_live_query(client):
     for row in live["rows"]:
         for measure in ("revenue", "avg_unit_price", "margin_pct"):
             assert values[row["region"]][measure] == pytest.approx(row[measure], rel=1e-9)
+
+
+def _rollup(rows, key, aggs):
+    """The local re-aggregation Perspective does in the browser, in ten lines
+    of python: group the extract's rows by `key` and combine each component
+    column with its declared aggregate."""
+    groups = {}
+    for row in rows:
+        bucket = groups.setdefault(row[key], {key: row[key]})
+        for column, agg in aggs.items():
+            value = row[column]
+            if value is None:
+                continue
+            if column not in bucket:
+                bucket[column] = value
+            elif agg == "sum":
+                bucket[column] += value
+            elif agg == "min":
+                bucket[column] = min(bucket[column], value)
+            elif agg == "max":
+                bucket[column] = max(bucket[column], value)
+    for bucket in groups.values():
+        for column in aggs:
+            bucket.setdefault(column, None)
+    return list(groups.values())
 
 
 def _evaluate(node, refs):
@@ -309,50 +373,60 @@ def test_time_dimension_arrives_as_the_same_iso_string_json_would_give(client):
              "measures": ["revenue"]}
     live = client.post("/api/query", json=query).json()
     df = _frame(client.post("/api/query/extract", json=query))
-    assert df.schema["order_date"] == pl.Utf8
+    assert pa.types.is_large_string(df.schema["order_date"])
     assert set(df["order_date"]) == {r["order_date"] for r in live["rows"]}
 
 
 def test_every_dtype_normalizes_to_something_perspective_can_read(client):
-    """Perspective's Arrow reader is narrower than polars' writer — it rejects
-    utf8_view outright, and has no notion of Decimal, Categorical, Enum or the
-    Null type. Every column has to land on a type it understands, without the
+    """Perspective's Arrow reader is narrower than Arrow itself — it rejects
+    string_view outright, and has no notion of decimal, dictionary or null
+    types. Every column has to land on a type it understands, without the
     values drifting from what the JSON path would have produced."""
     import datetime as dt
     import decimal
 
     from app import extract as extract_mod
 
-    df = pl.DataFrame({
-        "d": [dt.date(2024, 1, 15)],
-        "ts": [dt.datetime(2024, 1, 15, 5, 30, 0, 123456)],
-        "dec": pl.Series([decimal.Decimal("1.50")], dtype=pl.Decimal(10, 2)),
-        "nul": pl.Series([None], dtype=pl.Null),
-        "cat": pl.Series(["a"], dtype=pl.Categorical),
-        "enum": pl.Series(["x"], dtype=pl.Enum(["x", "y"])),
-        "u32": pl.Series([7], dtype=pl.UInt32),
-        "i64": [3], "f64": [1.5], "b": [True], "s": ["hi"],
+    table = pa.table({
+        "d": pa.array([dt.date(2024, 1, 15)], pa.date32()),
+        "ts": pa.array([dt.datetime(2024, 1, 15, 5, 30, 0, 123456)], pa.timestamp("us")),
+        "dec": pa.array([decimal.Decimal("1.50")], pa.decimal128(10, 2)),
+        "nul": pa.array([None], pa.null()),
+        "cat": pa.array(["a"]).dictionary_encode(),
+        "u32": pa.array([7], pa.uint32()),
+        "i64": pa.array([3], pa.int64()),
+        "f64": pa.array([1.5], pa.float64()),
+        "b": pa.array([True]),
+        "s": pa.array(["hi"]),
     })
-    out = extract_mod._normalize(df)
-    assert out.schema["d"] == pl.Utf8 and out.schema["ts"] == pl.Utf8
-    assert out.schema["dec"] == pl.Float64        # write_json gives a *string*; a chart wants a number
-    assert out.schema["nul"] == pl.Utf8
-    assert out.schema["cat"] == pl.Utf8 and out.schema["enum"] == pl.Utf8
-    assert out.schema["u32"] == pl.Int64
+    out = extract_mod._normalize(table)
+    schema = {f.name: f.type for f in out.schema}
+    assert pa.types.is_large_string(schema["d"]) and pa.types.is_large_string(schema["ts"])
+    # the JSON path gives a decimal as a number, and a chart wants one too
+    assert pa.types.is_floating(schema["dec"])
+    assert pa.types.is_large_string(schema["nul"])
+    assert pa.types.is_large_string(schema["cat"])
+    assert pa.types.is_integer(schema["u32"]) and not pa.types.is_unsigned_integer(schema["u32"])
+    assert pa.types.is_large_string(schema["s"])
+
     # dates must serialize to the same token the JSON path emits, or a
     # cross-filter value from a live tile won't match one in an extract
-    row, as_json = out.to_dicts()[0], json.loads(df.write_json())[0]
-    for column in ("d", "ts", "cat", "enum", "s", "b", "i64", "f64", "u32"):
-        assert row[column] == as_json[column], column
+    row = out.to_pylist()[0]
+    assert row["d"] == "2024-01-15"
+    assert row["ts"] == "2024-01-15T05:30:00"
+    assert (row["cat"], row["s"], row["b"], row["i64"], row["f64"], row["u32"]) == \
+        ("a", "hi", True, 3, 1.5, 7)
+    assert row["dec"] == pytest.approx(1.5)
 
-    payload = out.write_ipc_stream(None, compat_level=pl.CompatLevel.oldest()).getvalue()
-    assert pl.read_ipc_stream(io.BytesIO(payload)).to_dicts() == out.to_dicts()
+    payload = extract_mod._ipc_stream(out)
+    with pa_ipc.open_stream(io.BytesIO(payload)) as reader:
+        assert reader.read_all().to_pylist() == out.to_pylist()
 
 
 def test_strings_are_not_written_as_utf8_view(client):
-    """Regression guard for the one incompatibility that actually bit: polars'
-    default Arrow output encodes strings as utf8_view, which Perspective
-    refuses to load ("Could not load arrow column of type `utf8_view`")."""
+    """Regression guard for the one incompatibility that actually bit: Arrow's
+    newer string layout is written as string_view, which Perspective refuses
+    to load ("Could not load arrow column of type `utf8_view`")."""
     import pyarrow.ipc
 
     res = client.post("/api/query/extract", json=SALES)
@@ -363,7 +437,7 @@ def test_strings_are_not_written_as_utf8_view(client):
 
 
 def test_coarser_grain_buckets_are_precomputed(client):
-    """R3: a coarser session grain is answered locally, from buckets polars
+    """R3: a coarser session grain is answered locally, from buckets the
     truncated — never from date arithmetic in the browser. Weeks don't nest in
     months, so a month-grained extract offers quarters and years only."""
     res = client.post("/api/query/extract", json={

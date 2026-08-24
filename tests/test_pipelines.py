@@ -21,8 +21,8 @@ target:
   format: delta
 materialization:
   mode: replace
-script: |
-  output = sources["raw_orders"]
+sql: |
+  SELECT * FROM raw_orders
 """
 
 
@@ -45,7 +45,7 @@ def test_yaml_must_be_mapping():
         pipelines.parse_pipeline_text("- just\n- a\n- list\n")
 
 
-@pytest.mark.parametrize("key", ["name", "sources", "target", "materialization", "script"])
+@pytest.mark.parametrize("key", ["name", "sources", "target", "materialization", "sql"])
 def test_missing_required_key_rejected(key):
     import yaml as _yaml
 
@@ -87,16 +87,39 @@ def test_unsupported_target_format_rejected():
         pipelines.parse_pipeline_text(text)
 
 
-def test_script_syntax_error_rejected():
-    text = VALID.replace('output = sources["raw_orders"]', "output = (")
-    with pytest.raises(pipelines.PipelineError, match="invalid script syntax"):
+def test_sql_syntax_error_rejected():
+    text = VALID.replace("SELECT * FROM raw_orders", "SELECT FROM WHERE")
+    with pytest.raises(pipelines.PipelineError, match="invalid sql syntax"):
         pipelines.parse_pipeline_text(text)
 
 
-def test_empty_script_rejected():
-    text = VALID.replace('  output = sources["raw_orders"]\n', "")
+def test_empty_sql_rejected():
+    text = VALID.replace("  SELECT * FROM raw_orders\n", "")
     with pytest.raises(pipelines.PipelineError, match="non-empty"):
         pipelines.parse_pipeline_text(text)
+
+
+def test_sql_that_produces_no_rows_rejected():
+    """The output contract: a pipeline has to name the rows it materializes,
+    either by ending on a SELECT or by creating a relation called `output`."""
+    text = VALID.replace("SELECT * FROM raw_orders",
+                         "CREATE OR REPLACE TEMP TABLE scratch AS SELECT 1")
+    with pytest.raises(pipelines.PipelineError, match="must end with a SELECT"):
+        pipelines.parse_pipeline_text(text)
+
+
+def test_a_named_output_relation_satisfies_the_contract():
+    text = VALID.replace("SELECT * FROM raw_orders",
+                         "CREATE OR REPLACE TEMP VIEW output AS SELECT * FROM raw_orders")
+    assert pipelines.parse_pipeline_text(text).sql
+
+
+def test_multi_statement_sql_is_split_on_real_boundaries():
+    """DuckDB's own tokenizer, not a split on semicolons — one inside a string
+    literal is data, not a statement break."""
+    assert pipelines.split_statements(
+        "CREATE TEMP TABLE t AS SELECT ';' AS s; SELECT * FROM t") == [
+        "CREATE TEMP TABLE t AS SELECT ';' AS s", " SELECT * FROM t"]
 
 
 # --- materialization cross-rules -------------------------------------------
@@ -424,8 +447,8 @@ target:
   format: delta
 materialization:
   mode: replace
-script: |
-  output = sources["sales"].select(["order_id", "region"]).head(5)
+sql: |
+  SELECT order_id, region FROM sales LIMIT 5
 """
     try:
         run = _create_and_run(client, name, yaml_text)
@@ -435,7 +458,7 @@ script: |
 
         from app import config
 
-        result = pl.scan_delta(target, storage_options=config.delta_write_options()).collect()
+        result = read_delta(target)
         assert result.height == 5
         assert set(result.columns) == {"order_id", "region"}
     finally:
@@ -460,19 +483,15 @@ target:
   format: parquet
 materialization:
   mode: replace
-script: |
-  output = sources["tickets"].select(["priority", "resolution_hours"]).head(5)
+sql: |
+  SELECT priority, resolution_hours FROM tickets LIMIT 5
 """
     try:
         run = _create_and_run(client, name, yaml_text)
         assert run["status"] == "succeeded", run
         assert run["rows_written"] == 5
 
-        import polars as pl
-
-        from app import config
-
-        result = pl.scan_parquet(target, storage_options=config.storage_options()).collect()
+        result = Rows(duck.cursor().execute("SELECT * FROM read_parquet(?)", [target]).to_arrow_table().to_pylist())
         assert result.height == 5
         assert set(result.columns) == {"priority", "resolution_hours"}
     finally:
@@ -494,19 +513,15 @@ target:
   format: parquet
 materialization:
   mode: replace
-script: |
-  output = sources["sales"].select(["order_id"]).head(3)
+sql: |
+  SELECT order_id FROM sales LIMIT 3
 """
     try:
         run = _create_and_run(client, name, yaml_text)
         assert run["status"] == "succeeded", run
         assert run["rows_written"] == 3
 
-        import polars as pl
-
-        from app import config
-
-        result = pl.scan_parquet(target, storage_options=config.storage_options()).collect()
+        result = Rows(duck.cursor().execute("SELECT * FROM read_parquet(?)", [target]).to_arrow_table().to_pylist())
         assert result.height == 3
     finally:
         _delete_pipeline(client, name)
@@ -528,16 +543,18 @@ target:
   format: delta
 materialization:
   mode: replace
-script: |
-  output = sources["sales"].select(["order_id"]).head(4)
+sql: |
+  SELECT order_id FROM sales LIMIT 4
 """
     try:
         run = _create_and_run(client, name, good_yaml)
         assert run["status"] == "succeeded"
 
+        # a statement that parses but cannot bind: the column doesn't exist,
+        # which is only knowable once the run has the real source in front of it
         bad_yaml = good_yaml.replace(
-            'output = sources["sales"].select(["order_id"]).head(4)',
-            'raise ValueError("boom")',
+            "SELECT order_id FROM sales LIMIT 4",
+            "SELECT no_such_column FROM sales",
         )
         updated = client.put(f"/api/pipelines/{name}/yaml", json={"yaml": bad_yaml})
         assert updated.status_code == 200, updated.text
@@ -545,13 +562,9 @@ script: |
         assert triggered.status_code == 202
         failed_run = _poll_run(client, triggered.json()["run_id"])
         assert failed_run["status"] == "failed"
-        assert "boom" in failed_run["error"]
+        assert "no_such_column" in failed_run["error"]
 
-        import polars as pl
-
-        from app import config
-
-        result = pl.scan_delta(target, storage_options=config.delta_write_options()).collect()
+        result = read_delta(target)
         assert result.height == 4  # untouched by the failed run
     finally:
         _delete_pipeline(client, name)
@@ -571,18 +584,17 @@ target:
   format: delta
 materialization:
   mode: replace
-script: |
-  x = 1
+sql: |
+  CREATE OR REPLACE TEMP TABLE scratch AS SELECT 1 AS x
 """
-    try:
-        run = _create_and_run(client, name, yaml_text)
-        assert run["status"] == "failed"
-        assert "output" in run["error"]
-    finally:
-        _delete_pipeline(client, name)
+    # the output contract is checked when the pipeline is saved, not deferred
+    # to a run that was never going to produce anything
+    created = client.post("/api/pipelines", json={"yaml": yaml_text})
+    assert created.status_code == 400
+    assert "output" in created.json()["detail"]
 
 
-def test_wrong_type_output_fails(client):
+def test_statement_producing_no_rows_fails(client):
     name = "test_pipe_wrong_type_output"
     target = f"s3://cash-intel/pipeline_test/{name}"
     yaml_text = f"""
@@ -596,15 +608,12 @@ target:
   format: delta
 materialization:
   mode: replace
-script: |
-  output = 42
+sql: |
+  SET threads = 4
 """
-    try:
-        run = _create_and_run(client, name, yaml_text)
-        assert run["status"] == "failed"
-        assert "LazyFrame" in run["error"] or "DataFrame" in run["error"]
-    finally:
-        _delete_pipeline(client, name)
+    created = client.post("/api/pipelines", json={"yaml": yaml_text})
+    assert created.status_code == 400
+    assert "must end with a SELECT" in created.json()["detail"]
 
 
 def test_run_timeout_is_killed(client):
@@ -622,10 +631,8 @@ target:
 materialization:
   mode: replace
 timeout_seconds: 1
-script: |
-  import time
-  time.sleep(10)
-  output = sources["sales"].head(1)
+sql: |
+  SELECT s.order_id FROM sales s, sales b, sales c, sales d LIMIT 1
 """
     try:
         run = _create_and_run(client, name, yaml_text)
@@ -651,10 +658,8 @@ target:
 materialization:
   mode: replace
 timeout_seconds: 5
-script: |
-  import time
-  time.sleep(2)
-  output = sources["sales"].head(1)
+sql: |
+  SELECT s.order_id FROM sales s, sales b, sales c LIMIT 1
 """
     try:
         created = client.post("/api/pipelines", json={"yaml": yaml_text})
@@ -670,19 +675,49 @@ script: |
 
 # --- upsert materialization matrix (US2 — T020, SC-002) ---------------------
 # Unit-level against app.materialize directly (local delta paths, no S3
-# needed — deltalake/polars work the same way against a plain filesystem
-# path), so the full policy x change-type matrix runs fast and asserts exact
-# target state without subprocess/moto overhead.
+# needed — deltalake works the same way against a plain filesystem path), so
+# the full policy x change-type matrix runs fast and asserts exact target
+# state without subprocess/moto overhead.
 
-import polars as pl
+import pyarrow as pa
 
+from app import duck
 from app.materialize import MaterializeError, materialize
 from app.pipelines import Materialization, Target
 
 
-def _seed(tmp_path, name: str, df: pl.DataFrame) -> Target:
+def rows(**columns) -> pa.Table:
+    """A pipeline output, in the shape materialize() now takes."""
+    return pa.table({name: pa.array(values) for name, values in columns.items()})
+
+
+class Rows(list):
+    """The target's contents, with the two operations the matrix asserts on."""
+
+    def sort(self, key):
+        return Rows(sorted(self, key=lambda r: (r[key] is None, r[key])))
+
+    @property
+    def columns(self):
+        return list(self[0]) if self else []
+
+    def filter(self, **match):
+        return Rows(r for r in self
+                    if all(r.get(k) == v for k, v in match.items()))
+
+    @property
+    def height(self):
+        return len(self)
+
+
+def read_delta(path) -> Rows:
+    return Rows(duck.cursor().execute(
+        "SELECT * FROM delta_scan(?)", [str(path)]).to_arrow_table().to_pylist())
+
+
+def _seed(tmp_path, name: str, table: pa.Table) -> Target:
     target = Target(path=str(tmp_path / name), format="delta")
-    materialize(df, target, Materialization(mode="replace"), {})
+    materialize(table, target, Materialization(mode="replace"), {})
     return target
 
 
@@ -703,30 +738,30 @@ def test_upsert_update_and_insert_for_every_policy(tmp_path, policy):
         # soft_delete's flag column must exist from the target's creation —
         # seed via the same upsert config so the first-run branch adds it,
         # rather than a plain replace (see the retrofit-guard test).
-        materialize(pl.DataFrame({"id": [1, 2, 3], "v": ["a", "b", "c"]}), target, mat, {})
+        materialize(rows(id= [1, 2, 3], v= ["a", "b", "c"]), target, mat, {})
     else:
-        materialize(pl.DataFrame({"id": [1, 2, 3], "v": ["a", "b", "c"]}), target,
+        materialize(rows(id= [1, 2, 3], v= ["a", "b", "c"]), target,
                     Materialization(mode="replace"), {})
 
-    stats = materialize(pl.DataFrame({"id": [2, 4], "v": ["B", "D"]}), target, mat, {})
-    result = pl.read_delta(target.path, storage_options={}).sort("id")
+    stats = materialize(rows(id= [2, 4], v= ["B", "D"]), target, mat, {})
+    result = read_delta(target.path).sort("id")
 
-    assert result.filter(pl.col("id") == 2)["v"][0] == "B"  # updated
-    assert result.filter(pl.col("id") == 4)["v"][0] == "D"  # inserted
+    assert result.filter(id=2)[0]["v"] == "B"  # updated
+    assert result.filter(id=4)[0]["v"] == "D"  # inserted
     if policy == "sync":
-        assert result["id"].to_list() == [2, 4]  # 1, 3 removed (missing from output)
+        assert [r["id"] for r in result] == [2, 4]  # 1, 3 removed (missing from output)
         assert stats["rows_deleted"] == 2
     else:
-        assert result["id"].to_list() == [1, 2, 3, 4]  # 1, 3 left alone
+        assert [r["id"] for r in result] == [1, 2, 3, 4]  # 1, 3 left alone
         assert stats["rows_deleted"] == 0
 
 
 def test_upsert_sync_deletes_rows_missing_from_output(tmp_path):
-    target = _seed(tmp_path, "t_sync", pl.DataFrame({"id": [1, 2, 3], "v": ["a", "b", "c"]}))
+    target = _seed(tmp_path, "t_sync", rows(id= [1, 2, 3], v= ["a", "b", "c"]))
     mat = Materialization(mode="upsert", keys=["id"], on_delete="sync")
-    stats = materialize(pl.DataFrame({"id": [1], "v": ["A"]}), target, mat, {})
-    result = pl.read_delta(target.path, storage_options={}).sort("id")
-    assert result["id"].to_list() == [1]
+    stats = materialize(rows(id= [1], v= ["A"]), target, mat, {})
+    result = read_delta(target.path).sort("id")
+    assert [r["id"] for r in result] == [1]
     assert stats["rows_deleted"] == 2
 
 
@@ -737,17 +772,17 @@ def test_upsert_soft_delete_flags_missing_rows_and_clears_on_reappearance(tmp_pa
     # guard test below for the case where that didn't happen).
     target = Target(path=str(tmp_path / "t_soft"), format="delta")
     mat = Materialization(mode="upsert", keys=["id"], on_delete="soft_delete", soft_delete_column="is_deleted")
-    materialize(pl.DataFrame({"id": [1, 2], "v": ["a", "b"]}), target, mat, {})
+    materialize(rows(id= [1, 2], v= ["a", "b"]), target, mat, {})
 
-    stats1 = materialize(pl.DataFrame({"id": [2], "v": ["B"]}), target, mat, {})
-    after1 = pl.read_delta(target.path, storage_options={}).sort("id")
-    flags1 = dict(zip(after1["id"].to_list(), after1["is_deleted"].to_list()))
+    stats1 = materialize(rows(id= [2], v= ["B"]), target, mat, {})
+    after1 = read_delta(target.path).sort("id")
+    flags1 = dict(zip([r["id"] for r in after1], [r["is_deleted"] for r in after1]))
     assert flags1 == {1: True, 2: False}
     assert stats1["rows_flagged"] == 1
 
-    stats2 = materialize(pl.DataFrame({"id": [1, 2], "v": ["A2", "B2"]}), target, mat, {})
-    after2 = pl.read_delta(target.path, storage_options={}).sort("id")
-    flags2 = dict(zip(after2["id"].to_list(), after2["is_deleted"].to_list()))
+    stats2 = materialize(rows(id= [1, 2], v= ["A2", "B2"]), target, mat, {})
+    after2 = read_delta(target.path).sort("id")
+    flags2 = dict(zip([r["id"] for r in after2], [r["is_deleted"] for r in after2]))
     assert flags2 == {1: False, 2: False}
     assert stats2["rows_flagged"] == 0
 
@@ -756,74 +791,74 @@ def test_upsert_soft_delete_retrofit_onto_existing_target_without_flag_column_fa
     """A target already exists (e.g. created by `replace`) without the flag
     column; switching to soft_delete must fail clearly rather than let
     deltalake's merge-time schema evolution silently write null flags."""
-    target = _seed(tmp_path, "t_retrofit", pl.DataFrame({"id": [1, 2], "v": ["a", "b"]}))
+    target = _seed(tmp_path, "t_retrofit", rows(id= [1, 2], v= ["a", "b"]))
     mat = Materialization(mode="upsert", keys=["id"], on_delete="soft_delete", soft_delete_column="is_deleted")
     with pytest.raises(MaterializeError, match="missing the soft-delete column"):
-        materialize(pl.DataFrame({"id": [2], "v": ["B"]}), target, mat, {})
-    result = pl.read_delta(target.path, storage_options={}).sort("id")
+        materialize(rows(id= [2], v= ["B"]), target, mat, {})
+    result = read_delta(target.path).sort("id")
     assert "is_deleted" not in result.columns  # untouched by the failed run
 
 
 def test_upsert_predicate_deletes_matching_rows_before_merge(tmp_path):
-    target = _seed(tmp_path, "t_pred", pl.DataFrame({"id": [1, 2, 3], "region": ["EU", "US", "EU"]}))
+    target = _seed(tmp_path, "t_pred", rows(id= [1, 2, 3], region= ["EU", "US", "EU"]))
     mat = Materialization(mode="upsert", keys=["id"], on_delete="predicate", delete_predicate="region = 'EU'")
-    stats = materialize(pl.DataFrame({"id": [4], "region": ["FR"]}), target, mat, {})
-    result = pl.read_delta(target.path, storage_options={}).sort("id")
-    assert result["id"].to_list() == [2, 4]  # 1, 3 matched the predicate and were removed
+    stats = materialize(rows(id= [4], region= ["FR"]), target, mat, {})
+    result = read_delta(target.path).sort("id")
+    assert [r["id"] for r in result] == [2, 4]  # 1, 3 matched the predicate and were removed
     assert stats["rows_deleted"] == 2
 
 
 def test_upsert_first_run_against_missing_target_creates_it(tmp_path):
     target = Target(path=str(tmp_path / "brand_new"), format="delta")
     mat = Materialization(mode="upsert", keys=["id"], on_delete="soft_delete", soft_delete_column="is_deleted")
-    stats = materialize(pl.DataFrame({"id": [1, 2], "v": ["a", "b"]}), target, mat, {})
+    stats = materialize(rows(id= [1, 2], v= ["a", "b"]), target, mat, {})
     assert stats == {"rows_written": 2, "rows_deleted": 0, "rows_flagged": 0}
-    result = pl.read_delta(target.path, storage_options={}).sort("id")
-    assert result["is_deleted"].to_list() == [False, False]  # flag column present from the start
+    result = read_delta(target.path).sort("id")
+    assert [r["is_deleted"] for r in result] == [False, False]  # flag column present from the start
 
 
 # --- upsert guards (run before any target modification) ---------------------
 
 def test_guard_null_key_rejected(tmp_path):
-    target = _seed(tmp_path, "g_null", pl.DataFrame({"id": [1], "v": ["a"]}))
+    target = _seed(tmp_path, "g_null", rows(id= [1], v= ["a"]))
     mat = Materialization(mode="upsert", keys=["id"])
     with pytest.raises(MaterializeError, match="null value"):
-        materialize(pl.DataFrame({"id": [1, None], "v": ["a", "b"]}), target, mat, {})
-    assert pl.read_delta(target.path, storage_options={}).height == 1  # untouched
+        materialize(rows(id= [1, None], v= ["a", "b"]), target, mat, {})
+    assert read_delta(target.path).height == 1  # untouched
 
 
 def test_guard_duplicate_key_rejected(tmp_path):
-    target = _seed(tmp_path, "g_dup", pl.DataFrame({"id": [1], "v": ["a"]}))
+    target = _seed(tmp_path, "g_dup", rows(id= [1], v= ["a"]))
     mat = Materialization(mode="upsert", keys=["id"])
     with pytest.raises(MaterializeError, match="duplicate key"):
-        materialize(pl.DataFrame({"id": [2, 2], "v": ["a", "b"]}), target, mat, {})
-    assert pl.read_delta(target.path, storage_options={}).height == 1  # untouched
+        materialize(rows(id= [2, 2], v= ["a", "b"]), target, mat, {})
+    assert read_delta(target.path).height == 1  # untouched
 
 
 def test_guard_schema_mismatch_rejected(tmp_path):
-    target = _seed(tmp_path, "g_schema", pl.DataFrame({"id": [1], "v": ["a"]}))
+    target = _seed(tmp_path, "g_schema", rows(id= [1], v= ["a"]))
     mat = Materialization(mode="upsert", keys=["id"])
     with pytest.raises(MaterializeError, match="schema incompatible"):
-        materialize(pl.DataFrame({"id": [2], "other": [1]}), target, mat, {})
-    assert pl.read_delta(target.path, storage_options={}).height == 1  # untouched
+        materialize(rows(id= [2], other= [1]), target, mat, {})
+    assert read_delta(target.path).height == 1  # untouched
 
 
 def test_guard_empty_output_with_sync_halts_without_optin(tmp_path):
-    target = _seed(tmp_path, "g_empty_sync", pl.DataFrame({"id": [1, 2], "v": ["a", "b"]}))
+    target = _seed(tmp_path, "g_empty_sync", rows(id= [1, 2], v= ["a", "b"]))
     mat = Materialization(mode="upsert", keys=["id"], on_delete="sync")
-    empty = pl.DataFrame({"id": [], "v": []}, schema={"id": pl.Int64, "v": pl.String})
+    empty = pa.table({"id": pa.array([], pa.int64()), "v": pa.array([], pa.string())})
     with pytest.raises(MaterializeError, match="empty"):
         materialize(empty, target, mat, {})
-    assert pl.read_delta(target.path, storage_options={}).height == 2  # untouched
+    assert read_delta(target.path).height == 2  # untouched
 
 
 def test_guard_empty_output_with_sync_optin_truncates(tmp_path):
-    target = _seed(tmp_path, "g_empty_sync_optin", pl.DataFrame({"id": [1, 2], "v": ["a", "b"]}))
+    target = _seed(tmp_path, "g_empty_sync_optin", rows(id= [1, 2], v= ["a", "b"]))
     mat = Materialization(mode="upsert", keys=["id"], on_delete="sync", allow_empty_sync=True)
-    empty = pl.DataFrame({"id": [], "v": []}, schema={"id": pl.Int64, "v": pl.String})
+    empty = pa.table({"id": pa.array([], pa.int64()), "v": pa.array([], pa.string())})
     stats = materialize(empty, target, mat, {})
     assert stats["rows_deleted"] == 2
-    assert pl.read_delta(target.path, storage_options={}).height == 0
+    assert read_delta(target.path).height == 0
 
 
 # --- lineage helpers (US3 — T023/T026): validate_lineage, match_target_model,
@@ -868,7 +903,7 @@ def test_match_target_model_delta_exact_path():
     p = pipelines.parse_pipeline_text(VALID)  # target: s3://b/silver/orders, format delta
     model = _model(
         "name: gold\nsource: {format: delta, path: s3://b/silver/orders}\n"
-        "dimensions: [{name: x}]\nmeasures: [{name: rows, expr: count()}]\n"
+        "dimensions: [{name: x}]\nmeasures: [{name: rows, expr: COUNT(*)}]\n"
     )
     assert pipelines.match_target_model(p, {"gold": model}) == "gold"
 
@@ -877,7 +912,7 @@ def test_match_target_model_no_match():
     p = pipelines.parse_pipeline_text(VALID)
     model = _model(
         "name: unrelated\nsource: {format: parquet, path: s3://b/other/*.parquet}\n"
-        "dimensions: [{name: x}]\nmeasures: [{name: rows, expr: count()}]\n"
+        "dimensions: [{name: x}]\nmeasures: [{name: rows, expr: COUNT(*)}]\n"
     )
     assert pipelines.match_target_model(p, {"unrelated": model}) is None
 
@@ -888,7 +923,7 @@ def test_match_target_model_parquet_glob():
     p = pipelines.parse_pipeline_text(text)
     model = _model(
         "name: gold\nsource: {format: parquet, path: s3://b/silver/*.parquet}\n"
-        "dimensions: [{name: x}]\nmeasures: [{name: rows, expr: count()}]\n"
+        "dimensions: [{name: x}]\nmeasures: [{name: rows, expr: COUNT(*)}]\n"
     )
     assert pipelines.match_target_model(p, {"gold": model}) == "gold"
 

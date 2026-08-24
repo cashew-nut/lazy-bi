@@ -232,7 +232,7 @@ def _model_yaml(name: str, target_path: str, target_format: str = "delta") -> st
         f"name: {name}\n"
         f"source: {{format: {target_format}, path: {target_path}}}\n"
         "dimensions:\n  - name: order_id\n"
-        "measures:\n  - name: rows\n    expr: count()\n"
+        "measures:\n  - name: rows\n    expr: COUNT(*)\n"
     )
 
 

@@ -341,7 +341,7 @@ def test_ask_with_inline_running_total_executes(viewer_client, fake_translator):
     fake_translator.responses.append(RawToolCall("propose_query", {
         "model": "sales", "dimensions": [{"name": "order_date", "grain": "1mo"}],
         "measures": ["revenue", "running_revenue"],
-        "inline_measures": [{"name": "running_revenue", "expr": "running_total(revenue)"}],
+        "inline_measures": [{"name": "running_revenue", "expr": "SUM(revenue) OVER w"}],
     }))
     conv = viewer_client.post("/api/conversations", json={}).json()
     res = viewer_client.post(f"/api/conversations/{conv['id']}/ask",
@@ -349,7 +349,7 @@ def test_ask_with_inline_running_total_executes(viewer_client, fake_translator):
     body = res.json()
     assert body["response"]["outcome"] == "answered"
     assert body["response"]["resolved_query"]["inline_measures"] == [
-        {"name": "running_revenue", "expr": "running_total(revenue)", "label": None, "format": None},
+        {"name": "running_revenue", "expr": "SUM(revenue) OVER w", "label": None, "format": None},
     ]
     columns = {c["name"] for c in body["response"]["result"]["columns"]}
     assert {"revenue", "running_revenue"} <= columns
@@ -364,7 +364,7 @@ def test_ask_with_inline_running_total_executes(viewer_client, fake_translator):
 def test_ask_rejects_inline_measure_over_a_raw_column(viewer_client, fake_translator):
     fake_translator.responses.append(RawToolCall("propose_query", {
         "model": "sales", "dimensions": [], "measures": ["running_price"],
-        "inline_measures": [{"name": "running_price", "expr": "running_total(unit_price)"}],
+        "inline_measures": [{"name": "running_price", "expr": "SUM(unit_price) OVER w"}],
     }))
     conv = viewer_client.post("/api/conversations", json={}).json()
     res = viewer_client.post(f"/api/conversations/{conv['id']}/ask", json={"question": "running total of unit price"})

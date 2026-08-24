@@ -64,31 +64,31 @@ def test_deleting_dashboard_unpublishes(store):
 
 
 def test_measure_provenance_versions_increment(store):
-    r1 = store.record_measure_provenance("sales", "avg_price", "create", "alice", expr="mean(price)")
-    assert r1["version"] == 1 and r1["author"] == "alice" and r1["expr"] == "mean(price)"
-    r2 = store.record_measure_provenance("sales", "avg_price", "update", "bob", expr="mean(unit_price)")
+    r1 = store.record_measure_provenance("sales", "avg_price", "create", "alice", expr="AVG(price)")
+    assert r1["version"] == 1 and r1["author"] == "alice" and r1["expr"] == "AVG(price)"
+    r2 = store.record_measure_provenance("sales", "avg_price", "update", "bob", expr="AVG(unit_price)")
     assert r2["version"] == 2
     r3 = store.record_measure_provenance("sales", "avg_price", "delete", "alice")
     assert r3["version"] == 3 and r3["expr"] is None
     # a fresh create after a delete keeps climbing, not resetting to 1
-    r4 = store.record_measure_provenance("sales", "avg_price", "create", "alice", expr="mean(price)")
+    r4 = store.record_measure_provenance("sales", "avg_price", "create", "alice", expr="AVG(price)")
     assert r4["version"] == 4
 
 
 def test_measure_provenance_scoped_per_model_measure_pair(store):
-    store.record_measure_provenance("sales", "avg_price", "create", "alice", expr="mean(price)")
-    r = store.record_measure_provenance("logistics", "avg_price", "create", "carol", expr="mean(cost)")
+    store.record_measure_provenance("sales", "avg_price", "create", "alice", expr="AVG(price)")
+    r = store.record_measure_provenance("logistics", "avg_price", "create", "carol", expr="AVG(cost)")
     assert r["version"] == 1  # independent sequence for a different model
 
 
 def test_measure_history_newest_first_with_frame_fields(store):
     store.record_measure_provenance(
         "subscriptions", "median_tenure_days", "create", "dana",
-        expr="median(tenure_days)", frame="frame = lf", frame_emits=["churn_month"],
+        expr="MEDIAN(tenure_days)", frame="frame = lf", frame_emits=["churn_month"],
     )
     store.record_measure_provenance(
         "subscriptions", "median_tenure_days", "update", "dana",
-        expr="median(tenure_days)", frame="frame = lf.filter(x)", frame_emits=["churn_month"],
+        expr="MEDIAN(tenure_days)", frame="frame = lf.filter(x)", frame_emits=["churn_month"],
     )
     history = store.measure_history("subscriptions", "median_tenure_days")
     assert [h["version"] for h in history] == [2, 1]

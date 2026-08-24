@@ -236,7 +236,7 @@ def test_resolve_propose_query_with_inline_running_total(models):
             "model": "sales", "dimensions": [{"name": "order_date", "grain": "1mo"}],
             "measures": ["revenue", "running_revenue"],
             "inline_measures": [
-                {"name": "running_revenue", "expr": "running_total(revenue)", "label": "Running Revenue"},
+                {"name": "running_revenue", "expr": "SUM(revenue) OVER w", "label": "Running Revenue"},
             ],
         }),
     ])
@@ -244,7 +244,7 @@ def test_resolve_propose_query_with_inline_running_total(models):
     assert isinstance(decision, nlq.ProposeQuery)
     assert decision.measures == ["revenue", "running_revenue"]
     assert decision.inline_measures == [
-        {"name": "running_revenue", "expr": "running_total(revenue)", "label": "Running Revenue", "format": None},
+        {"name": "running_revenue", "expr": "SUM(revenue) OVER w", "label": "Running Revenue", "format": None},
     ]
 
 
@@ -253,12 +253,12 @@ def test_resolve_propose_query_with_inline_lag(models):
         RawToolCall("propose_query", {
             "model": "sales", "dimensions": [{"name": "order_date", "grain": "1q"}],
             "measures": ["qoq_revenue"],
-            "inline_measures": [{"name": "qoq_revenue", "expr": "lag(revenue)"}],
+            "inline_measures": [{"name": "qoq_revenue", "expr": "LAG(revenue) OVER w"}],
         }),
     ])
     decision = nlq.resolve("quarter over quarter revenue", _catalog(models), [], models, translator)
     assert isinstance(decision, nlq.ProposeQuery)
-    assert decision.inline_measures[0]["expr"] == "lag(revenue)"
+    assert decision.inline_measures[0]["expr"] == "LAG(revenue) OVER w"
 
 
 def test_resolve_rejects_inline_measure_over_a_raw_column(models):
@@ -267,7 +267,7 @@ def test_resolve_rejects_inline_measure_over_a_raw_column(models):
     translator = FakeTranslator([
         RawToolCall("propose_query", {
             "model": "sales", "dimensions": [], "measures": ["running_price"],
-            "inline_measures": [{"name": "running_price", "expr": "running_total(unit_price)"}],
+            "inline_measures": [{"name": "running_price", "expr": "SUM(unit_price) OVER w"}],
         }),
     ])
     decision = nlq.resolve("running total of unit price", _catalog(models), [], models, translator)
@@ -293,7 +293,7 @@ def test_resolve_rejects_inline_measure_reusing_a_declared_name(models):
     translator = FakeTranslator([
         RawToolCall("propose_query", {
             "model": "sales", "dimensions": [], "measures": ["revenue"],
-            "inline_measures": [{"name": "revenue", "expr": "lag(revenue)"}],
+            "inline_measures": [{"name": "revenue", "expr": "LAG(revenue) OVER w"}],
         }),
     ])
     decision = nlq.resolve("lag of revenue", _catalog(models), [], models, translator)
@@ -315,12 +315,12 @@ def test_resolve_show_last_query_carries_inline_measures_through(models):
     prior = [PriorTurn(
         question_text="running total of revenue", model="sales",
         dimensions=[{"name": "order_date", "grain": "1mo"}], measures=["revenue", "running_revenue"],
-        filters=[], inline_measures=[{"name": "running_revenue", "expr": "running_total(revenue)"}],
+        filters=[], inline_measures=[{"name": "running_revenue", "expr": "SUM(revenue) OVER w"}],
     )]
     translator = FakeTranslator([RawToolCall("show_last_query", {})])
     decision = nlq.resolve("show me that query", _catalog(models), prior, models, translator)
     assert isinstance(decision, nlq.ShowQuery)
-    assert decision.inline_measures == [{"name": "running_revenue", "expr": "running_total(revenue)"}]
+    assert decision.inline_measures == [{"name": "running_revenue", "expr": "SUM(revenue) OVER w"}]
 
 
 # ── categorical "common sense" — sample values in the catalog, and a

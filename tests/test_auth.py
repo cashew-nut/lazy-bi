@@ -286,12 +286,12 @@ def test_provenance_verified_identity_and_legacy_rows(client, author_client):
     from app.registry import registry
 
     yaml_text = ("name: prov_probe\nsource: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
-                 "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: count()\n")
+                 "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: COUNT(*)\n")
     assert client.post("/api/models", json={"yaml": yaml_text}).status_code == 201
     try:
         # a save through the session-authenticated route is verified
         assert author_client.post("/api/models/prov_probe/measures", json={
-            "name": "prov_m", "expr": "count()"}).status_code == 201
+            "name": "prov_m", "expr": "COUNT(*)"}).status_code == 201
         # a pre-auth row (as an upgraded database would contain) stays as-is
         registry.store.record_measure_provenance(
             "prov_probe", "prov_m", "update", "freetext-label")
@@ -441,7 +441,7 @@ def test_token_lifecycle_and_bearer_auth(author_client, anon_client):
 def test_token_carries_owner_role_and_provenance(admin_client, author_client,
                                                  viewer_client, anon_client):
     yaml_text = ("name: token_probe\nsource: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
-                 "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: count()\n")
+                 "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: COUNT(*)\n")
     assert admin_client.post("/api/models", json={"yaml": yaml_text}).status_code == 201
     try:
         author_tok = author_client.post("/api/tokens", json={"name": "authoring"}).json()["token"]
@@ -449,11 +449,11 @@ def test_token_carries_owner_role_and_provenance(admin_client, author_client,
         # a viewer's token cannot mutate
         assert anon_client.post("/api/models/token_probe/measures",
                                 headers=_bearer(viewer_tok),
-                                json={"name": "m1", "expr": "count()"}).status_code == 403
+                                json={"name": "m1", "expr": "COUNT(*)"}).status_code == 403
         # an author's token saves, attributed to the owner (SC-005)
         r = anon_client.post("/api/models/token_probe/measures",
                              headers=_bearer(author_tok),
-                             json={"name": "m1", "expr": "count()"})
+                             json={"name": "m1", "expr": "COUNT(*)"})
         assert r.status_code == 201
         history = admin_client.get("/api/models/token_probe/measures/m1/history").json()
         assert history[0]["author"] == "Author Tester" and history[0]["verified"] is True

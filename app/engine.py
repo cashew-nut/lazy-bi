@@ -1476,7 +1476,7 @@ def run_query_arrow(model: Model, query: dict, row_cap: Optional[int] = None):
     started = time.perf_counter()
     sql, params, columns = build_sql(model, query, row_cap)
     try:
-        table = duck.cursor().execute(sql, params).fetch_arrow_table()
+        table = duck.cursor().execute(sql, params).to_arrow_table()
     except duckdb.Error as exc:
         raise QueryError(_duck_message(exc)) from exc
     return table, columns, round((time.perf_counter() - started) * 1000, 1)

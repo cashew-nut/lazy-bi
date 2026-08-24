@@ -9,140 +9,151 @@ from app import pipelines, sandbox
 # --- combine_cells -----------------------------------------------------------
 
 
-def test_combine_cells_joins_with_blank_line():
-    assert sandbox.combine_cells(["a = 1", "b = 2"]) == "a = 1\n\nb = 2"
+def test_combine_cells_joins_with_a_statement_separator():
+    assert sandbox.combine_cells(["SELECT 1", "SELECT 2"]) == "SELECT 1;\n\nSELECT 2;"
+
+
+def test_combine_cells_does_not_double_a_semicolon_the_cell_already_has():
+    assert sandbox.combine_cells(["SELECT 1;", "SELECT 2"]) == "SELECT 1;\n\nSELECT 2;"
 
 
 def test_combine_cells_skips_blank_cells():
-    assert sandbox.combine_cells(["a = 1", "   ", ""]) == "a = 1"
+    assert sandbox.combine_cells(["SELECT 1", "   ", ""]) == "SELECT 1;"
 
 
 # --- extract_reads / rewrite_reads_to_sources --------------------------------
 
 
-def test_extract_reads_infers_format_from_extension():
-    script = 'df = read("s3://cash-intel/sales/x.parquet")'
-    sources = sandbox.extract_reads(script)
-    assert sources == [{"name": "x", "path": "s3://cash-intel/sales/x.parquet", "format": "parquet"}]
+def test_extract_reads_names_the_format_from_the_function():
+    script = "SELECT * FROM read_parquet('s3://cash-intel/sales/x.parquet')"
+    assert sandbox.extract_reads(script) == [
+        {"name": "x", "path": "s3://cash-intel/sales/x.parquet", "format": "parquet"}]
 
 
-def test_extract_reads_explicit_format_wins():
-    script = 'df = read("s3://cash-intel/silver/orders", format="delta")'
-    sources = sandbox.extract_reads(script)
+def test_extract_reads_delta():
+    sources = sandbox.extract_reads("SELECT * FROM delta_scan('s3://cash-intel/silver/orders')")
     assert sources[0]["format"] == "delta"
 
 
-def test_extract_reads_explicit_iceberg_format():
-    script = 'df = read("s3://cash-intel/support/tickets", format="iceberg")'
-    sources = sandbox.extract_reads(script)
+def test_extract_reads_iceberg():
+    """SQL names the reader explicitly, so an iceberg table root is never
+    mistaken for a delta one the way the old `read()` helper's extension guess
+    could be."""
+    sources = sandbox.extract_reads("SELECT * FROM iceberg_scan('s3://cash-intel/support/tickets')")
     assert sources[0]["format"] == "iceberg"
 
 
-def test_extract_reads_csv_extension():
-    sources = sandbox.extract_reads('read("s3://b/ref/products.csv")')
+def test_extract_reads_csv():
+    sources = sandbox.extract_reads("SELECT * FROM read_csv('s3://b/ref/products.csv')")
     assert sources[0]["format"] == "csv"
 
 
-def test_extract_reads_no_extension_defaults_delta():
-    sources = sandbox.extract_reads('read("s3://b/logistics/shipments")')
-    assert sources[0]["format"] == "delta"
-
-
 def test_extract_reads_dedupes_same_path():
-    script = (
-        'a = read("s3://b/sales/x.parquet")\n'
-        'b = read("s3://b/sales/x.parquet")\n'
-    )
-    sources = sandbox.extract_reads(script)
-    assert len(sources) == 1
+    script = ("SELECT * FROM read_parquet('s3://b/sales/x.parquet') "
+              "UNION ALL SELECT * FROM read_parquet('s3://b/sales/x.parquet')")
+    assert len(sandbox.extract_reads(script)) == 1
 
 
 def test_extract_reads_unique_names_for_colliding_basenames():
-    script = (
-        'a = read("s3://b/one/data.parquet")\n'
-        'b = read("s3://b/two/data.parquet")\n'
-    )
-    sources = sandbox.extract_reads(script)
-    names = [s["name"] for s in sources]
+    script = ("SELECT * FROM read_parquet('s3://b/one/data.parquet') a "
+              "JOIN read_parquet('s3://b/two/data.parquet') b USING (k)")
+    names = [s["name"] for s in sandbox.extract_reads(script)]
     assert len(names) == len(set(names)) == 2
 
 
 def test_extract_reads_sanitizes_non_identifier_basenames():
-    sources = sandbox.extract_reads('read("s3://b/silver/orders-v2")')
+    sources = sandbox.extract_reads("SELECT * FROM delta_scan('s3://b/silver/orders-v2')")
     assert sources[0]["name"] == "orders_v2"
 
 
 def test_extract_reads_glob_basename_falls_back_to_parent_segment():
-    # "*.parquet" alone sanitizes to nothing useful — the dataset folder
-    # name ("sales") makes a far more meaningful pipeline source name than a
+    # "*.parquet" alone sanitizes to nothing useful — the dataset folder name
+    # ("sales") makes a far more meaningful pipeline source name than a
     # generic fallback.
-    sources = sandbox.extract_reads('read("s3://cash-intel/sales/*.parquet")')
+    sources = sandbox.extract_reads("SELECT * FROM read_parquet('s3://cash-intel/sales/*.parquet')")
     assert sources[0]["name"] == "sales"
 
 
 def test_extract_reads_ignores_calls_mentioned_only_in_a_comment():
     script = (
-        '# e.g. read("s3://fake/not-a-real-source.parquet") explains the idea\n'
-        'df = read("s3://cash-intel/sales/real.parquet")\n'
+        "-- e.g. read_parquet('s3://fake/not-a-real-source.parquet') explains the idea\n"
+        "SELECT * FROM read_parquet('s3://cash-intel/sales/real.parquet')\n"
     )
     sources = sandbox.extract_reads(script)
     assert len(sources) == 1
     assert sources[0]["path"] == "s3://cash-intel/sales/real.parquet"
 
 
+def test_extract_reads_ignores_a_block_comment():
+    script = (
+        "/* read_parquet('s3://fake/example.parquet')\n   spans two lines */\n"
+        "SELECT * FROM read_parquet('s3://cash-intel/sales/real.parquet')\n"
+    )
+    assert [s["path"] for s in sandbox.extract_reads(script)] == \
+        ["s3://cash-intel/sales/real.parquet"]
+
+
 def test_rewrite_reads_to_sources_never_touches_comments():
     script = (
-        '# see read("s3://fake/example.parquet") for the idea\n'
-        'df = read("s3://cash-intel/sales/real.parquet")\n'
+        "-- see read_parquet('s3://fake/example.parquet') for the idea\n"
+        "SELECT * FROM read_parquet('s3://cash-intel/sales/real.parquet')\n"
     )
     sources = sandbox.extract_reads(script)
     rewritten = sandbox.rewrite_reads_to_sources(script, sources)
-    assert 'read("s3://fake/example.parquet")' in rewritten  # comment untouched
-    assert 'sources["real"]' in rewritten
-    assert rewritten.count("read(") == 1  # only the comment's mention remains
+    assert "read_parquet('s3://fake/example.parquet')" in rewritten  # comment untouched
+    assert '"real"' in rewritten
+    assert rewritten.count("read_parquet(") == 1  # only the comment's mention remains
 
 
 def test_extract_reads_preserves_first_appearance_order():
-    script = 'read("s3://b/z.parquet")\nread("s3://b/a.parquet")\n'
-    sources = sandbox.extract_reads(script)
-    assert [s["path"] for s in sources] == ["s3://b/z.parquet", "s3://b/a.parquet"]
+    script = ("SELECT * FROM read_parquet('s3://b/z.parquet') "
+              "UNION ALL SELECT * FROM read_parquet('s3://b/a.parquet')")
+    assert [s["path"] for s in sandbox.extract_reads(script)] == \
+        ["s3://b/z.parquet", "s3://b/a.parquet"]
 
 
 def test_rewrite_reads_to_sources_replaces_call_sites():
-    script = 'df = read("s3://b/sales/x.parquet").filter(pl.col("a") > 0)'
+    """A pipeline registers each declared source as a view under its name, so
+    the rewritten SQL reads FROM that name."""
+    script = "SELECT a FROM read_parquet('s3://b/sales/x.parquet') WHERE a > 0"
     sources = sandbox.extract_reads(script)
     rewritten = sandbox.rewrite_reads_to_sources(script, sources)
-    assert rewritten == f'df = sources["{sources[0]["name"]}"].filter(pl.col("a") > 0)'
+    assert rewritten == 'SELECT a FROM "x" WHERE a > 0'
 
 
 def test_rewrite_reads_to_sources_multiple_calls():
     script = (
-        'a = read("s3://b/one.parquet")\n'
-        'b = read("s3://b/two.csv", format="csv")\n'
-        'output = a.join(b, on="k")\n'
+        "SELECT * FROM read_parquet('s3://b/one.parquet') a\n"
+        "JOIN read_csv('s3://b/two.csv') b USING (k)\n"
     )
     sources = sandbox.extract_reads(script)
     rewritten = sandbox.rewrite_reads_to_sources(script, sources)
-    assert 'read(' not in rewritten
-    assert 'sources["one"]' in rewritten
-    assert 'sources["two"]' in rewritten
+    assert "read_parquet(" not in rewritten and "read_csv(" not in rewritten
+    assert '"one"' in rewritten and '"two"' in rewritten
 
 
 # --- has_output_assignment ----------------------------------------------------
 
 
-def test_has_output_assignment_true():
-    assert sandbox.has_output_assignment('x = 1\noutput = x\n')
+def test_ending_on_a_select_satisfies_the_output_contract():
+    assert sandbox.has_output_assignment("SELECT * FROM sales")
+    assert sandbox.has_output_assignment("CREATE TEMP TABLE t AS SELECT 1;\nSELECT * FROM t")
+    assert sandbox.has_output_assignment("WITH r AS (SELECT 1) SELECT * FROM r")
 
 
-def test_has_output_assignment_false():
-    assert not sandbox.has_output_assignment('x = 1\nresult = x\n')
+def test_a_named_output_relation_satisfies_it_too():
+    assert sandbox.has_output_assignment("CREATE OR REPLACE TEMP VIEW output AS SELECT 1;")
+    assert sandbox.has_output_assignment("CREATE TEMP TABLE output AS SELECT 1;\nSET threads = 2;")
 
 
-def test_has_output_assignment_ignores_indented_assignment():
-    # only a *top-level* `output =` counts — one inside a function/if-block
-    # is not what a pipeline script's contract means (see contracts/pipeline-yaml.md)
-    assert not sandbox.has_output_assignment('if True:\n    output = 1\n')
+def test_neither_is_reported_rather_than_guessed():
+    assert not sandbox.has_output_assignment("CREATE TEMP TABLE t AS SELECT 1;")
+    assert not sandbox.has_output_assignment("SET threads = 2;")
+
+
+def test_output_mentioned_only_in_a_comment_does_not_count():
+    assert not sandbox.has_output_assignment(
+        "-- CREATE TEMP VIEW output AS SELECT 1\nCREATE TEMP TABLE t AS SELECT 1;")
 
 
 # --- build_pipeline_yaml ------------------------------------------------------
@@ -150,10 +161,10 @@ def test_has_output_assignment_ignores_indented_assignment():
 
 def test_build_pipeline_yaml_parses_as_valid_pipeline_after_filling_placeholders():
     sources = [{"name": "sales", "path": "s3://b/sales/*.parquet", "format": "parquet"}]
-    script = 'output = sources["sales"].head(5)'
+    script = "SELECT * FROM sales LIMIT 5"
     yaml_text = sandbox.build_pipeline_yaml("my nb", script, sources)
     filled = yaml_text.replace("s3://REPLACE/ME/target   # TODO: set a real target path before saving",
-                                "s3://b/silver/out")
+                               "s3://b/silver/out")
     p = pipelines.parse_pipeline_text(filled)
     assert p.name == "my_nb"
     assert list(p.sources) == ["sales"]
@@ -161,20 +172,20 @@ def test_build_pipeline_yaml_parses_as_valid_pipeline_after_filling_placeholders
 
 
 def test_build_pipeline_yaml_slugifies_name():
-    yaml_text = sandbox.build_pipeline_yaml("My Cool NB!", "output = 1", [])
+    yaml_text = sandbox.build_pipeline_yaml("My Cool NB!", "SELECT 1", [])
     assert "name: my_cool_nb" in yaml_text
 
 
 def test_build_pipeline_yaml_no_sources_gets_placeholder():
-    yaml_text = sandbox.build_pipeline_yaml("nb", "output = 1", [])
+    yaml_text = sandbox.build_pipeline_yaml("nb", "SELECT 1", [])
     assert "s3://REPLACE/ME" in yaml_text
 
 
-def test_build_pipeline_yaml_preserves_script_body():
-    script = 'a = 1\noutput = a'
+def test_build_pipeline_yaml_preserves_the_sql_body():
+    script = "CREATE TEMP TABLE t AS SELECT 1;\nSELECT * FROM t"
     yaml_text = sandbox.build_pipeline_yaml("nb", script, [])
-    assert "  a = 1" in yaml_text
-    assert "  output = a" in yaml_text
+    assert "  CREATE TEMP TABLE t AS SELECT 1;" in yaml_text
+    assert "  SELECT * FROM t" in yaml_text
 
 
 # --- sandbox_runner.run_job (direct call, no subprocess) ---------------------
@@ -188,114 +199,87 @@ def _job(cells, run_upto=None):
         "run_upto": run_upto if run_upto is not None else len(cells) - 1,
         "bucket": "test-bucket",
         "row_limit": 200,
-        "storage": {"read": {}},
     }
 
 
-def test_run_job_simple_arithmetic_last_expr_displayed():
-    result = sandbox_runner.run_job(_job(["x = 1 + 1", "x * 10"]))
-    cells = result["cells"]
-    assert cells[0]["ok"] is True and cells[0]["display"] is None  # assignment, nothing to display
-    assert cells[1]["ok"] is True
-    assert cells[1]["display"] == {"kind": "text", "text": "20"}
+def test_run_job_displays_the_rows_a_cell_produced():
+    result = sandbox_runner.run_job(_job(["SELECT 1 + 1 AS x"]))
+    cell = result["cells"][0]
+    assert cell["ok"] is True
+    assert cell["display"]["kind"] == "table"
+    assert cell["display"]["rows"] == [{"x": 2}]
 
 
 def test_run_job_state_carries_across_cells():
-    result = sandbox_runner.run_job(_job(["x = 5", "y = x + 1", "y"]))
-    assert result["cells"][2]["display"] == {"kind": "text", "text": "6"}
-
-
-def test_run_job_stdout_captured_per_cell():
-    result = sandbox_runner.run_job(_job(['print("hello")', 'print("world")']))
-    assert result["cells"][0]["stdout"] == "hello\n"
-    assert result["cells"][1]["stdout"] == "world\n"
+    """One session per run, so a temp view in cell 1 is visible in cell 3 —
+    the notebook-kernel property, without a kernel."""
+    result = sandbox_runner.run_job(_job([
+        "CREATE OR REPLACE TEMP VIEW v AS SELECT 5 AS x",
+        "CREATE OR REPLACE TEMP VIEW w AS SELECT x + 1 AS y FROM v",
+        "SELECT * FROM w",
+    ]))
+    assert result["cells"][2]["display"]["rows"] == [{"y": 6}]
 
 
 def test_run_job_error_stops_subsequent_cells():
-    result = sandbox_runner.run_job(_job(["1 / 0", "z = 1", "z"]))
+    result = sandbox_runner.run_job(_job(["SELECT * FROM no_such_table", "SELECT 1", "SELECT 2"]))
     cells = result["cells"]
     assert cells[0]["ok"] is False
-    assert "ZeroDivisionError" in cells[0]["error"]
+    assert "no_such_table" in cells[0]["error"]
     assert cells[1]["ok"] is None and cells[2]["ok"] is None  # never run
 
 
 def test_run_job_run_upto_stops_early():
-    result = sandbox_runner.run_job(_job(["a = 1", "b = 2", "c = 3"], run_upto=1))
+    result = sandbox_runner.run_job(_job(["SELECT 1", "SELECT 2", "SELECT 3"], run_upto=1))
     cells = result["cells"]
     assert cells[0]["ok"] is True and cells[1]["ok"] is True
     assert cells[2]["ok"] is None  # beyond run_upto, not executed
 
 
 def test_run_job_syntax_error_reported_without_crashing():
-    result = sandbox_runner.run_job(_job(["def broken(:"]))
+    result = sandbox_runner.run_job(_job(["SELECT FROM WHERE"]))
     assert result["cells"][0]["ok"] is False
     assert "syntax error" in result["cells"][0]["error"]
 
 
-def test_run_job_dataframe_display_shape():
-    import polars as pl  # noqa: F401  (imported inside the cell's namespace)
-    result = sandbox_runner.run_job(_job(['pl.DataFrame({"a": [1, 2], "b": ["x", "y"]})']))
+def test_run_job_display_carries_column_types():
+    result = sandbox_runner.run_job(_job(["SELECT 1 AS a, 'x' AS b"]))
     disp = result["cells"][0]["display"]
-    assert disp["kind"] == "table"
-    assert disp["columns"] == [{"name": "a", "dtype": "Int64"}, {"name": "b", "dtype": "String"}]
-    assert disp["rows"] == [{"a": 1, "b": "x"}, {"a": 2, "b": "y"}]
+    assert [c["name"] for c in disp["columns"]] == ["a", "b"]
+    assert disp["rows"] == [{"a": 1, "b": "x"}]
     assert disp["truncated"] is False
-    assert disp["row_count"] == 2
+    assert disp["row_count"] == 1
 
 
-def test_run_job_lazyframe_display_collects_and_truncates():
-    job = _job(['pl.LazyFrame({"a": list(range(5))})'])
+def test_run_job_display_truncates_at_the_row_limit():
+    job = _job(["SELECT * FROM range(5) t(a)"])
     job["row_limit"] = 2
-    result = sandbox_runner.run_job(job)
-    disp = result["cells"][0]["display"]
+    disp = sandbox_runner.run_job(job)["cells"][0]["display"]
     assert disp["kind"] == "table"
     assert disp["truncated"] is True
     assert len(disp["rows"]) == 2
     assert disp["row_count"] is None
 
 
-def test_run_job_read_helper_uses_storage_options_and_infers_format(monkeypatch):
-    calls = []
+def test_run_job_can_read_the_bucket(seeded):
+    """The one capability that makes a notebook worth having: a cell may name
+    a table function and read a real path."""
+    result = sandbox_runner.run_job(_job([
+        "SELECT count(*) AS n FROM read_parquet('s3://cash-intel/sales/*.parquet')"]))
+    assert result["cells"][0]["ok"] is True, result["cells"][0]["error"]
+    assert result["cells"][0]["display"]["rows"][0]["n"] == 60000
 
-    def fake_scan_parquet(path, storage_options=None):
-        calls.append(("parquet", path, storage_options))
-        import polars as pl
-        return pl.DataFrame({"a": [1]}).lazy()
 
-    monkeypatch.setattr(sandbox_runner.pl, "scan_parquet", fake_scan_parquet)
-    job = _job(['read("s3://b/x.parquet")'])
-    job["storage"]["read"] = {"aws_endpoint_url": "http://x"}
-    result = sandbox_runner.run_job(job)
+def test_run_job_none_display_for_a_statement_that_returns_nothing():
+    result = sandbox_runner.run_job(_job(["CREATE OR REPLACE TEMP TABLE t AS SELECT 1"]))
     assert result["cells"][0]["ok"] is True
-    assert calls == [("parquet", "s3://b/x.parquet", {"aws_endpoint_url": "http://x"})]
-
-
-def test_run_job_read_helper_iceberg_requires_explicit_format(monkeypatch):
-    calls = []
-
-    def fake_iceberg_scan(path):
-        calls.append(path)
-        import polars as pl
-        return pl.DataFrame({"a": [1]}).lazy()
-
-    monkeypatch.setattr(sandbox_runner.iceberg_util, "scan", fake_iceberg_scan)
-    job = _job(['read("s3://cash-intel/support/tickets", format="iceberg")'])
-    result = sandbox_runner.run_job(job)
-    assert result["cells"][0]["ok"] is True
-    assert calls == ["s3://cash-intel/support/tickets"]
-
-
-def test_run_job_none_display_for_plain_statement():
-    result = sandbox_runner.run_job(_job(["x = 1"]))
     assert result["cells"][0]["display"] is None
 
 
-def test_run_job_text_display_truncates_long_repr():
-    result = sandbox_runner.run_job(_job(["'x' * 5000"]))
-    disp = result["cells"][0]["display"]
-    assert disp["kind"] == "text"
-    assert disp["text"].endswith("… (truncated)")
-    assert len(disp["text"]) < 5000
+def test_run_job_runs_every_statement_in_a_cell():
+    result = sandbox_runner.run_job(_job([
+        "CREATE OR REPLACE TEMP TABLE t AS SELECT 7 AS x; SELECT * FROM t"]))
+    assert result["cells"][0]["display"]["rows"] == [{"x": 7}]
 
 
 # --- SandboxStore CRUD --------------------------------------------------------

@@ -136,41 +136,56 @@ def validate_sql(source: str, owner: str) -> None:
     the same thing a model measure gets — a broken pipeline fails on save
     rather than on the run.
     """
-    statements = split_statements(source, owner)
+    statements = parse_statements(source, owner)
     if not statements:
         raise PipelineError(f"{owner}: 'sql' has no statements")
-    last = statements[-1].strip().lstrip("(").lstrip().upper()
-    if not (last.startswith("SELECT") or last.startswith("WITH")
-            or last.startswith("FROM") or last.startswith("TABLE")):
+    if not returns_rows(statements[-1]) and not _CREATES_OUTPUT_RE.search(source):
         # the other half of the contract: a script may build up temp relations
         # first, but something has to name the rows to materialize
-        if not _CREATES_OUTPUT_RE.search(source):
-            raise PipelineError(
-                f"{owner}: a pipeline's sql must end with a SELECT, or create a relation "
-                f"named 'output' — neither found")
+        raise PipelineError(
+            f"{owner}: a pipeline's sql must end with a SELECT, or create a relation "
+            f"named 'output' — neither found")
 
 
 # `CREATE [OR REPLACE] [TEMP|TEMPORARY] TABLE|VIEW output` — the alternative to
 # ending on a SELECT, for a script that would rather name its result
 _CREATES_OUTPUT_RE = re.compile(
     r"\bcreate\s+(?:or\s+replace\s+)?(?:temp(?:orary)?\s+)?(?:table|view)\s+"
-    r"(?:if\s+not\s+exists\s+)?\"?output\"?\b", re.IGNORECASE)
+    r'(?:if\s+not\s+exists\s+)?"?output"?\b', re.IGNORECASE)
 
 
-def split_statements(source: str, owner: str = "sql") -> list[str]:
-    """A SQL script split into its statements, so a multi-statement pipeline
-    (a temp table, then the SELECT that reads it) can be run one statement at a
-    time and its last one identified.
+def parse_statements(source: str, owner: str = "sql") -> list:
+    """A SQL script's statements, parsed by DuckDB's own tokenizer.
 
-    DuckDB's own tokenizer, not a split on semicolons — which would cut a
-    string literal or a comment containing one in half."""
+    Not a split on semicolons, which would cut a string literal or a comment
+    containing one in half — and the parsed form carries each statement's
+    *type*, which is what tells a CREATE apart from the SELECT whose rows get
+    materialized."""
     from . import duck
 
     try:
-        return [statement.query for statement in duck.cursor().extract_statements(source)]
+        return list(duck.cursor().extract_statements(source))
     except Exception as exc:
         message = str(exc).strip().split("\n")[0]
         raise PipelineError(f"{owner}: invalid sql syntax: {message}") from exc
+
+
+def returns_rows(statement) -> bool:
+    """Does this statement produce a result set worth materializing or
+    displaying?
+
+    Only a SELECT does. DuckDB hands back a one-row `Count` for a CREATE TABLE
+    AS or an INSERT, which is a report of what it did rather than the rows a
+    pipeline meant to write — materializing that would silently replace a
+    target with the number 1."""
+    import duckdb
+
+    return statement.type == duckdb.StatementType.SELECT
+
+
+def split_statements(source: str, owner: str = "sql") -> list[str]:
+    """The same statements as plain SQL text."""
+    return [statement.query for statement in parse_statements(source, owner)]
 
 
 def _check_name(name: str, kind: str, owner: str) -> None:

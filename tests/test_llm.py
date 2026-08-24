@@ -161,7 +161,7 @@ def test_catalog_text_includes_measure_formula_when_present():
         llm.ModelCatalogEntry(
             name="sales", label="Sales Orders", description="", dimensions=[],
             measures=[{"name": "revenue", "label": "Revenue", "description": "",
-                       "expr": "sum(unit_price * quantity)"}],
+                       "expr": "SUM(unit_price * quantity)"}],
         ),
     ]
     text = llm._catalog_text(catalog)

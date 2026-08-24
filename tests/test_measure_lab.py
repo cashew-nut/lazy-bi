@@ -10,7 +10,7 @@ def test_inline_measure_resolves(models):
     r = engine.run_query(models["sales"], {
         "dimensions": ["region"],
         "measures": ["revenue", "avg_price_probe"],
-        "inline_measures": [{"name": "avg_price_probe", "expr": "mean(unit_price)",
+        "inline_measures": [{"name": "avg_price_probe", "expr": "AVG(unit_price)",
                              "label": "Avg Price", "format": "currency"}],
     })
     meta = next(c for c in r["columns"] if c["name"] == "avg_price_probe")
@@ -28,7 +28,7 @@ def test_inline_measure_bad_expr_is_query_error(models):
 def test_inline_measure_shadows_model_measure(models):
     r = engine.run_query(models["sales"], {
         "dimensions": [], "measures": ["revenue"],
-        "inline_measures": [{"name": "revenue", "expr": "count()"}]})
+        "inline_measures": [{"name": "revenue", "expr": "COUNT(*)"}]})
     total_rows = engine.run_query(models["sales"], {"dimensions": [], "measures": ["orders"]})
     assert r["rows"][0]["revenue"] == 60_000  # row count, not currency
 
@@ -47,7 +47,7 @@ source: {format: parquet, path: s3://b/x.parquet}
 
 measures:
   - name: rows
-    expr: count()
+    expr: COUNT(*)
 
 dimensions:
   - name: region
@@ -55,7 +55,7 @@ dimensions:
 
 
 def test_append_into_middle_measures_block():
-    out = semantic.append_measure_yaml(DOC, {"name": "avg", "expr": "mean(v)"})
+    out = semantic.append_measure_yaml(DOC, {"name": "avg", "expr": "AVG(v)"})
     m = semantic.parse_model_text(out)
     assert list(m.measures) == ["rows", "avg"]
     assert out.startswith("# header comment stays")          # comments preserved
@@ -64,13 +64,13 @@ def test_append_into_middle_measures_block():
 
 def test_append_when_measures_missing():
     out = semantic.append_measure_yaml("name: t\nsource: {format: parquet, path: s3://b/x.parquet}\n",
-                                       {"name": "rows", "expr": "count()"})
+                                       {"name": "rows", "expr": "COUNT(*)"})
     assert "rows" in semantic.parse_model_text(out).measures
 
 
 def test_append_quotes_awkward_exprs():
     out = semantic.append_measure_yaml(DOC, {
-        "name": "tricky", "expr": 'sum(where(a, b > 0))'})
+        "name": "tricky", "expr": 'SUM(a) FILTER (WHERE b > 0)'})
     m = semantic.parse_model_text(out)
     assert m.measures["tricky"].expr() is not None
 
@@ -86,27 +86,27 @@ def test_schema_endpoint(client):
 def test_query_api_accepts_inline_measures(client):
     res = client.post("/api/query", json={
         "model": "sales", "dimensions": [], "measures": ["probe"],
-        "inline_measures": [{"name": "probe", "expr": "count()"}]})
+        "inline_measures": [{"name": "probe", "expr": "COUNT(*)"}]})
     assert res.status_code == 200
     assert res.json()["rows"][0]["probe"] == 60_000
 
 
 def test_save_measure_to_model(client):
     yaml_text = ("name: lab_probe\nsource: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
-                 "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: count()\n")
+                 "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: COUNT(*)\n")
     assert client.post("/api/models", json={"yaml": yaml_text}).status_code == 201
     try:
         res = client.post("/api/models/lab_probe/measures", json={
-            "name": "avg_price", "expr": "mean(unit_price)",
+            "name": "avg_price", "expr": "AVG(unit_price)",
             "label": "Avg Price", "format": "currency"})
         assert res.status_code == 201
         assert any(m["name"] == "avg_price" and m["format"] == "currency"
                    for m in res.json()["measures"])
         # duplicates and junk rejected
         assert client.post("/api/models/lab_probe/measures", json={
-            "name": "avg_price", "expr": "count()"}).status_code == 409
+            "name": "avg_price", "expr": "COUNT(*)"}).status_code == 409
         assert client.post("/api/models/lab_probe/measures", json={
-            "name": "Bad Name", "expr": "count()"}).status_code == 400
+            "name": "Bad Name", "expr": "COUNT(*)"}).status_code == 400
         assert client.post("/api/models/lab_probe/measures", json={
             "name": "b", "expr": "nope()"}).status_code == 400
         # the saved measure actually computes
@@ -127,12 +127,12 @@ def test_save_measure_to_a_datasets_shape_model(client):
         "  - name: orders\n"
         "    source: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
         "    dimensions:\n      - name: region\n"
-        "    measures:\n      - name: rows\n        expr: count()\n"
+        "    measures:\n      - name: rows\n        expr: COUNT(*)\n"
     )
     assert client.post("/api/models", json={"yaml": yaml_text}).status_code == 201
     try:
         res = client.post("/api/models/lab_ds_probe/measures", json={
-            "name": "avg_price", "expr": "mean(unit_price)",
+            "name": "avg_price", "expr": "AVG(unit_price)",
             "label": "Avg Price", "format": "currency"})
         assert res.status_code == 201, res.text
         # ...and it landed on the dataset, not in a stray top-level block the
@@ -146,7 +146,7 @@ def test_save_measure_to_a_datasets_shape_model(client):
         assert q.status_code == 200 and q.json()["rows"][0]["avg_price"] > 0
 
         upd = client.put("/api/models/lab_ds_probe/measures/avg_price", json={
-            "name": "avg_price", "expr": "mean(unit_cost)", "label": "Avg Cost", "format": "currency"})
+            "name": "avg_price", "expr": "AVG(unit_cost)", "label": "Avg Cost", "format": "currency"})
         assert upd.status_code == 200
         assert next(m for m in upd.json()["measures"] if m["name"] == "avg_price")["label"] == "Avg Cost"
         # the sibling measure is untouched by the rewrite
@@ -164,7 +164,7 @@ def test_the_measure_lab_declines_a_model_with_several_fact_tables(client):
     """A measure belongs to one fact table, and the lab names a model — so it
     says which datasets to choose between rather than guessing."""
     res = client.post("/api/models/commercial_overview/measures", json={
-        "name": "x", "expr": "count()"})
+        "name": "x", "expr": "COUNT(*)"})
     assert res.status_code == 400
     assert "3 unrelated fact tables" in res.json()["detail"]
     assert "orders, spend, subs" in res.json()["detail"]

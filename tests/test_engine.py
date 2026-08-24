@@ -264,7 +264,7 @@ dimensions:
   - {{name: active_at, label: Active At, type: time,
       spine: {{start: start_date, end: end_date, match: {match}}}}}
 measures:
-  - {{name: n, expr: count()}}
+  - {{name: n, expr: COUNT(*)}}
 """)
         return semantic.resolve_model(model, {"two_cal": bundle})
 
@@ -577,7 +577,7 @@ datasets:
 name: test_fact
 source: {{format: parquet, path: s3://{config.BUCKET}/test/import_fact.parquet}}
 dimensions: [{{name: id, label: Id}}]
-measures: [{{name: total, expr: sum(amount)}}]
+measures: [{{name: total, expr: SUM(amount)}}]
 dimension_imports:
   - {{bundle: test_geo, anchor_dataset: regions, on: region, how: {how}}}
 """)
@@ -647,7 +647,7 @@ dimension_imports:
 dimensions:
   - {{name: study, label: Study}}
 measures:
-  - {{name: n, expr: sum(event_count)}}
+  - {{name: n, expr: SUM(event_count)}}
 """)
     return semantic.resolve_model(model, {"renamed_key_cal": bundle})
 
@@ -696,7 +696,7 @@ dimensions:
     type: time
 measures:
   - name: events
-    expr: count()
+    expr: COUNT(*)
   - name: median_days_to_75
     frame: |
       keys = list(dict.fromkeys(["study_id", *dims]))
@@ -714,7 +714,7 @@ measures:
           )
       )
     frame_emits: [event_date]
-    expr: pl.col("days_to_75").median()
+    expr: pl.days_to_75.median()
   - name: bad_frame_drops_dims
     frame: 'lf.group_by("study_id").agg(pl.len())'
     expr: pl.len()
@@ -860,7 +860,7 @@ def _quarterly(models, extra_measures=(), extra_inline=None):
 
 
 def test_running_total_inline_matches_cumulative_sum(models):
-    inline = [{"name": "revenue_running_total", "expr": "running_total(revenue)"}]
+    inline = [{"name": "revenue_running_total", "expr": "SUM(revenue) OVER w"}]
     r = _quarterly(models, extra_measures=["revenue_running_total"], extra_inline=inline)
     rows = sorted(r["rows"], key=lambda row: row["order_date"])
     running = 0.0
@@ -870,7 +870,7 @@ def test_running_total_inline_matches_cumulative_sum(models):
 
 
 def test_running_total_partitions_by_other_query_dimensions(models):
-    inline = [{"name": "revenue_running_total", "expr": "running_total(revenue)"}]
+    inline = [{"name": "revenue_running_total", "expr": "SUM(revenue) OVER w"}]
     r = run(
         models, "sales",
         dimensions=["channel", {"name": "order_date", "grain": "1q"}],
@@ -900,7 +900,7 @@ def test_window_measure_dependency_dropped_when_not_requested(models):
     # requesting only the running total shouldn't force `revenue` into the
     # result — it's still computed internally (the running total needs it)
     # but trimmed from the response unless also explicitly requested
-    inline = [{"name": "revenue_running_total", "expr": "running_total(revenue)"}]
+    inline = [{"name": "revenue_running_total", "expr": "SUM(revenue) OVER w"}]
     r = run(
         models, "sales",
         dimensions=[{"name": "order_date", "grain": "1q"}],
@@ -913,14 +913,14 @@ def test_window_measure_dependency_dropped_when_not_requested(models):
 
 
 def test_window_measure_requires_a_time_dimension(models):
-    inline = [{"name": "revenue_running_total", "expr": "running_total(revenue)"}]
+    inline = [{"name": "revenue_running_total", "expr": "SUM(revenue) OVER w"}]
     with pytest.raises(engine.QueryError, match="time dimension"):
         run(models, "sales", dimensions=["channel"],
             measures=["revenue", "revenue_running_total"], inline_measures=inline)
 
 
 def test_window_measure_rejects_ambiguous_multiple_time_dimensions(models):
-    inline = [{"name": "mrr_running_total", "expr": "running_total(mrr)"}]
+    inline = [{"name": "mrr_running_total", "expr": "SUM(mrr) OVER w"}]
     with pytest.raises(engine.QueryError, match="one time dimension"):
         run(models, "subscriptions",
             dimensions=[{"name": "active_at", "grain": "1mo"}, {"name": "start_month", "grain": "1mo"}],
@@ -929,8 +929,8 @@ def test_window_measure_rejects_ambiguous_multiple_time_dimensions(models):
 
 def test_window_measure_cannot_depend_on_another_window_measure(models):
     inline = [
-        {"name": "revenue_running_total", "expr": "running_total(revenue)"},
-        {"name": "double_running_total", "expr": "running_total(revenue_running_total)"},
+        {"name": "revenue_running_total", "expr": "SUM(revenue) OVER w"},
+        {"name": "double_running_total", "expr": "SUM(revenue_running_total) OVER w"},
     ]
     with pytest.raises(engine.QueryError, match="window measure"):
         run(models, "sales", dimensions=[{"name": "order_date", "grain": "1q"}],
@@ -938,7 +938,7 @@ def test_window_measure_cannot_depend_on_another_window_measure(models):
 
 
 def test_window_measure_unknown_dependency_rejected(models):
-    inline = [{"name": "bogus_running_total", "expr": "running_total(does_not_exist)"}]
+    inline = [{"name": "bogus_running_total", "expr": "SUM(does_not_exist) OVER w"}]
     with pytest.raises(engine.QueryError):
         run(models, "sales", dimensions=[{"name": "order_date", "grain": "1q"}],
             measures=["bogus_running_total"], inline_measures=inline)
@@ -963,7 +963,7 @@ def test_shipped_model_window_measures_end_to_end(models):
 # --- Visual parameters: param() reference in lag(), resolved per query -----
 
 def _period_list_query(models, parameter_values=None):
-    inline = [{"name": "revenue_lag", "expr": "lag(revenue, param('period_list'))"}]
+    inline = [{"name": "revenue_lag", "expr": "LAG(revenue, param('period_list')) OVER w"}]
     return run(
         models, "sales",
         dimensions=[{"name": "order_date", "grain": "1q"}],
@@ -976,7 +976,7 @@ def _period_list_query(models, parameter_values=None):
 
 def test_parameter_uses_declared_default_when_no_override(models):
     default_r = _period_list_query(models)
-    literal = [{"name": "revenue_lag", "expr": "lag(revenue, 1)"}]
+    literal = [{"name": "revenue_lag", "expr": "LAG(revenue, 1) OVER w"}]
     literal_r = run(
         models, "sales", dimensions=[{"name": "order_date", "grain": "1q"}],
         measures=["revenue", "revenue_lag"], inline_measures=literal,
@@ -1015,7 +1015,7 @@ def test_parameter_undeclared_name_rejected(models):
 
 
 def test_parameter_default_not_in_values_rejected(models):
-    inline = [{"name": "revenue_lag", "expr": "lag(revenue, param('period_list'))"}]
+    inline = [{"name": "revenue_lag", "expr": "LAG(revenue, param('period_list')) OVER w"}]
     with pytest.raises(engine.QueryError, match="not one of its declared values"):
         run(
             models, "sales", dimensions=[{"name": "order_date", "grain": "1q"}],
@@ -1118,7 +1118,7 @@ def test_query_with_float_param_in_comparison(models):
     # aggregate-mode measure: bare identifiers are raw source columns, so
     # this exercises param() inside where()'s predicate against a real
     # column comparison, not a sibling-measure (window-mode) reference
-    inline = [{"name": "flagged_units", "expr": "sum(where(quantity, unit_price > param('threshold')))"}]
+    inline = [{"name": "flagged_units", "expr": "SUM(quantity) FILTER (WHERE unit_price > param('threshold'))"}]
     r = run(
         models, "sales", dimensions=[], measures=["flagged_units"], inline_measures=inline,
         parameters=[{"name": "threshold", "type": "float", "values": [10, 50.5, 100], "default": 50.5}],
@@ -1128,7 +1128,7 @@ def test_query_with_float_param_in_comparison(models):
 
 
 def test_query_with_string_param_in_comparison(models):
-    inline = [{"name": "flagged_units", "expr": "sum(where(quantity, channel == param('target_channel')))"}]
+    inline = [{"name": "flagged_units", "expr": "SUM(quantity) FILTER (WHERE channel == param('target_channel'))"}]
     r = run(
         models, "sales", dimensions=[], measures=["flagged_units"], inline_measures=inline,
         parameters=[{"name": "target_channel", "type": "string", "values": ["online", "retail"], "default": "online"}],

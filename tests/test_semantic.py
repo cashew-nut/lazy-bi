@@ -13,7 +13,7 @@ dimensions:
     type: time
 measures:
   - name: rows
-    expr: count()
+    expr: COUNT(*)
 """
 
 
@@ -37,7 +37,7 @@ def test_dimension_and_measure_synonyms_parse():
     text = VALID.replace(
         "  - name: region", "  - name: region\n    synonyms: [area, territory]"
     ).replace(
-        "    expr: count()", "    synonyms: [row count, record count]\n    expr: count()"
+        "    expr: COUNT(*)", "    synonyms: [row count, record count]\n    expr: COUNT(*)"
     )
     m = semantic.parse_model_text(text)
     assert m.dimensions["region"].synonyms == ["area", "territory"]
@@ -56,7 +56,7 @@ def test_synonyms_survive_spec_yaml_roundtrip():
     text = VALID.replace(
         "  - name: region", "  - name: region\n    synonyms: [area, territory]"
     ).replace(
-        "    expr: count()", "    synonyms: [row count]\n    expr: count()"
+        "    expr: COUNT(*)", "    synonyms: [row count]\n    expr: COUNT(*)"
     )
     model = semantic.parse_model_text(text)
     rendered = semantic.spec_to_yaml(semantic.model_to_spec(model))
@@ -137,7 +137,7 @@ measures:
     frame: |
       per_study = lf.group_by(["study_id", *dims]).agg(pl.col("days").min())
       frame = per_study
-    expr: pl.col("days").median()
+    expr: pl.days.median()
 """
 
 
@@ -152,7 +152,7 @@ def test_frame_emits_parses_and_requires_frame():
     withemits = FRAMED.replace("    expr:", "    frame_emits: [event_date]\n    expr:")
     m = semantic.parse_model_text(withemits)
     assert m.measures["median_days"].frame_emits == ["event_date"]
-    no_frame = VALID.replace("    expr: count()", "    frame_emits: [event_date]\n    expr: count()")
+    no_frame = VALID.replace("    expr: COUNT(*)", "    frame_emits: [event_date]\n    expr: COUNT(*)")
     with pytest.raises(semantic.ModelError, match="frame_emits"):
         semantic.parse_model_text(no_frame)
 
@@ -166,7 +166,7 @@ def test_framed_measure_bad_syntax_rejected():
 def test_compile_frame_single_expression_form():
     lf = pl.LazyFrame({"study_id": ["a", "a", "b"], "days": [1, 3, 5]})
     out = semantic.compile_frame(
-        'lf.group_by(["study_id", *dims]).agg(pl.col("days").min())', lf, [], "measure 'm'"
+        'lf.group_by(["study_id", *dims]).agg(pl.days.min())', lf, [], "measure 'm'"
     )
     assert isinstance(out, pl.LazyFrame)
 
@@ -195,7 +195,7 @@ def test_framed_measure_survives_spec_yaml_roundtrip():
 def test_append_measure_yaml_renders_frame_as_block():
     text = semantic.append_measure_yaml(VALID, {
         "name": "m2", "frame": "step = lf.filter(pl.col('x') > 0)\nframe = step",
-        "expr": "pl.col('x').median()",
+        "expr": "pl.x.median()",
     })
     model = semantic.parse_model_text(text)
     assert model.measures["m2"].frame_source.strip().endswith("frame = step")
@@ -230,7 +230,7 @@ name: fact
 source: {format: parquet, path: s3://b/fact/*.parquet}
 measures:
   - name: rows
-    expr: count()
+    expr: COUNT(*)
 """
 
 
@@ -549,7 +549,7 @@ def test_non_framed_measure_expr_never_calls_eval(monkeypatch):
     monkeypatch.setattr(builtins, "eval", _boom)
 
     m = semantic.parse_model_text(VALID)
-    assert m.measures["rows"].expr() is not None  # count() compiles fine without eval ever firing
+    assert m.measures["rows"].expr() is not None  # COUNT(*) compiles fine without eval ever firing
 
 
 def test_framed_measure_expr_still_uses_eval_path(monkeypatch):

@@ -39,7 +39,7 @@ def as_table(output) -> pa.Table:
     DuckDB relation, an Arrow table, or a record batch reader."""
     if isinstance(output, pa.Table):
         return output
-    for method in ("fetch_arrow_table", "arrow", "to_arrow_table"):
+    for method in ("to_arrow_table", "fetch_arrow_table", "arrow"):
         fetch = getattr(output, method, None)
         if callable(fetch):
             result = fetch()
@@ -168,7 +168,10 @@ def _upsert(table: pa.Table, target: Target, materialization: Materialization,
     # schema guard runs against the pipeline's own output — before the
     # platform-managed soft-delete column (never part of that output) gets
     # added below, so the comparison isn't fooled by its own injected column.
-    existing_schema = dt.schema().to_arrow()
+    # pa.schema() rather than the returned object directly: deltalake hands
+    # back an arro3 schema whose str(type) is a debug repr, which would make
+    # every column look mismatched against the output's pyarrow types
+    existing_schema = pa.schema(dt.schema().to_arrow())
     _guard_schema(table, existing_schema, materialization.soft_delete_column)
 
     existing_names = {field.name for field in existing_schema}

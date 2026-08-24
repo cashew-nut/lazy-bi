@@ -52,10 +52,10 @@ def _json_safe(value):
 def _display(result, row_limit: int) -> dict | None:
     """The rows a cell's last statement produced, capped for preview.
 
-    `None` for a statement that returns nothing at all (a CREATE, a SET) —
-    the notebook renders those as a bare "ok" rather than an empty table.
-    One row is fetched past the limit so "truncated" is honest without
-    materializing the rest."""
+    `None` for a statement that returns nothing worth showing (a CREATE, a
+    SET) — the notebook renders those as a bare "ok" rather than as DuckDB's
+    one-row Count. One row is fetched past the limit so "truncated" is honest
+    without materializing the rest."""
     if result is None or result.description is None:
         return None
     columns = [{"name": name, "dtype": str(dtype)}
@@ -75,18 +75,18 @@ def _run_cell(source: str, cursor, row_limit: int) -> dict:
     """One cell: every statement in it, in order, with the last one's rows
     displayed. A cell is allowed to hold several statements — an admin
     pasting a setup script into one cell is a normal thing to do."""
-    from .pipelines import PipelineError, split_statements
+    from .pipelines import PipelineError, parse_statements, returns_rows
 
     try:
-        statements = split_statements(source, "cell")
+        statements = parse_statements(source, "cell")
     except PipelineError as exc:
         return {"ok": False, "stdout": "", "error": str(exc).replace("cell: ", "", 1),
                 "display": None}
-    result = None
     try:
+        display = None
         for statement in statements:
-            result = cursor.execute(statement)
-        display = _display(result, row_limit)
+            result = cursor.execute(statement.query)
+            display = _display(result, row_limit) if returns_rows(statement) else None
     except duckdb.Error as exc:
         return {"ok": False, "stdout": "", "error": str(exc), "display": None}
     except Exception as exc:
