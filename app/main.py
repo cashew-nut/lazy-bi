@@ -1,4 +1,4 @@
-"""CASH INTELLIGENCE — lightweight BI over S3 files, powered by polars.
+"""CASH INTELLIGENCE — lightweight BI over S3 files, powered by DuckDB.
 
 Run:  uvicorn app.main:app --port 8080
 

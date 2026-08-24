@@ -150,9 +150,9 @@ DB_PATH = Path(os.environ.get("CI_DB_PATH", PROJECT_ROOT / "cash_intel.db"))
 # start.
 LOCAL_DATA_DIR = Path(os.environ.get("CI_LOCAL_DATA_DIR", PROJECT_ROOT / "local_data"))
 
-# Pipelines (specs/014-polars-pipeline-module/) — hosted polars transformation
-# scripts; a run executes in its own subprocess, killed if it outruns its
-# timeout (runs are strictly serialized platform-wide, one at a time).
+# Pipelines (specs/018-duckdb-sql-engine/) — hosted SQL transformations; a run
+# executes in its own subprocess, killed if it outruns its timeout (runs are
+# strictly serialized platform-wide, one at a time).
 PIPELINES_DIR = Path(os.environ.get("CI_PIPELINES_DIR", PROJECT_ROOT / "pipelines"))
 
 # Agents (specs/017-agent-skills-mcp-server/) — declared Agent/Skill bundles,
@@ -161,7 +161,7 @@ AGENTS_DIR = Path(os.environ.get("CI_AGENTS_DIR", PROJECT_ROOT / "agents"))
 PIPELINE_TIMEOUT_DEFAULT = 600
 PIPELINE_TIMEOUT_MAX = 3600
 
-# Sandbox notebooks — ad hoc polars/python scratch scripts (app/sandbox.py).
+# Sandbox notebooks — ad hoc SQL scratch scripts (app/sandbox.py).
 # A run answers its HTTP request directly (no queue: read-only previews, so
 # concurrent runs are safe) but still gets a hard, killable timeout like a
 # pipeline run, just a much shorter default given its interactive purpose.
@@ -214,37 +214,35 @@ SCHEMA_CACHE_TTL = float(os.environ.get("CI_SCHEMA_CACHE_TTL", "300"))
 BOUNDS_CACHE_TTL = float(os.environ.get("CI_BOUNDS_CACHE_TTL", "120"))
 
 # ── source read cache (app/engine.py's _scan_source) ──────────────────────
-# The one that matters against a real object store. polars is lazy about
-# *bytes* but not about *round trips*: every collect() re-lists a glob,
-# re-reads every parquet footer and re-reads every joined lookup file from
-# scratch, so one visual costs tens of sequential S3 requests and a real
-# endpoint's 30-80ms RTT turns that into seconds. The two caches above never
-# helped there — they memoize derived Python objects (a pl.Schema, a bounds
-# tuple), not the I/O inside collect().
+# The two things DuckDB's own caches can't decide for themselves. Its object
+# cache holds parquet footers and its external file cache holds file bytes,
+# both process-wide — what it cannot know is which objects a *glob* resolves
+# to (so it re-LISTs the prefix on every query unless handed a file list), or
+# which sources are worth holding as local tables rather than streaming.
 #
-# So: resolve each source's object listing once (SOURCE_CACHE_TTL), and hold
-# small sources in memory as whole frames instead of re-reading them per
-# query. Small is the common case for exactly the sources that hurt most —
-# the lookup tables in `joins:` and the datasets behind a dimension bundle
-# are read on every query that touches them and are usually kilobytes.
+# So: resolve each source's object listing once (SOURCE_CACHE_TTL), and pin
+# small sources as local DuckDB tables instead of re-reading them per query.
+# Small is the common case for exactly the sources that hurt most — the lookup
+# tables in `joins:` and the datasets behind a dimension bundle are read on
+# every query that touches them and are usually kilobytes.
 #
 # TTL is the staleness contract: until an entry expires, a query can answer
 # from bytes read up to SOURCE_CACHE_TTL seconds ago. 60s keeps that well
 # inside "a person clicking around gets consistent answers" while still
 # collapsing an editing session's many queries onto one read. Raise it (600+)
 # when data lands hourly or nightly — that is where the biggest wins are —
-# and drop it to 0 to disable source caching entirely and get exactly the
-# old read-everything-every-time behaviour back.
+# and drop it to 0 to disable listing and pinning entirely, leaving only
+# DuckDB's own caches.
 SOURCE_CACHE_TTL = float(os.environ.get("CI_SOURCE_CACHE_TTL", "60"))
 # Gate on the source's total size *in the object store*, which one LIST
 # already tells us, so an oversized source is never downloaded to discover
 # it was oversized.
 SOURCE_CACHE_MAX_BYTES = int(os.environ.get("CI_SOURCE_CACHE_MAX_BYTES", 16 * 1024 * 1024))
-# Second guard, applied after materializing: columnar data on disk is
-# compressed and dictionary-encoded, so an under-the-gate source can still
-# expand several-fold in memory. Anything past this is dropped again rather
-# than held (the read still happened — the gate above is what prevents the
-# expensive case, this only prevents *retaining* it).
+# Second guard, applied after the read: columnar data on disk is compressed
+# and dictionary-encoded, so an under-the-gate source can still expand
+# several-fold in memory. Anything past this is dropped again rather than held
+# (the read still happened — the gate above is what prevents the expensive
+# case, this only prevents *retaining* it).
 SOURCE_CACHE_MAX_RESIDENT_BYTES = int(
     os.environ.get("CI_SOURCE_CACHE_MAX_RESIDENT_BYTES", 256 * 1024 * 1024))
 
@@ -394,7 +392,7 @@ LLM_THINKING_MODELS = set(_csv(
 LLM_THINKING_DEFAULT = _bool("CI_LLM_THINKING_DEFAULT", True)
 LLM_REASONING_EFFORT = os.environ.get("CI_LLM_REASONING_EFFORT", "medium").strip()
 
-# Sandbox coding agent (app/sandbox_agent.py) — writes polars for the open
+# Sandbox coding agent (app/sandbox_agent.py) — writes SQL for the open
 # notebook, and fills in a converted pipeline's lineage. Shares CI_LLM_API_KEY
 # above, so it is off in exactly the deployments conversational analytics is
 # off in: an unconfigured deployment never sends notebook code to a third
@@ -432,27 +430,13 @@ SANDBOX_AGENT_HISTORY_TURNS = 6
 MCP_RATE_LIMIT_PER_MIN = int(os.environ.get("CI_MCP_RATE_LIMIT_PER_MIN", "20"))
 
 
-def storage_options() -> dict:
-    """storage_options passed to polars scan_* for the S3 object store."""
-    access_key, secret_key, session_token = resolve_credentials()
-    opts = {
-        "aws_access_key_id": access_key,
-        "aws_secret_access_key": secret_key,
-        "aws_region": AWS_REGION,
-        "aws_endpoint_url": S3_ENDPOINT,
-        "aws_allow_http": "true",
-    }
-    if session_token:
-        opts["aws_session_token"] = session_token
-    return opts
-
-
 def iceberg_storage_options() -> dict:
-    """storage_options for polars scan_iceberg / pyiceberg's S3 FileIO — same
-    credentials as storage_options() above, translated to the `s3.*` key
-    names pyiceberg expects (see https://py.iceberg.apache.org/configuration/
-    #fileio). Path-style addressing is required against the moto/MinIO
-    emulator and works fine against real S3 too."""
+    """Credentials for pyiceberg's S3 FileIO, in the `s3.*` key names it
+    expects (see https://py.iceberg.apache.org/configuration/#fileio). Only
+    the demo seeder's throwaway catalog needs these — every *read* goes
+    through DuckDB's own S3 secret (app/duck.py). Path-style addressing is
+    required against the moto/MinIO emulator and works fine against real S3
+    too."""
     access_key, secret_key, session_token = resolve_credentials()
     opts = {
         "s3.access-key-id": access_key,

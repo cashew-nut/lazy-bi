@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Iterator, Optional, Union
 
-from . import engine, measure_dsl, memorystore, semantic
+from . import engine, memorystore, semantic, sqlgrammar
 from .auth import User
 from .llm import ModelCatalogEntry, PriorTurn, RawToolCall, StreamEvent, Translator, TranslatorError
 from .registry import registry
@@ -186,19 +186,18 @@ def _measure_catalog_entry(m: semantic.Measure,
     indistinguishable by name, and roughly half of this project's demo
     measures carry no description at all): `synonyms` (declared vocabulary,
     e.g. 'sales' for a measure named 'revenue') helps the LLM recognize a
-    question's phrasing, and the measure's actual DSL formula is included as
+    question's phrasing, and the measure's actual SQL formula is included as
     ground truth it can read directly rather than only infer from a label.
-    Framed measures (m.frame_source is set) are the one exception for the
-    formula: their expr_source is a fragment over an intermediary frame (see
-    semantic.Measure) and is meaningless without that frame's context, so
-    it's omitted rather than shown dangling — the description is relied on
-    for those instead. Note the formula puts the measure's raw source-column
+    Measures with a `from:` block are the one exception for the formula: their
+    expr_source aggregates a relation the block builds (see semantic.Measure)
+    and is meaningless without it, so it's omitted rather than shown dangling —
+    the description is relied on for those instead. Note the formula puts the measure's raw source-column
     references (e.g. `unit_price`, never a declared dimension) in front of
     the LLM, which is new relative to the rest of the catalog — see README's
     "Conversational analytics" section (FR-015)."""
     entry = {"name": m.name, "label": m.label, "description": m.description,
              "synonyms": _merged_synonyms(m.synonyms, m.name, learned_synonyms or {})}
-    if m.frame_source is None:
+    if m.from_source is None:
         # YAML's `>` folded block style (used by some multi-line measures)
         # keeps a trailing newline in expr_source; strip it so it doesn't
         # leak a stray blank line into the middle of the LLM's prompt text
@@ -214,13 +213,13 @@ _INLINE_MEASURE_FORMATS = {"number", "currency", "percent"}
 
 
 def _validate_inline_measures(raw: list, model: semantic.Model) -> tuple[dict[str, dict], Optional["Decline"]]:
-    """Chat-authored ad-hoc measures: each must be a window expression
-    (running_total()/lag() — see measure_dsl.is_window_expr) over one of the
-    model's own already-declared measures, never a raw column or another
-    inline measure — the same "never a raw column" invariant already
-    enforced for dimensions/filters, just extended to cover this new
-    capability. Returns {name: validated dict} plus None on success, or an
-    empty dict plus the Decline to return on the first problem found."""
+    """Chat-authored ad-hoc measures: each must be a window expression (see
+    sqlgrammar.is_window_expr) over one of the model's own already-declared
+    measures, never a raw column or another inline measure — the same "never a
+    raw column" invariant already enforced for dimensions/filters, just
+    extended to cover this new capability. Returns {name: validated dict} plus
+    None on success, or an empty dict plus the Decline to return on the first
+    problem found."""
     validated: dict[str, dict] = {}
     for entry in raw:
         if not isinstance(entry, dict):
@@ -240,15 +239,16 @@ def _validate_inline_measures(raw: list, model: semantic.Model) -> tuple[dict[st
         if fmt is not None and fmt not in _INLINE_MEASURE_FORMATS:
             return {}, Decline(f"inline measure '{name}': unsupported format '{fmt}'.")
         try:
-            if not measure_dsl.is_window_expr(expr):
+            if not sqlgrammar.is_window_expr(expr):
                 return {}, Decline(
-                    f"inline measure '{name}' must be a running_total()/lag() expression over "
-                    "a declared measure — anything else needs an authored model measure instead."
+                    f"inline measure '{name}' must be a window expression over a declared "
+                    "measure, e.g. SUM(revenue) OVER w — anything else needs an authored "
+                    "model measure instead."
                 )
-            for dep in measure_dsl.referenced_names(expr):
+            for dep in sqlgrammar.referenced_names(expr):
                 model.measure(dep)
-            measure_dsl.compile_measure(expr, None, alias=name)
-        except (measure_dsl.MeasureCompileError, semantic.ModelError) as exc:
+            sqlgrammar.compile_expression(expr, None, window=True, parameter_values={})
+        except (sqlgrammar.SqlCompileError, semantic.ModelError) as exc:
             return {}, Decline(f"inline measure '{name}': {exc}")
         validated[name] = {"name": name, "expr": expr, "label": entry.get("label"), "format": fmt}
     return validated, None

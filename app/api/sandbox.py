@@ -191,7 +191,6 @@ def run(body: RunIn, user: User = Depends(require_role("admin"))):
         "run_upto": body.run_upto,
         "bucket": config.BUCKET,
         "row_limit": config.SANDBOX_ROW_LIMIT,
-        "storage": {"read": config.storage_options()},
     }
     try:
         proc = subprocess.Popen(
@@ -243,7 +242,8 @@ def convert(body: ConvertIn, user: User = Depends(require_role("admin"))):
     warnings = []
     if not sandbox_mod.has_output_assignment(rewritten):
         warnings.append(
-            "no 'output = ...' assignment found — add one (the pipeline script contract) before saving"
+            "the notebook's sql doesn't end on a SELECT and creates no relation named "
+            "'output' — a pipeline needs one or the other before saving"
         )
     lineage: list[dict] = []
     description = ""

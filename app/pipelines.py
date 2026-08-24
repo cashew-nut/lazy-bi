@@ -1,10 +1,13 @@
-"""Pipeline definitions: hosted polars transformation scripts (specs/014-
-polars-pipeline-module/). A pipeline is one YAML file in `pipelines/`,
-loaded/hot-reloaded the same way a semantic model is — see `app/semantic.py`
-for the sibling pattern this mirrors. A pipeline's script is real Python,
-application-code trust level (Principle VI): this module only parses and
-validates the *shape* of a pipeline (syntax-checks the script; never
-executes it). Execution lives in `app/pipeline_runner.py`.
+"""Pipeline definitions: hosted SQL transformations (specs/018-duckdb-sql-
+engine/, replacing spec 014's polars scripts). A pipeline is one YAML file in
+`pipelines/`, loaded/hot-reloaded the same way a semantic model is — see
+`app/semantic.py` for the sibling pattern this mirrors.
+
+A pipeline's `sql:` is a whole SQL script that may name table functions and so
+read and write arbitrary bucket paths; that I/O reach, not code execution, is
+what keeps it behind the admin role (Principle VI). This module only parses and
+validates the *shape* of a pipeline — it never executes one. Execution lives in
+`app/pipeline_runner.py`.
 """
 from __future__ import annotations
 
@@ -75,7 +78,7 @@ class Pipeline:
     target: Optional[Target] = None
     materialization: Optional[Materialization] = None
     timeout_seconds: int = 600
-    script: str = ""
+    sql: str = ""
     lineage: list[LineageEntry] = field(default_factory=list)
     origin: Optional[Path] = None  # yaml file the pipeline was loaded from
     # True for a pipeline loaded from config.PIPELINES_DIR (a built-in
@@ -119,14 +122,55 @@ class Layer:
     label: str
 
 
-def validate_script(source: str, owner: str) -> None:
-    """Load-time syntax check only — a pipeline script cannot be meaningfully
-    evaluated until a run has real source LazyFrames to bind (see
-    app/pipeline_runner.py); mirrors semantic.validate_frame."""
+def validate_sql(source: str, owner: str) -> None:
+    """Load-time check: the SQL parses, and it ends in something that produces
+    rows.
+
+    Parsing only — a pipeline's SQL cannot be meaningfully bound until a run
+    has its real sources registered (see app/pipeline_runner.py), so an
+    unresolved table name here is not an error, and a missing comma is.
+
+    Deliberately *not* the measure grammar's allowlist: a pipeline is admin
+    authored and its whole job is to read and write bucket paths, so it keeps
+    the table functions a measure may never name. What early parsing buys is
+    the same thing a model measure gets — a broken pipeline fails on save
+    rather than on the run.
+    """
+    statements = split_statements(source, owner)
+    if not statements:
+        raise PipelineError(f"{owner}: 'sql' has no statements")
+    last = statements[-1].strip().lstrip("(").lstrip().upper()
+    if not (last.startswith("SELECT") or last.startswith("WITH")
+            or last.startswith("FROM") or last.startswith("TABLE")):
+        # the other half of the contract: a script may build up temp relations
+        # first, but something has to name the rows to materialize
+        if not _CREATES_OUTPUT_RE.search(source):
+            raise PipelineError(
+                f"{owner}: a pipeline's sql must end with a SELECT, or create a relation "
+                f"named 'output' — neither found")
+
+
+# `CREATE [OR REPLACE] [TEMP|TEMPORARY] TABLE|VIEW output` — the alternative to
+# ending on a SELECT, for a script that would rather name its result
+_CREATES_OUTPUT_RE = re.compile(
+    r"\bcreate\s+(?:or\s+replace\s+)?(?:temp(?:orary)?\s+)?(?:table|view)\s+"
+    r"(?:if\s+not\s+exists\s+)?\"?output\"?\b", re.IGNORECASE)
+
+
+def split_statements(source: str, owner: str = "sql") -> list[str]:
+    """A SQL script split into its statements, so a multi-statement pipeline
+    (a temp table, then the SELECT that reads it) can be run one statement at a
+    time and its last one identified.
+
+    DuckDB's own tokenizer, not a split on semicolons — which would cut a
+    string literal or a comment containing one in half."""
+    from . import duck
+
     try:
-        compile(source, f"<{owner}>", "exec")
-    except SyntaxError as exc:
-        raise PipelineError(f"{owner}: invalid script syntax: {exc}") from exc
+        return [statement.query for statement in duck.cursor().extract_statements(source)]
+    except Exception as exc:
+        message = str(exc).strip().split("\n")[0]
+        raise PipelineError(f"{owner}: invalid sql syntax: {message}") from exc
 
 
 def _check_name(name: str, kind: str, owner: str) -> None:
@@ -259,14 +303,19 @@ def _parse_pipeline(raw: dict, origin: Path) -> Pipeline:
         raise PipelineError(f"{owner}: timeout_seconds must be an integer in [1, 3600]")
     pipeline.timeout_seconds = timeout
 
+    if "script" in raw:
+        raise PipelineError(
+            f"{owner}: 'script:' was the python transformation construct and is gone — "
+            "write the transformation as SQL under 'sql:', producing a relation named "
+            "'output'")
     try:
-        script = raw["script"]
+        sql = raw["sql"]
     except KeyError as exc:
         raise PipelineError(f"{owner}: missing required key {exc}") from exc
-    if not isinstance(script, str) or not script.strip():
-        raise PipelineError(f"{owner}: 'script' must be a non-empty string")
-    validate_script(script, owner)
-    pipeline.script = script
+    if not isinstance(sql, str) or not sql.strip():
+        raise PipelineError(f"{owner}: 'sql' must be a non-empty string")
+    validate_sql(sql, owner)
+    pipeline.sql = sql
 
     pipeline.lineage = _parse_lineage(raw.get("lineage", []) or [], set(pipeline.sources), owner)
 
@@ -282,7 +331,8 @@ def parse_pipeline_text(text: str) -> Pipeline:
     except yaml.YAMLError as exc:
         raise PipelineError(f"invalid yaml: {exc}")
     if not isinstance(raw, dict):
-        raise PipelineError("yaml must be a mapping with name / sources / target / materialization / script")
+        raise PipelineError(
+            "yaml must be a mapping with name / sources / target / materialization / sql")
     return _parse_pipeline(raw, Path("<editor>"))
 
 

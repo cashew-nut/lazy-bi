@@ -1,20 +1,19 @@
-"""Sandbox notebooks: ad hoc, admin-authored polars/python scratch scripts
-run against the same bucket pipelines read from (the interactive stepping
-stone before a script is worth saving as a pipeline — see app/pipelines.py).
+"""Sandbox notebooks: ad hoc, admin-authored SQL run against the same bucket
+pipelines read from (the interactive stepping stone before a query is worth
+saving as a pipeline — see app/pipelines.py).
 
-Trust model: identical carve-out to a pipeline's `script:` (Principle VI) —
-real, unsandboxed Python at application-code trust, admin-gated for both
-authoring and execution, process-isolated (app/sandbox_runner.py) purely for
-crash/timeout containment, not as the trust boundary. This is not a new
-eval-capable construct, just the existing pipeline-script carve-out applied
-to throwaway exploratory code instead of a saved, materializing pipeline —
-see the constitution's Principle VI note.
+Trust model: the same boundary a pipeline's `sql:` sits behind (Principle VI).
+A notebook cell keeps the table functions a measure may never name, so it can
+read any bucket path — that I/O reach is what the admin gate measures, and it
+is the whole of it now that nothing here executes Python. Process isolation
+(app/sandbox_runner.py) is for runaway-query containment and the killable
+timeout, not the trust boundary.
 
-This module only builds/parses text: combining a notebook's cells into one
-script, detecting `read("path")` bucket-scan calls, rendering a starter
-pipeline yaml for "convert to pipeline", and re-validating whatever the
-coding agent (app/sandbox_agent.py) proposes before any of it can reach a
-cell or a pipeline yaml. Execution lives in app/sandbox_runner.py,
+This module only builds and parses text: combining a notebook's cells into one
+script, detecting the table-function calls that would become pipeline sources,
+rendering a starter pipeline yaml for "convert to pipeline", and re-validating
+whatever the coding agent (app/sandbox_agent.py) proposes before any of it can
+reach a cell or a pipeline yaml. Execution lives in app/sandbox_runner.py,
 persistence in app/sandboxstore.py.
 """
 from __future__ import annotations
@@ -22,15 +21,26 @@ from __future__ import annotations
 import json
 import re
 
-# Matches a `read("path"[, format="fmt"])` call as it appears in sandbox
-# notebook source — the one bucket-access primitive the runner's namespace
-# provides (see app/sandbox_runner.py's _make_read). Deliberately a simple
-# regex, not a real parser: good enough to drive "convert to pipeline"'s
-# source detection, never a source of truth for execution.
+# Matches the table-function calls that read a bucket path — the things that
+# become a pipeline's declared `sources:` when a notebook is converted.
+# Deliberately a simple regex, not a real parser: good enough to drive
+# "convert to pipeline"'s source detection, never a source of truth for
+# execution.
+READ_FUNCTIONS = {
+    "read_parquet": "parquet", "parquet_scan": "parquet",
+    "read_csv": "csv", "read_csv_auto": "csv",
+    "delta_scan": "delta", "iceberg_scan": "iceberg",
+}
 READ_RE = re.compile(
-    r'read\(\s*(["\'])(?P<path>.*?)\1\s*(?:,\s*format\s*=\s*(["\'])(?P<format>\w+)\3\s*)?\)'
+    r"\b(?P<fn>" + "|".join(sorted(READ_FUNCTIONS, key=len, reverse=True))
+    + r")\s*\(\s*(?P<quote>['\"])(?P<path>[^'\"]*)(?P=quote)\s*\)",
+    re.IGNORECASE,
 )
-_OUTPUT_RE = re.compile(r'(?m)^output\s*=')
+# `CREATE [OR REPLACE] [TEMP] TABLE|VIEW output` — the notebook equivalent of
+# the pipeline contract's named result
+_OUTPUT_RE = re.compile(
+    r"\bcreate\s+(?:or\s+replace\s+)?(?:temp(?:orary)?\s+)?(?:table|view)\s+"
+    r"(?:if\s+not\s+exists\s+)?\"?output\"?\b", re.IGNORECASE)
 _SANITIZE_RE = re.compile(r'[^a-z0-9_]+')
 # a scalar safe to write unquoted in the generated yaml (see _yaml_scalar)
 _YAML_PLAIN_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_.\-]*$')
@@ -53,46 +63,75 @@ MAX_TRANSFORM_CHARS = 200
 
 def combine_cells(sources: list[str]) -> str:
     """Join a notebook's cell sources into one script, exactly the order the
-    cells run in — a blank line between cells keeps them visually distinct
-    without changing execution semantics (blank lines are no-ops in Python)."""
-    return "\n\n".join(s.rstrip() for s in sources if s.strip())
+    cells run in. Each cell is terminated with a semicolon if it hasn't got
+    one — combining SQL statements needs a separator where combining python
+    cells only needed a newline."""
+    parts = []
+    for source in sources:
+        text = source.rstrip().rstrip(";").rstrip()
+        if text:
+            parts.append(text + ";")
+    return "\n\n".join(parts)
 
 
 def _mask_comments(script: str) -> str:
-    """Same length/line-structure as `script`, with every `# comment` region
-    blanked to spaces — so a `read("...")` call merely *mentioned in a
-    comment* (a very likely thing to write, e.g. an explanatory note) is
-    never mistaken for a real source, while every real match's offsets still
-    line up exactly with the original text for in-place rewriting. A `#`
-    only starts a comment outside a quoted string and at a token boundary —
-    mirrors static/js/yamlhighlight.js's splitComment."""
-    out_lines = []
-    for line in script.split("\n"):
-        in_quote = None
-        for i, c in enumerate(line):
-            if in_quote:
-                if c == in_quote and line[i - 1] != "\\":
-                    in_quote = None
+    """Same length and line structure as `script`, with every SQL comment
+    region blanked to spaces — so a `read_parquet(...)` call merely
+    *mentioned in a comment* (a very likely thing to write, e.g. an
+    explanatory note) is never mistaken for a real source, while every real
+    match's offsets still line up exactly with the original text for in-place
+    rewriting.
+
+    Both comment forms, and neither inside a string literal: `-- to end of
+    line`, and `/* ... */` across lines."""
+    out = list(script)
+    i, n = 0, len(script)
+    quote = None
+    block = False
+    while i < n:
+        char = script[i]
+        if block:
+            if script.startswith("*/", i):
+                out[i] = out[i + 1] = " "
+                i += 2
+                block = False
                 continue
-            if c in "\"'":
-                in_quote = c
-                continue
-            if c == "#" and (i == 0 or line[i - 1].isspace()):
-                line = line[:i] + " " * (len(line) - i)
-                break
-        out_lines.append(line)
-    return "\n".join(out_lines)
+            if char != "\n":
+                out[i] = " "
+            i += 1
+            continue
+        if quote:
+            if char == quote:
+                quote = None
+            i += 1
+            continue
+        if char in "\"'":
+            quote = char
+            i += 1
+            continue
+        if script.startswith("--", i):
+            while i < n and script[i] != "\n":
+                out[i] = " "
+                i += 1
+            continue
+        if script.startswith("/*", i):
+            block = True
+            out[i] = out[i + 1] = " "
+            i += 2
+            continue
+        i += 1
+    return "".join(out)
 
 
-def _infer_format(path: str) -> str:
-    lower = path.lower()
-    if lower.endswith(".csv"):
-        return "csv"
-    if lower.endswith(".parquet"):
-        return "parquet"
-    return "delta"   # a bare table root, same default app/pipelines.py uses
-                      # (iceberg roots look the same on disk — an explicit
-                      # read("...", format="iceberg") call sidesteps this)
+def _infer_format(function_name: str, path: str) -> str:
+    """The source format a table-function call implies. The function name is
+    the answer — unlike the python `read()` helper it replaces, SQL names the
+    reader explicitly, so an iceberg table root is never mistaken for a delta
+    one."""
+    fmt = READ_FUNCTIONS.get(function_name.lower())
+    if fmt:
+        return fmt
+    return "csv" if path.lower().endswith(".csv") else "parquet"
 
 
 def _slugify(text: str) -> str:
@@ -130,11 +169,11 @@ def _unique_name(name: str, taken: set[str]) -> str:
 
 
 def extract_reads(script: str) -> list[dict]:
-    """Every distinct `read("path"[, format="fmt"])` call in the script, in
+    """Every distinct bucket-reading table-function call in the script, in
     first-appearance order, each assigned a generated pipeline source name
-    (`{name, path, format}`) derived from the path — the seed for "convert
-    to pipeline"'s `sources:` list. Matches inside comments are ignored
-    (see _mask_comments)."""
+    (`{name, path, format}`) derived from the path — the seed for "convert to
+    pipeline"'s `sources:` list. Matches inside comments are ignored (see
+    _mask_comments)."""
     masked = _mask_comments(script)
     sources: list[dict] = []
     seen_paths: set[str] = set()
@@ -144,7 +183,7 @@ def extract_reads(script: str) -> list[dict]:
         if path in seen_paths:
             continue
         seen_paths.add(path)
-        fmt = m.group("format") or _infer_format(path)
+        fmt = _infer_format(m.group("fn"), path)
         name = _unique_name(_name_from_path(path), taken_names)
         taken_names.add(name)
         sources.append({"name": name, "path": path, "format": fmt})
@@ -152,13 +191,16 @@ def extract_reads(script: str) -> list[dict]:
 
 
 def rewrite_reads_to_sources(script: str, sources: list[dict]) -> str:
-    """Replace every `read("path"[, format=...])` call with `sources["name"]`
-    (the pipeline script convention — app/pipeline_runner.py's `sources`
-    dict), keyed by exact path text so repeated reads of the same path
-    become the same declared source, matching pipeline semantics. Matches
-    are located against the comment-masked text (see _mask_comments) but
-    substituted into the real script, so comments are never touched or
-    mistaken for call sites."""
+    """Replace every bucket-reading table-function call with the declared
+    source's name — a pipeline registers each source as a view under that name
+    (app/pipeline_runner.py), so the rewritten SQL reads `FROM sales` where the
+    notebook read `FROM read_parquet('s3://.../sales/*.parquet')`.
+
+    Keyed by exact path text, so repeated reads of the same path become the
+    same declared source, matching pipeline semantics. Matches are located
+    against the comment-masked text (see _mask_comments) but substituted into
+    the real script, so comments are never touched or mistaken for call
+    sites."""
     masked = _mask_comments(script)
     name_by_path = {s["path"]: s["name"] for s in sources}
     out = []
@@ -168,17 +210,40 @@ def rewrite_reads_to_sources(script: str, sources: list[dict]) -> str:
         if name is None:
             continue
         out.append(script[last:m.start()])
-        out.append(f'sources["{name}"]')
+        out.append(f'"{name}"')
         last = m.end()
     out.append(script[last:])
     return "".join(out)
 
 
 def has_output_assignment(script: str) -> bool:
-    """Whether the script assigns a top-level `output` variable — the
-    pipeline script contract (see contracts/pipeline-yaml.md). Convert-to-
-    pipeline surfaces a warning rather than guessing when this is false."""
-    return bool(_OUTPUT_RE.search(script))
+    """Whether the script satisfies the pipeline output contract: it ends on a
+    SELECT, or it creates a relation named `output` (see
+    contracts/pipeline-yaml.md). Convert-to-pipeline surfaces a warning rather
+    than guessing when neither holds."""
+    masked = _mask_comments(script)
+    if _OUTPUT_RE.search(masked):
+        return True
+    statements = [s.strip() for s in masked.split(";") if s.strip()]
+    if not statements:
+        return False
+    return statements[-1].lstrip("(").lstrip().upper().startswith(
+        ("SELECT", "WITH", "FROM", "TABLE"))
+
+
+def _sql_syntax_error(source: str) -> "str | None":
+    """DuckDB's own complaint about a cell, or None if it parses.
+
+    Parse only — nothing is bound and nothing runs. A syntax error is
+    *reported*, not a rejection: this is a scratch notebook, and a half-written
+    cell the admin fixes in place beats a silently discarded proposal."""
+    from . import duck
+
+    try:
+        duck.cursor().extract_statements(source)
+        return None
+    except Exception as exc:
+        return "syntax error: " + str(exc).strip().split("\n")[0]
 
 
 def _yaml_scalar(value: object) -> str:
@@ -231,11 +296,7 @@ def validate_agent_cells(raw_cells: object, known_ids: list[str]) -> tuple[list[
         elif isinstance(target, str) and target and target != NEW_CELL:
             warnings.append(f"'{target}' isn't a cell in this notebook — offered as a new cell instead")
         source = source.rstrip()
-        syntax_error = None
-        try:
-            compile(source, "<proposed cell>", "exec")
-        except SyntaxError as exc:
-            syntax_error = f"syntax error: {exc}"
+        syntax_error = _sql_syntax_error(source)
         out.append({"target_id": target_id, "source": source, "syntax_error": syntax_error})
         if len(out) >= MAX_AGENT_CELLS:
             warnings.append(f"kept the first {MAX_AGENT_CELLS} proposed cells")
@@ -343,7 +404,7 @@ def build_pipeline_yaml(
     lineage: list[dict] | None = None, description: str = "",
 ) -> str:
     """Render a starter pipeline yaml from a sandbox notebook's combined,
-    source-rewritten script. Target and materialization are left as
+    source-rewritten SQL. Target and materialization are left as
     clearly-marked placeholders — a sandbox notebook never declares a target,
     so the admin must set a real one before saving. Plain string templating
     (not yaml.dump) so the script's literal block style reads naturally,
@@ -371,7 +432,7 @@ def build_pipeline_yaml(
         "  format: delta",
         "materialization:",
         "  mode: replace",
-        "script: |",
+        "sql: |",
     ]
     lines += [f"  {line}" if line.strip() else "" for line in script.split("\n")]
     if lineage:

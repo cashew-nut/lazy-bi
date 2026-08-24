@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Optional
 
 from . import agents as agents_mod
-from . import cache, config, pipelines as pipelines_mod, semantic
+from . import cache, config, duck, pipelines as pipelines_mod, semantic
 from .authstore import AuthStore
 from .conversationstore import ConversationStore
 from .localbundlestore import LocalBundleStore
@@ -141,9 +141,11 @@ class Registry:
         self.agents = agents_mod.load_agents(config.AGENTS_DIR)
         # a reload can change what a model/bundle name or source path now
         # resolves to (engine.py's schema/bounds cache keys some entries on
-        # little more than that), so any cached answer from before it might
-        # now be wrong in a way its own TTL won't catch in time
+        # little more than that), so any cached answer from before it might now
+        # be wrong in a way its own TTL won't catch in time — including the
+        # pinned tables and cached file bytes DuckDB is holding for the old path
         cache.clear()
+        duck.invalidate()
 
     def read_model_text(self, model: semantic.Model) -> str:
         if model.locked:

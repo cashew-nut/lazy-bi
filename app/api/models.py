@@ -5,11 +5,11 @@ import re
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 _MEASURE_NAME = re.compile(r"^[a-z_][a-z0-9_]*$")
 
-from .. import engine, measure_dsl, semantic
+from .. import engine, semantic, sqlgrammar
 from ..auth import User, require_role
 from ..registry import registry
 from .deps import get_model
@@ -61,15 +61,16 @@ class MeasureSpec(BaseModel):
     label: str = ""
     format: str = "number"
     description: str = ""
-    # framed measures (multi-step derived-frame logic) round-trip through the
-    # guided form like any other spec field — the measure-lab save path gates
-    # who may *save* one (admin, via _require_frame_privilege), not whether
-    # the form can see/edit one that already exists on the model. The
-    # whole-model yaml save routes that could smuggle a frame in are
-    # admin-gated for the same reason (spec 011, Principle VI).
-    frame: Optional[str] = None
-    frame_emits: list[str] = []
+    # a measure that aggregates its own `from:` relation round-trips through
+    # the guided form like any other spec field. It no longer needs a
+    # privilege of its own: the construct is allowlisted SQL that cannot name
+    # a table function, so it reaches nothing a plain expression doesn't (see
+    # specs/018-duckdb-sql-engine's trust model).
+    from_: Optional[str] = Field(default=None, alias="from")
+    emits: list[str] = []
     synonyms: list[str] = []
+
+    model_config = {"populate_by_name": True}
 
 
 class RelationSpec(BaseModel):
@@ -119,11 +120,9 @@ class MeasureIn(BaseModel):
     label: str = ""
     format: str = "number"
     description: str = ""
-    # framed measures (multi-step derived-frame logic) are an authenticated-
-    # model-measure-only construct — never available to inline/query-time
-    # measures. See specs/008-safe-measure-compilation.
-    frame: Optional[str] = None
-    frame_emits: list[str] = []
+    # a `from:` relation the expression aggregates, instead of the fact scan
+    from_: Optional[str] = Field(default=None, alias="from")
+    emits: list[str] = []
     # the measure lab (measurelab.js) never surfaces this field or
     # `description` — it only ever sends name/label/format/expr, and
     # update_measure() replaces the measure's whole yaml block — so, like
@@ -321,39 +320,40 @@ class MeasureCheckIn(BaseModel):
     checks `_parse_model`/`_validate_measure_body` run at load/save time, but
     takes candidate names straight from the caller instead of a live scan."""
     expr: str = ""
-    frame: Optional[str] = None
-    frame_emits: list[str] = []
+    from_: Optional[str] = Field(default=None, alias="from")
+    emits: list[str] = []
     columns: list[str] = []        # source column names, for a plain/window-free expr
-    measure_names: list[str] = []  # sibling measure names, for a window expr (running_total/lag)
+    measure_names: list[str] = []  # sibling measure names, for a window expr
     parameters: list[dict] = []    # the visual's currently-declared parameters, if any
+
+    model_config = {"populate_by_name": True}
 
 
 @router.post("/measures/check")
 def check_measure(body: MeasureCheckIn):
-    if body.frame:
-        # a framed measure still needs its aggregation expr — an empty one
-        # compiles fine as a no-op `exec` (validate_frame wouldn't catch it)
-        # but load_model's compile_expr(m.expr) always runs and fails on it
-        if not body.expr.strip():
-            return {"ok": False, "error": "measure needs an expression", "window": False}
-        try:
-            semantic.validate_frame(body.frame, "measure")
-            semantic.compile_expr(body.expr, "measure")
-        except semantic.ModelError as exc:
-            return {"ok": False, "error": str(exc), "window": False}
-        return {"ok": True, "error": None, "window": False}
-    if body.frame_emits:
-        return {"ok": False, "error": "'frame_emits' needs a 'frame'", "window": False}
     if not body.expr.strip():
         return {"ok": False, "error": "measure needs an expression", "window": False}
+    if body.emits and not body.from_:
+        return {"ok": False, "error": "'emits' needs a 'from'", "window": False}
+    if body.from_:
+        # the block is checked on its own; its expression is then checked
+        # against nothing in particular, since the columns it may name are
+        # whatever the block outputs and only a live scan knows those
+        try:
+            semantic.validate_from_block(body.from_, "measure")
+            sqlgrammar.compile_expression(body.expr, None, parameter_values={})
+        except (semantic.ModelError, sqlgrammar.SqlCompileError) as exc:
+            return {"ok": False, "error": str(exc), "window": False}
+        return {"ok": True, "error": None, "window": False}
     try:
-        is_window = measure_dsl.is_window_expr(body.expr)
-        schema = set(body.measure_names) if is_window else set(body.columns)
+        is_window = sqlgrammar.is_window_expr(body.expr)
+        schema = dict.fromkeys(body.measure_names if is_window else body.columns, "")
         # there is no "current selection" while still drafting — check against
         # each declared parameter's default, same as a query with no override
         parameter_values = engine.resolve_parameter_values(body.parameters, {})
-        measure_dsl.compile_measure(body.expr, schema, alias="_check", parameter_values=parameter_values)
-    except (measure_dsl.MeasureCompileError, engine.QueryError) as exc:
+        sqlgrammar.compile_expression(body.expr, schema, window=is_window,
+                                      parameter_values=parameter_values)
+    except (sqlgrammar.SqlCompileError, engine.QueryError) as exc:
         return {"ok": False, "error": str(exc), "window": False}
     return {"ok": True, "error": None, "window": is_window}
 
@@ -416,7 +416,7 @@ def _apply_measure(model: semantic.Model, text: str, name: str,
 def _validate_measure_body(model: semantic.Model, m: MeasureIn) -> None:
     if m.format not in ("number", "currency", "percent"):
         raise HTTPException(status_code=400, detail=f"unknown format '{m.format}'")
-    if m.expr and measure_dsl.referenced_parameter_names(m.expr):
+    if m.expr and sqlgrammar.referenced_parameter_names(m.expr):
         # parameters are visual-scoped context a model measure never has —
         # this construct can only ever be saved as an inline (visual) measure
         raise HTTPException(
@@ -424,33 +424,35 @@ def _validate_measure_body(model: semantic.Model, m: MeasureIn) -> None:
             detail=f"measure '{m.name}': references a parameter — parameterized measures can only "
                    "be saved to a visual, not to the shared model",
         )
-    if m.frame:
-        # the framed-measure construct is authenticated-model-measure-only:
-        # a load-time syntax check now, the real compile_frame run happens
-        # against a live scan at query time (see app/semantic.py).
+    if m.from_:
+        # the block is validated structurally now — it names only {model} and
+        # its own CTEs, and calls no table function; the real substitution
+        # happens against a live scan at query time (see app/semantic.py)
         try:
-            semantic.validate_frame(m.frame, f"measure '{m.name}'")
-        except semantic.ModelError as exc:
+            semantic.validate_from_block(m.from_, f"measure '{m.name}'")
+            sqlgrammar.compile_expression(m.expr, None, parameter_values={})
+        except (semantic.ModelError, sqlgrammar.SqlCompileError) as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-    elif m.frame_emits:
-        raise HTTPException(status_code=400, detail=f"measure '{m.name}': 'frame_emits' needs a 'frame'")
+    elif m.emits:
+        raise HTTPException(status_code=400, detail=f"measure '{m.name}': 'emits' needs a 'from'")
     else:
         try:
-            is_window = measure_dsl.is_window_expr(m.expr)
-        except measure_dsl.MeasureCompileError as exc:
+            is_window = sqlgrammar.is_window_expr(m.expr)
+        except sqlgrammar.SqlCompileError as exc:
             raise HTTPException(status_code=400, detail=f"measure '{m.name}': {exc}")
         if is_window:
-            # window measures (running_total()/lag()) read sibling *measures*,
-            # not raw source columns — no need to touch the live source at all
-            schema = set(model.measures)
+            # window measures read sibling *measures*, not raw source columns
+            # — no need to touch the live source at all
+            schema = dict.fromkeys(model.measures, "")
         else:
             try:
                 schema = engine.scan_schema(model)
             except Exception as exc:
                 raise HTTPException(status_code=400, detail=f"source not reachable: {exc}")
         try:
-            measure_dsl.compile_measure(m.expr, schema, alias=m.name)
-        except measure_dsl.MeasureCompileError as exc:
+            sqlgrammar.compile_expression(m.expr, schema, window=is_window,
+                                          parameter_values={})
+        except sqlgrammar.SqlCompileError as exc:
             raise HTTPException(status_code=400, detail=f"measure '{m.name}': {exc}")
 
 
@@ -462,29 +464,20 @@ def _measure_entry(m: MeasureIn) -> dict:
         entry["format"] = m.format
     if m.description:
         entry["description"] = m.description
-    if m.frame:
-        entry["frame"] = m.frame
-    if m.frame_emits:
-        entry["frame_emits"] = list(m.frame_emits)
+    if m.from_:
+        entry["from"] = m.from_
+    if m.emits:
+        entry["emits"] = list(m.emits)
     if m.synonyms:
         entry["synonyms"] = list(m.synonyms)
     entry["expr"] = m.expr
     return entry
 
 
-def _require_frame_privilege(user: User, m: MeasureIn) -> None:
-    """The frame: escape hatch is eval-based, application-code trust —
-    saving one requires the admin role, not just author (Principle VI)."""
-    if (m.frame or m.frame_emits) and not user.has_role("admin"):
-        raise HTTPException(status_code=403,
-                            detail="framed measures require the admin role")
-
-
 @router.post("/models/{name}/measures", status_code=201)
 def add_measure(name: str, m: MeasureIn, user: User = Depends(require_role("author"))):
     """Append a measure to the model's yaml file (comment-preserving) and
     hot-reload — the 'save to model' path of the measure lab."""
-    _require_frame_privilege(user, m)
     model = _single_fact_or_400(name)
     if not _MEASURE_NAME.match(m.name):
         raise HTTPException(status_code=400, detail="measure name must be snake_case (a-z, 0-9, _)")
@@ -501,7 +494,7 @@ def add_measure(name: str, m: MeasureIn, user: User = Depends(require_role("auth
     _reload_or_400()
     registry.store.record_measure_provenance(
         name, m.name, "create", user.display_name, expr=m.expr,
-        frame=m.frame, frame_emits=m.frame_emits or None, user_id=user.id,
+        from_block=m.from_, emits=m.emits or None, user_id=user.id,
     )
     return registry.models[name].to_public()
 
@@ -510,7 +503,6 @@ def add_measure(name: str, m: MeasureIn, user: User = Depends(require_role("auth
 def update_measure(name: str, measure_name: str, m: MeasureIn,
                    user: User = Depends(require_role("author"))):
     """Rewrite an existing measure's yaml block in place and hot-reload."""
-    _require_frame_privilege(user, m)
     model = _single_fact_or_400(name)
     if measure_name not in model.measures:
         raise HTTPException(status_code=404, detail=f"unknown measure '{measure_name}' on model '{name}'")
@@ -527,7 +519,7 @@ def update_measure(name: str, measure_name: str, m: MeasureIn,
     _reload_or_400()
     registry.store.record_measure_provenance(
         name, m.name, "update", user.display_name, expr=m.expr,
-        frame=m.frame, frame_emits=m.frame_emits or None, user_id=user.id,
+        from_block=m.from_, emits=m.emits or None, user_id=user.id,
     )
     return registry.models[name].to_public()
 

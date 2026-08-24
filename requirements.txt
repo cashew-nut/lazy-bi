@@ -1,7 +1,19 @@
 fastapi==0.139.0
 python-multipart==0.0.32
 uvicorn[standard]==0.50.2
-polars==1.42.1
+duckdb==1.5.5
+# DuckDB extensions as pinned wheels rather than a runtime INSTALL: an
+# `INSTALL httpfs` reaches extensions.duckdb.org from the request path, at a
+# version that can drift from the duckdb pinned above, and fails outright in
+# any deployment without egress. These carry the same binaries, versioned
+# with the engine. httpfs reads s3://; delta and iceberg read those table
+# formats; avro is iceberg's own dependency and must be present for it to
+# load at all.
+duckdb-extension-httpfs==1.5.5
+duckdb-extension-delta==1.5.5
+duckdb-extension-iceberg==1.5.5
+duckdb-extension-avro==1.5.5
+pyarrow==25.0.1
 PyYAML==6.0.3
 boto3==1.43.41
 moto[server]==5.2.2

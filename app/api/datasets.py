@@ -15,7 +15,7 @@ from pathlib import PurePosixPath
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
-from .. import cache, config, engine, s3, semantic
+from .. import cache, config, duck, engine, s3, semantic
 from ..auth import require_role
 from ..registry import registry
 
@@ -26,11 +26,13 @@ def _invalidate_reads() -> None:
     """Drop cached object listings and source frames after this process
     changes what is in the bucket.
 
-    app/engine.py holds small sources' *contents*, not just their schemas, so
-    an upload that overwrites a path a model reads would otherwise keep
-    serving the old rows until the TTL lapsed — and an upload is precisely
-    the moment someone is standing there waiting to see the new ones."""
+    app/duck.py pins small sources as local tables and DuckDB caches the bytes
+    of everything else, so an upload that overwrites a path a model reads would
+    otherwise keep serving the old rows until the TTL lapsed — and an upload is
+    precisely the moment someone is standing there waiting to see the new
+    ones."""
     cache.clear()
+    duck.invalidate()
 
 
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")

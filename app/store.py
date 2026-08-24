@@ -42,8 +42,8 @@ CREATE TABLE IF NOT EXISTS measure_provenance (
     measure TEXT NOT NULL,
     action TEXT NOT NULL,
     expr TEXT,
-    frame TEXT,
-    frame_emits TEXT,
+    from_block TEXT,
+    emits TEXT,
     author TEXT NOT NULL,
     user_id INTEGER,
     version INTEGER NOT NULL,
@@ -63,6 +63,14 @@ class VisualStore:
             cols = {r["name"] for r in conn.execute("PRAGMA table_info(measure_provenance)")}
             if "user_id" not in cols:
                 conn.execute("ALTER TABLE measure_provenance ADD COLUMN user_id INTEGER")
+            # Spec 018: the python `frame:`/`frame_emits` construct became the
+            # SQL `from:`/`emits` one. Renamed rather than added alongside —
+            # this is an audit log of measure text, and a row's stored snippet
+            # is just as readable under the new name as the old.
+            if "frame" in cols and "from_block" not in cols:
+                conn.execute("ALTER TABLE measure_provenance RENAME COLUMN frame TO from_block")
+            if "frame_emits" in cols and "emits" not in cols:
+                conn.execute("ALTER TABLE measure_provenance RENAME COLUMN frame_emits TO emits")
 
     def _conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -272,8 +280,8 @@ class VisualStore:
             "measure": row["measure"],
             "action": row["action"],
             "expr": row["expr"],
-            "frame": row["frame"],
-            "frame_emits": json.loads(row["frame_emits"]) if row["frame_emits"] else None,
+            "from": row["from_block"],
+            "emits": json.loads(row["emits"]) if row["emits"] else None,
             "author": row["author"],
             "user_id": row["user_id"],
             "verified": row["user_id"] is not None,
@@ -283,8 +291,8 @@ class VisualStore:
 
     def record_measure_provenance(
         self, model: str, measure: str, action: str, author: str,
-        expr: Optional[str] = None, frame: Optional[str] = None,
-        frame_emits: Optional[list] = None, user_id: Optional[int] = None,
+        expr: Optional[str] = None, from_block: Optional[str] = None,
+        emits: Optional[list] = None, user_id: Optional[int] = None,
     ) -> dict:
         now = self._now()
         with self._conn() as conn:
@@ -295,10 +303,10 @@ class VisualStore:
             version = (prev["v"] or 0) + 1
             cur = conn.execute(
                 "INSERT INTO measure_provenance "
-                "(model, measure, action, expr, frame, frame_emits, author, user_id, version, created_at) "
+                "(model, measure, action, expr, from_block, emits, author, user_id, version, created_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (model, measure, action, expr, frame,
-                 json.dumps(frame_emits) if frame_emits else None, author, user_id, version, now),
+                (model, measure, action, expr, from_block,
+                 json.dumps(emits) if emits else None, author, user_id, version, now),
             )
             row = conn.execute(
                 "SELECT * FROM measure_provenance WHERE id = ?", (cur.lastrowid,)

@@ -1,8 +1,8 @@
-"""Pipeline endpoints: hosted polars transformation scripts (specs/014-
-polars-pipeline-module/). A pipeline script is real Python at
-application-code trust (Principle VI, re-opened for this feature) — every
-mutation and every run trigger requires the admin role, exactly like a
-model's `frame:` carve-out; reads (list, yaml, runs) are open to any
+"""Pipeline endpoints: hosted SQL transformations (specs/018-duckdb-sql-
+engine/). A pipeline's `sql:` keeps the table functions a measure may never
+name, so it can read and write arbitrary bucket paths — that I/O reach is what
+the admin gate measures (Principle VI). Every mutation and every run trigger
+requires the admin role; reads (list, yaml, runs) are open to any
 authenticated role, same as the rest of the semantic layer.
 """
 from __future__ import annotations
@@ -13,9 +13,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-import polars as pl
 
-from .. import config, iceberg_util, pipeline_jobs, semantic
+from .. import config, duck, iceberg_util, pipeline_jobs, semantic
 from .. import pipelines as pipelines_mod
 from ..auth import User, require_role
 from ..registry import registry
@@ -69,8 +68,8 @@ def list_pipelines():
 
 @router.post("/pipelines/validate")
 def validate_pipeline(body: PipelineYamlIn):
-    """Parse-check editor YAML — never executes the script, only syntax-
-    checks it (pipelines_mod.validate_script)."""
+    """Parse-check editor YAML — never runs the sql, only parses it
+    (pipelines_mod.validate_sql)."""
     try:
         parsed = pipelines_mod.parse_pipeline_text(body.yaml)
     except pipelines_mod.PipelineError as exc:
@@ -239,14 +238,10 @@ def put_layers(body: LayersIn, user: User = Depends(require_role("admin"))):
 # ── lineage pass-through suggestion (never auto-persisted — FR-017) ──────
 
 def _scan_source_schema(fmt: str, path: str):
-    opts = config.storage_options()
-    if fmt == "csv":
-        return pl.scan_csv(path, storage_options=opts).collect_schema()
-    if fmt == "delta":
-        return pl.scan_delta(path, storage_options=opts).collect_schema()
-    if fmt == "iceberg":
-        return iceberg_util.scan(path).collect_schema()
-    return pl.scan_parquet(path, storage_options=opts).collect_schema()
+    """One source's columns, read through the same seam every query reads
+    through (app/duck.py) — so a pipeline's suggestion sees exactly the schema
+    a model would."""
+    return duck.source_schema(path, fmt)
 
 
 @router.get("/pipelines/{name}/lineage/suggest")

@@ -9,12 +9,15 @@ Five datasets, one per supported source format:
 """
 from __future__ import annotations
 
+import calendar as calendar_mod
 import io
 import random
 import secrets
 from datetime import date, timedelta
 
-import polars as pl
+import pyarrow as pa
+import pyarrow.csv as pa_csv
+import pyarrow.parquet as pq
 from botocore.exceptions import ClientError
 from deltalake import write_deltalake
 
@@ -45,7 +48,7 @@ PRICE = {
 }
 
 
-def _sales_frame(rng: random.Random) -> pl.DataFrame:
+def _sales_frame(rng: random.Random) -> pa.Table:
     start = DEMO_START
     days = (DEMO_END - start).days
     rows = []
@@ -73,7 +76,7 @@ def _sales_frame(rng: random.Random) -> pl.DataFrame:
             "unit_price": unit_price,
             "unit_cost": unit_cost,
         })
-    return pl.DataFrame(rows)
+    return pa.Table.from_pylist(rows)
 
 
 # real-world anchor coordinates so the regions can sit on a map
@@ -84,7 +87,7 @@ REGION_COORDS = {
 }
 
 
-def _marketing_frame(rng: random.Random) -> pl.DataFrame:
+def _marketing_frame(rng: random.Random) -> pa.Table:
     rows = []
     month = date(2024, 1, 1)
     while month <= date(2026, 6, 1):
@@ -101,7 +104,7 @@ def _marketing_frame(rng: random.Random) -> pl.DataFrame:
                     "impressions": rng.randint(50_000, 900_000),
                 })
         month = (month.replace(day=28) + timedelta(days=5)).replace(day=1)
-    return pl.DataFrame(rows)
+    return pa.Table.from_pylist(rows)
 
 
 SUPPLIERS = {
@@ -121,19 +124,20 @@ TERRITORIES = {
 TERRITORY_NAMES = {"pacific-rim": "Pacific Rim", "north-america": "North America", "emea": "EMEA"}
 
 
-def _regions_frame() -> pl.DataFrame:
+def _regions_frame() -> pa.Table:
     rows = []
     for region in REGIONS:
         lat, lon = REGION_COORDS[region]
         rows.append({"region": region, "region_lat": lat, "region_lon": lon, "territory": TERRITORIES[region]})
-    return pl.DataFrame(rows)
+    return pa.Table.from_pylist(rows)
 
 
-def _territories_frame() -> pl.DataFrame:
-    return pl.DataFrame([{"territory": code, "name": name} for code, name in TERRITORY_NAMES.items()])
+def _territories_frame() -> pa.Table:
+    return pa.Table.from_pylist(
+        [{"territory": code, "name": name} for code, name in TERRITORY_NAMES.items()])
 
 
-def _products_frame() -> pl.DataFrame:
+def _products_frame() -> pa.Table:
     rows = []
     for category, products in CATEGORIES.items():
         for product in products:
@@ -143,13 +147,13 @@ def _products_frame() -> pl.DataFrame:
                 "supplier": SUPPLIERS[category],
                 "tier": "military-grade" if base >= 3000 else "corpo-grade" if base >= 500 else "street-grade",
             })
-    return pl.DataFrame(rows)
+    return pa.Table.from_pylist(rows)
 
 
 PLANS = {"street": 20.0, "corpo": 95.0, "netrunner": 240.0}
 
 
-def _subscriptions_frame(rng: random.Random) -> pl.DataFrame:
+def _subscriptions_frame(rng: random.Random) -> pa.Table:
     """Subscription intervals for the spine demo: start/end dates, null end =
     still active. Growth over time with plan-dependent churn."""
     start_lo = DEMO_START
@@ -171,33 +175,39 @@ def _subscriptions_frame(rng: random.Random) -> pl.DataFrame:
             "start_date": started,
             "end_date": ended if ended <= horizon else None,
         })
-    return pl.DataFrame(rows)
+    return pa.Table.from_pylist(rows)
 
 
-def _calendar_frame() -> pl.DataFrame:
+def _calendar_frame() -> pa.Table:
     """A standalone date table — one row per day across the demo window, with
     the usual calendar attributes hung off it. Nothing relates it to any fact
     table: models reach it with a `how: between` dimension import, which is
     what turns "rows with a start and an end" into point-in-time reporting.
     """
-    days = pl.date_range(DEMO_START, DEMO_END, interval="1d", eager=True).alias("date")
-    return pl.DataFrame(days).with_columns(
-        pl.col("date").dt.year().alias("year"),
-        pl.format("{}-Q{}", pl.col("date").dt.year(), pl.col("date").dt.quarter()).alias("quarter"),
-        pl.col("date").dt.truncate("1mo").alias("month_start"),
-        pl.col("date").dt.strftime("%Y-%m %b").alias("month"),
-        pl.col("date").dt.truncate("1w").alias("week_start"),
-        pl.col("date").dt.strftime("%A").alias("day_of_week"),
-        (pl.col("date").dt.day() == 1).alias("is_month_start"),
-        (pl.col("date").dt.month_end() == pl.col("date")).alias("is_month_end"),
-        (pl.col("date").dt.weekday() > 5).alias("is_weekend"),
-    )
+    rows = []
+    day = DEMO_START
+    while day <= DEMO_END:
+        last_of_month = day.replace(day=calendar_mod.monthrange(day.year, day.month)[1])
+        rows.append({
+            "date": day,
+            "year": day.year,
+            "quarter": f"{day.year}-Q{(day.month - 1) // 3 + 1}",
+            "month_start": day.replace(day=1),
+            "month": day.strftime("%Y-%m %b"),
+            "week_start": day - timedelta(days=day.weekday()),
+            "day_of_week": day.strftime("%A"),
+            "is_month_start": day.day == 1,
+            "is_month_end": day == last_of_month,
+            "is_weekend": day.weekday() >= 5,
+        })
+        day += timedelta(days=1)
+    return pa.Table.from_pylist(rows)
 
 
 COURIERS = ["Trauma Freight", "Arasaka Logistics", "Militech Express", "Night Couriers"]
 
 
-def _shipments_frame(rng: random.Random) -> pl.DataFrame:
+def _shipments_frame(rng: random.Random) -> pa.Table:
     start = DEMO_START
     days = (DEMO_END - start).days
     rows = []
@@ -214,7 +224,7 @@ def _shipments_frame(rng: random.Random) -> pl.DataFrame:
             "delivery_hours": round(rng.gauss(speed, speed * 0.25) + 2, 1),
             "cost": round(packages * rng.uniform(8, 30) + speed * 1.5, 2),
         })
-    return pl.DataFrame(rows)
+    return pa.Table.from_pylist(rows)
 
 
 TICKET_CATEGORIES = [
@@ -226,7 +236,7 @@ TICKET_CHANNELS = ["call", "chat", "holo-call", "in-person"]
 TICKET_SLA_HOURS = {"low": 72, "medium": 48, "high": 24, "critical": 8}
 
 
-def _support_frame(rng: random.Random) -> pl.DataFrame:
+def _support_frame(rng: random.Random) -> pa.Table:
     start = DEMO_START
     days = (DEMO_END - start).days
     rows = []
@@ -243,20 +253,22 @@ def _support_frame(rng: random.Random) -> pl.DataFrame:
             "resolution_hours": resolution,
             "sla_breached": resolution > sla,
         })
-    return pl.DataFrame(rows)
+    return pa.Table.from_pylist(rows)
 
 
-def _upload(client, key: str, df: pl.DataFrame) -> None:
+def _upload(client, key: str, table: pa.Table) -> None:
     buf = io.BytesIO()
-    df.write_parquet(buf)
+    pq.write_table(table, buf)
     client.put_object(Bucket=config.BUCKET, Key=key, Body=buf.getvalue())
 
 
-def _upload_csv(client, key: str, df: pl.DataFrame) -> None:
-    client.put_object(Bucket=config.BUCKET, Key=key, Body=df.write_csv().encode())
+def _upload_csv(client, key: str, table: pa.Table) -> None:
+    buf = io.BytesIO()
+    pa_csv.write_csv(table, buf)
+    client.put_object(Bucket=config.BUCKET, Key=key, Body=buf.getvalue())
 
 
-def _write_iceberg(table_root: str, df: pl.DataFrame) -> None:
+def _write_iceberg(table_root: str, table: pa.Table) -> None:
     """Create a fresh Iceberg table at s3://<bucket>/<table_root> and write
     `df` as its initial snapshot. Iceberg needs a catalog to allocate a
     location/schema/snapshot atomically — an in-memory SqlCatalog does that
@@ -271,11 +283,11 @@ def _write_iceberg(table_root: str, df: pl.DataFrame) -> None:
         **config.iceberg_storage_options(),
     )
     catalog.create_namespace("seed")
-    table = catalog.create_table(
-        "seed.table", schema=df.to_arrow().schema,
+    iceberg_table = catalog.create_table(
+        "seed.table", schema=table.schema,
         location=f"s3://{config.BUCKET}/{table_root}",
     )
-    table.append(df.to_arrow())
+    iceberg_table.append(table)
 
 
 def _create_bucket(client) -> None:
@@ -318,8 +330,10 @@ def seed_bucket() -> bool:
     rng = random.Random(2077)
     sales = _sales_frame(rng)
     # split by year so the semantic model reads a multi-file glob, like real life
-    for (year,), part in sales.group_by(pl.col("order_date").dt.year(), maintain_order=True):
-        _upload(client, f"sales/{year}.parquet", part)
+    years = sales.column("order_date").to_pylist()
+    for year in sorted({d.year for d in years}):
+        mask = pa.array([d.year == year for d in years])
+        _upload(client, f"sales/{year}.parquet", sales.filter(mask))
     _upload(client, "marketing/spend.parquet", _marketing_frame(rng))
     _upload_csv(client, "ref/products.csv", _products_frame())
     _upload_csv(client, "ref/regions.csv", _regions_frame())
