@@ -22,8 +22,8 @@ target:
 materialization:
   mode: {mode}
 {extra_mat}
-script: |
-  output = sources["sales"].select(["order_id"]).head(2)
+sql: |
+  SELECT order_id FROM sales LIMIT 2
 """
 
 
@@ -128,9 +128,8 @@ def test_update_cannot_rename(client):
 def test_delete_while_run_pending_conflict(client):
     name = "test_api_delete_pending"
     yaml_text = _yaml(name, f"s3://cash-intel/pipeline_test/{name}").replace(
-        'script: |\n  output = sources["sales"].select(["order_id"]).head(2)',
-        'timeout_seconds: 5\nscript: |\n  import time\n  time.sleep(2)\n  '
-        'output = sources["sales"].head(1)',
+        'sql: |\n  SELECT order_id FROM sales LIMIT 2',
+        'timeout_seconds: 5\nsql: |\n  SELECT s.order_id FROM sales s, sales b, sales c LIMIT 1',
     )
     try:
         assert client.post("/api/pipelines", json={"yaml": yaml_text}).status_code == 201
@@ -145,9 +144,8 @@ def test_delete_while_run_pending_conflict(client):
 def test_run_while_pending_for_same_pipeline_conflict(client):
     name = "test_api_run_pending"
     yaml_text = _yaml(name, f"s3://cash-intel/pipeline_test/{name}").replace(
-        'script: |\n  output = sources["sales"].select(["order_id"]).head(2)',
-        'timeout_seconds: 5\nscript: |\n  import time\n  time.sleep(2)\n  '
-        'output = sources["sales"].head(1)',
+        'sql: |\n  SELECT order_id FROM sales LIMIT 2',
+        'timeout_seconds: 5\nsql: |\n  SELECT s.order_id FROM sales s, sales b, sales c LIMIT 1',
     )
     try:
         assert client.post("/api/pipelines", json={"yaml": yaml_text}).status_code == 201
@@ -251,8 +249,8 @@ target:
   format: delta
 materialization:
   mode: replace
-script: |
-  output = sources["sales"].select(["order_id", "region"]).head(2)
+sql: |
+  SELECT order_id, region FROM sales LIMIT 2
 lineage:
   - field: order_id
     from: [sales.order_id]
@@ -297,8 +295,8 @@ target:
   format: delta
 materialization:
   mode: replace
-script: |
-  output = sources["sales"].select(["order_id", "region"]).head(2)
+sql: |
+  SELECT order_id, region FROM sales LIMIT 2
 lineage:
   - field: order_id
     from: [sales.order_id]
@@ -314,8 +312,8 @@ lineage:
         assert run1["lineage_ok"] is True
 
         bad_yaml = good_yaml.replace(
-            'output = sources["sales"].select(["order_id", "region"]).head(2)',
-            'output = sources["sales"].select(["order_id"]).head(2)',
+            'SELECT order_id, region FROM sales LIMIT 2',
+            'SELECT order_id FROM sales LIMIT 2',
         )
         assert client.put(f"/api/pipelines/{pipe_name}/yaml", json={"yaml": bad_yaml}).status_code == 200
         run2 = _poll(client, client.post(f"/api/pipelines/{pipe_name}/run").json()["run_id"])
@@ -346,8 +344,8 @@ target:
   format: delta
 materialization:
   mode: replace
-script: |
-  output = sources["sales"].select(["order_id"]).head(2)
+sql: |
+  SELECT order_id FROM sales LIMIT 2
 lineage:
   - field: order_id
     from: [sales.order_id]
@@ -393,8 +391,8 @@ target:
   format: delta
 materialization:
   mode: replace
-script: |
-  output = sources["sales"].select(["order_id", "region"]).head(2)
+sql: |
+  SELECT order_id, region FROM sales LIMIT 2
 """
     try:
         assert client.post("/api/pipelines", json={"yaml": yaml_text}).status_code == 201
@@ -422,8 +420,8 @@ target:
   format: delta
 materialization:
   mode: replace
-script: |
-  output = sources["sales"].select(["order_id", "region"]).head(2)
+sql: |
+  SELECT order_id, region FROM sales LIMIT 2
 lineage:
   - field: order_id
     from: [sales.order_id]
@@ -492,8 +490,8 @@ target:
   layer: silver
 materialization:
   mode: replace
-script: |
-  output = sources["sales"].select(["order_id"]).head(1)
+sql: |
+  SELECT order_id FROM sales LIMIT 1
 """
     original = client.get("/api/lineage/layers").json()["layers"]
     try:
@@ -528,8 +526,8 @@ target:
   format: delta
 materialization:
   mode: replace
-script: |
-  output = sources["raw"].select(["order_id"]).head(2)
+sql: |
+  SELECT order_id FROM raw LIMIT 2
 lineage:
   - field: order_id
     from: [raw.order_id]
@@ -546,8 +544,8 @@ target:
   format: delta
 materialization:
   mode: replace
-script: |
-  output = sources["upstream"].select(["order_id"]).head(2)
+sql: |
+  SELECT order_id FROM upstream LIMIT 2
 lineage:
   - field: order_id
     from: [upstream.order_id]
@@ -612,8 +610,8 @@ target:
   layer: silver
 materialization:
   mode: replace
-script: |
-  output = sources["sales"].select(["order_id"]).head(1)
+sql: |
+  SELECT order_id FROM sales LIMIT 1
 """
     # union with whatever's already declared (the shipped demo pipelines
     # reference bronze/silver/gold) rather than replacing wholesale — this
@@ -669,8 +667,8 @@ target:
   format: delta
 materialization:
   mode: replace
-script: |
-  output = sources["y"].head(1)
+sql: |
+  SELECT * FROM y LIMIT 1
 """
     yaml_y = f"""
 name: {name_y}
@@ -683,8 +681,8 @@ target:
   format: delta
 materialization:
   mode: replace
-script: |
-  output = sources["x"].head(1)
+sql: |
+  SELECT * FROM x LIMIT 1
 """
     try:
         assert client.post("/api/pipelines", json={"yaml": yaml_x}).status_code == 201
@@ -711,9 +709,10 @@ def test_successful_run_invalidates_cached_source_reads(client):
     invalidation under test."""
     import io
 
-    import polars as pl
+    import pyarrow as pa
+    import pyarrow.parquet as pq
 
-    from app import cache, config, engine, s3, semantic
+    from app import cache, config, duck, s3, semantic
 
     name = "test_api_run_invalidates_cache"
     target = f"s3://cash-intel/pipeline_test/{name}"
@@ -730,13 +729,13 @@ target:
   format: delta
 materialization:
   mode: replace
-script: |
-  output = sources["feed"]
+sql: |
+  SELECT * FROM feed
 """
 
     def put_feed(rows: int):
         buf = io.BytesIO()
-        pl.DataFrame({"order_id": list(range(rows))}).write_parquet(buf)
+        pq.write_table(pa.table({"order_id": pa.array(list(range(rows)))}), buf)
         s3.client().put_object(Bucket=config.BUCKET, Key=feed_key, Body=buf.getvalue())
 
     source = semantic.Source(path=target, format="delta")
@@ -747,13 +746,13 @@ script: |
         assert _poll(client, client.post(f"/api/pipelines/{name}/run").json()["run_id"])["status"] == "succeeded"
 
         # read the target so this process is holding it
-        assert engine._scan_source(source).collect().height == 2
-        assert cache.get_or_set(("source_frame", target, "delta"), 60.0, lambda: None) is not None
+        assert duck.cursor().execute(f"SELECT count(*) FROM {duck.relation(source.path, source.format)}").fetchone()[0] == 2
+        assert cache.get_or_set(("duck_pin", target, "delta"), 60.0, lambda: None) is not None
 
         put_feed(5)          # straight to S3: no endpoint, so no reload_all()
         second = _poll(client, client.post(f"/api/pipelines/{name}/run").json()["run_id"])
         assert second["status"] == "succeeded" and second["rows_written"] == 5
 
-        assert engine._scan_source(source).collect().height == 5
+        assert duck.cursor().execute(f"SELECT count(*) FROM {duck.relation(source.path, source.format)}").fetchone()[0] == 5
     finally:
         client.delete(f"/api/pipelines/{name}")

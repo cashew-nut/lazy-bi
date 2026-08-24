@@ -1,5 +1,4 @@
 """Semantic layer: yaml parsing and validation."""
-import polars as pl
 import pytest
 
 from app import semantic
@@ -22,7 +21,7 @@ def test_parse_minimal_model():
     assert m.name == "t"
     assert list(m.dimensions) == ["region", "day"]
     assert m.dimensions["day"].type == "time"
-    assert m.measures["rows"].expr() is not None
+    assert m.measures["rows"].sql() is not None
 
 
 # --- Synonyms (alternate business vocabulary for dimensions/measures) ------
@@ -85,7 +84,7 @@ def test_missing_source_rejected():
 
 
 def test_bad_measure_expr_rejected():
-    bad = VALID.replace("count()", "nope()")
+    bad = VALID.replace("COUNT(*)", "nope()")
     with pytest.raises(semantic.ModelError, match="rows"):
         semantic.parse_model_text(bad)
 
@@ -125,7 +124,7 @@ def test_bundled_models_load(models):
     assert models["marketing"].dimensions["region"].geo is not None
 
 
-# --- Framed measures (aggregations over an intermediary derived frame) -----
+# --- from: measures (an aggregate over a relation the measure declares) ----
 
 FRAMED = """
 name: t
@@ -134,71 +133,98 @@ dimensions:
   - name: cohort
 measures:
   - name: median_days
-    frame: |
-      per_study = lf.group_by(["study_id", *dims]).agg(pl.col("days").min())
-      frame = per_study
-    expr: pl.days.median()
+    expr: MEDIAN(days)
+    from: |
+      SELECT {dims}, study_id, MIN(days) AS days
+      FROM {model}
+      GROUP BY {dims}, study_id
 """
 
 
-def test_framed_measure_parses():
+def test_from_measure_parses():
     m = semantic.parse_model_text(FRAMED)
     meas = m.measures["median_days"]
-    assert "per_study" in meas.frame_source
-    assert meas.expr() is not None
+    assert "study_id" in meas.from_source
+    assert meas.sql() in ("median(days)", 'median("days")')
 
 
-def test_frame_emits_parses_and_requires_frame():
-    withemits = FRAMED.replace("    expr:", "    frame_emits: [event_date]\n    expr:")
+def test_the_expression_is_the_same_kind_either_way():
+    """The point of the construct: `expr:` holds a SQL aggregate whether or not
+    the measure declares what it aggregates over."""
+    plain = semantic.parse_model_text(VALID).measures["rows"]
+    framed = semantic.parse_model_text(FRAMED).measures["median_days"]
+    assert plain.from_source is None and framed.from_source is not None
+    assert plain.sql() and framed.sql()
+
+
+def test_emits_parses_and_requires_from():
+    withemits = FRAMED.replace("    from: |", "    emits: [event_date]\n    from: |")
     m = semantic.parse_model_text(withemits)
-    assert m.measures["median_days"].frame_emits == ["event_date"]
-    no_frame = VALID.replace("    expr: COUNT(*)", "    frame_emits: [event_date]\n    expr: COUNT(*)")
-    with pytest.raises(semantic.ModelError, match="frame_emits"):
-        semantic.parse_model_text(no_frame)
+    assert m.measures["median_days"].emits == ["event_date"]
+    no_from = VALID.replace("    expr: COUNT(*)", "    emits: [event_date]\n    expr: COUNT(*)")
+    with pytest.raises(semantic.ModelError, match="emits"):
+        semantic.parse_model_text(no_from)
 
 
-def test_framed_measure_bad_syntax_rejected():
-    bad = FRAMED.replace("frame = per_study", "frame = = per_study")
-    with pytest.raises(semantic.ModelError, match="frame syntax"):
+def test_from_block_bad_syntax_rejected():
+    bad = FRAMED.replace("SELECT {dims}, study_id", "SELECT FROM WHERE")
+    with pytest.raises(semantic.ModelError, match="syntax"):
         semantic.parse_model_text(bad)
 
 
-def test_compile_frame_single_expression_form():
-    lf = pl.LazyFrame({"study_id": ["a", "a", "b"], "days": [1, 3, 5]})
-    out = semantic.compile_frame(
-        'lf.group_by(["study_id", *dims]).agg(pl.days.min())', lf, [], "measure 'm'"
-    )
-    assert isinstance(out, pl.LazyFrame)
+def test_from_block_may_not_read_another_table():
+    bad = FRAMED.replace("FROM {model}", "FROM someone_elses_table")
+    with pytest.raises(semantic.ModelError, match="may only read"):
+        semantic.parse_model_text(bad)
 
 
-def test_compile_frame_statements_must_assign_frame():
-    lf = pl.LazyFrame({"a": [1]})
-    with pytest.raises(semantic.ModelError, match="named 'frame'"):
-        semantic.compile_frame("x = lf", lf, [], "measure 'm'")
+def test_from_block_may_not_use_a_table_function():
+    """The whole of the I/O boundary the construct sits behind: no file, no
+    HTTP, no catalog."""
+    bad = FRAMED.replace("FROM {model}", "FROM read_parquet('s3://elsewhere/*.parquet')")
+    with pytest.raises(semantic.ModelError, match="table function"):
+        semantic.parse_model_text(bad)
 
 
-def test_compile_frame_must_produce_lazyframe():
-    lf = pl.LazyFrame({"a": [1]})
-    with pytest.raises(semantic.ModelError, match="LazyFrame"):
-        semantic.compile_frame("frame = 42", lf, [], "measure 'm'")
+def test_the_python_frame_construct_is_reported_not_ignored():
+    """A model YAML carrying the old construct has to say so, and say what to
+    write instead — silently dropping it would change every number the measure
+    produced."""
+    old = FRAMED.replace("    from: |", "    frame: |")
+    with pytest.raises(semantic.ModelError, match="'frame:'"):
+        semantic.parse_model_text(old)
 
 
-def test_framed_measure_survives_spec_yaml_roundtrip():
+def test_render_from_block_substitutes_both_placeholders():
+    rendered = semantic.render_from_block(
+        "SELECT {dims} FROM {model}", ["cohort", "plan"])
+    assert rendered == 'SELECT "cohort", "plan" FROM __model'
+
+
+def test_dims_is_never_empty():
+    """So `SELECT {dims}, x` and `GROUP BY {dims}, y` stay legal when the query
+    groups by nothing at all."""
+    assert semantic.render_from_block("SELECT {dims}, x FROM {model}", []) == \
+        "SELECT TRUE, x FROM __model"
+
+
+def test_from_measure_survives_spec_yaml_roundtrip():
     model = semantic.parse_model_text(FRAMED)
     text = semantic.spec_to_yaml(semantic.model_to_spec(model))
-    assert "frame: |" in text  # literal block, not an escaped one-liner
+    assert "from: |" in text  # literal block, not an escaped one-liner
     again = semantic.parse_model_text(text)
-    assert again.measures["median_days"].frame_source.strip() == \
-        model.measures["median_days"].frame_source.strip()
+    assert again.measures["median_days"].from_source.strip() == \
+        model.measures["median_days"].from_source.strip()
 
 
-def test_append_measure_yaml_renders_frame_as_block():
+def test_append_measure_yaml_renders_from_as_block():
     text = semantic.append_measure_yaml(VALID, {
-        "name": "m2", "frame": "step = lf.filter(pl.col('x') > 0)\nframe = step",
-        "expr": "pl.x.median()",
+        "name": "m2",
+        "from": "SELECT {dims}, x\nFROM {model}\nWHERE x > 0",
+        "expr": "MEDIAN(x)",
     })
     model = semantic.parse_model_text(text)
-    assert model.measures["m2"].frame_source.strip().endswith("frame = step")
+    assert model.measures["m2"].from_source.strip().endswith("WHERE x > 0")
 
 
 # --- Dimension bundles (common dimensional models) -------------------------
@@ -539,25 +565,24 @@ def test_real_geography_bundle_resolves_into_sales(models):
     assert {"bundle": "geography", "anchor_dataset": "regions", "datasets": None} in sales.to_public()["imports"]
 
 
-# --- 008-safe-measure-compilation: non-framed measures never eval ----------
+# --- no measure, of either kind, ever evaluates python ---------------------
 
-def test_non_framed_measure_expr_never_calls_eval(monkeypatch):
+def test_no_measure_ever_calls_eval(monkeypatch):
+    """What used to be true of plain measures only. The `frame:` carve-out was
+    the one eval-capable construct authored content could reach, and it is
+    gone — so this now covers both kinds."""
     import builtins
 
     def _boom(*a, **k):
-        raise AssertionError("non-framed Measure.expr() must never call eval")
+        raise AssertionError("compiling a measure must never call eval")
     monkeypatch.setattr(builtins, "eval", _boom)
 
-    m = semantic.parse_model_text(VALID)
-    assert m.measures["rows"].expr() is not None  # COUNT(*) compiles fine without eval ever firing
-
-
-def test_framed_measure_expr_still_uses_eval_path(monkeypatch):
-    # the framed-measure carve-out is unaffected: it's still the pre-existing
-    # eval-based compile_expr/compile_frame path, gated by auth at the API
-    # layer rather than by the compiler itself.
-    m = semantic.parse_model_text(FRAMED)
-    assert m.measures["median_days"].expr() is not None
+    plain = semantic.parse_model_text(VALID)
+    assert plain.measures["rows"].sql() is not None
+    framed = semantic.parse_model_text(FRAMED)
+    assert framed.measures["median_days"].sql() is not None
+    assert semantic.validate_from_block(
+        framed.measures["median_days"].from_source, "measure 'median_days'")
 
 
 # --- pipeline_lineage: section (specs/014-polars-pipeline-module/, US3) ----
