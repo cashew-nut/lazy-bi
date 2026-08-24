@@ -745,6 +745,18 @@ def _dimension_sql(dim: Dimension, grain: Optional[str], schema: dict, alias: st
     return ref
 
 
+def _group_column(dim: Dimension, grain: Optional[str], schema: dict, emitted: set) -> str:
+    """One dimension in the aggregate's select list.
+
+    Ordinarily the model relation already carries it under its semantic name.
+    A dimension some framed measure emits is the exception: its raw column was
+    left alone there so the `from:` block could read real dates, so the query's
+    own bucketing is applied here instead."""
+    if dim.name in emitted:
+        return f"{_dimension_sql(dim, grain, schema)} AS {_q(dim.name)}"
+    return _q(dim.name)
+
+
 def _spine_cte(build: _Build, model: Model, sdim: Dimension, grain: str,
                lo: date, hi: date) -> str:
     """The generated timeline a spine dimension groups by: one row per bucket
@@ -773,7 +785,8 @@ def _spine_bounds(model: Model, dims_in_play: dict, filters: list, sdim: Dimensi
     rather than trusting the entry forever."""
     key = ("spine_bounds", _model_cache_key(model), sdim.name,
            tuple(sorted(dims_in_play)), json.dumps(filters, sort_keys=True, default=str))
-    sql = (f"SELECT min({_q(sdim.spine.start)}) AS lo, max({_q(sdim.spine.end)}) AS hi "
+    start, end = _spine_columns(sdim, scan_schema(model, dims_in_play))
+    sql = (f"SELECT min({start}) AS lo, max({end}) AS hi "
            f"FROM {relation} AS {_q(FACT_ALIAS)}{where}")
     row = cache.get_or_set(key, config.BOUNDS_CACHE_TTL,
                            lambda: _fetch_one(sql, params))
@@ -855,6 +868,17 @@ def _build_single(model: Model, query: dict, row_cap: Optional[int] = None) -> t
                 f"filter op '{op}' not supported on spine dimension '{dim.name}'")
     where = f" WHERE {' AND '.join(where_parts)}" if where_parts else ""
 
+    # Measures are split before the model relation is built because a framed
+    # measure's `emits:` decides what that relation may overwrite — see
+    # `emitted` below.
+    plain, window_specs, framed = _split_measures(
+        model, query, schema, resolved_params, dim_entries)
+    # Dimensions a `from:` block computes itself. Their *raw* source column has
+    # to reach the block untouched: materializing the query's bucketing over it
+    # first would hand the block dates already rounded to the month, and every
+    # interval it derived from them would be wrong rather than merely coarse.
+    emitted = {name for _, _, emits, _ in framed for name in emits}
+
     # ── the model relation: filtered rows, dimension columns materialized ──
     # This is what a `from:` block reads as {model}, so it carries both the raw
     # source columns and the query's dimensions under their semantic names.
@@ -884,8 +908,8 @@ def _build_single(model: Model, query: dict, row_cap: Optional[int] = None) -> t
 
     materialized, excluded = [], []
     for dim, grain in dim_entries:
-        if dim.spine:
-            continue        # the timeline supplies it, already at grain
+        if dim.spine or dim.name in emitted:
+            continue        # the timeline supplies one; a from: block the other
         expr = _dimension_sql(dim, grain, schema, _q(FACT_ALIAS))
         if expr == f"{_q(FACT_ALIAS)}.{_q(dim.column)}" and dim.name == dim.column:
             continue        # already there under the right name
@@ -903,9 +927,8 @@ def _build_single(model: Model, query: dict, row_cap: Optional[int] = None) -> t
 
     # ── measures ──
     dim_names = [dim.name for dim, _ in dim_entries]
-    plain, window_specs, framed = _split_measures(model, query, schema, resolved_params)
 
-    group_select = [f"{_q(name)}" for name in dim_names]
+    group_select = [_group_column(dim, grain, schema, emitted) for dim, grain in dim_entries]
     for dim, _ in dim_entries:
         if dim.geo:
             group_select.append(f"avg({_q(dim.geo.lat)}) AS {_q('__lat_' + dim.name)}")
@@ -1066,7 +1089,8 @@ def _measure_schema(model: Model, schema: dict, dim_entries: list) -> dict:
     return out
 
 
-def _split_measures(model: Model, query: dict, schema: dict, resolved_params: dict) -> tuple:
+def _split_measures(model: Model, query: dict, schema: dict, resolved_params: dict,
+                    dim_entries: Optional[list] = None) -> tuple:
     """The query's measures sorted into the three ways they are computed:
 
       - **plain** aggregates, applied in one GROUP BY over the fact scan;
@@ -1077,6 +1101,7 @@ def _split_measures(model: Model, query: dict, schema: dict, resolved_params: di
         only means something once the data has been grouped down to one row
         per quarter.
     """
+    measure_schema = _measure_schema(model, schema, dim_entries or [])
     inline: dict[str, dict] = {}
     for m in query.get("inline_measures") or []:
         if not m.get("name") or not m.get("expr"):
@@ -1099,8 +1124,7 @@ def _split_measures(model: Model, query: dict, schema: dict, resolved_params: di
         if name in plain_names:
             return
         plain_names.add(name)
-        plain.append((name, _compile(name, text, _measure_schema(model, schema, []),
-                                     resolved_params)))
+        plain.append((name, _compile(name, text, measure_schema, resolved_params)))
 
     def resolve(name: str, *, is_dependency: bool) -> None:
         spec = inline.get(name)
