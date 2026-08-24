@@ -1,8 +1,9 @@
 # Semantic model: sales order lines
-# `source.path` is any glob polars can scan lazily from the object store.
-# Measures are written in the safe measure DSL (see README) — a small
-# allowlisted expression language, not arbitrary polars/Python; each must
-# reduce to a single value per group (an aggregation).
+# `source.path` is any glob DuckDB can scan from the object store.
+# Measures are SQL: `expr:` holds an aggregate over this model's rows, and a
+# measure that needs a step in between adds a `from:` block (see
+# models/subscriptions.yaml). Every expression is parsed and allowlisted
+# before it reaches a connection — see README, "The SQL measure grammar".
 name: sales
 label: Sales Orders
 description: Order lines from the street markets, 2024 - mid 2026.
@@ -10,8 +11,8 @@ source:
   format: parquet
   path: s3://cash-intel/sales/*.parquet
 
-# lookup tables joined lazily into the base scan; their columns are then
-# available to dimensions and measures like any base column
+# lookup tables joined into the base scan; their columns are then available
+# to dimensions and measures like any base column
 joins:
   - name: products
     source:
@@ -63,53 +64,54 @@ measures:
     label: Revenue
     format: currency
     synonyms: [sales, turnover, income]
-    expr: sum(unit_price * quantity)
+    expr: SUM(unit_price * quantity)
   - name: cost
     label: Cost
     format: currency
-    expr: sum(unit_cost * quantity)
+    expr: SUM(unit_cost * quantity)
   - name: profit
     label: Profit
     format: currency
-    expr: sum((unit_price - unit_cost) * quantity)
+    expr: SUM((unit_price - unit_cost) * quantity)
   - name: margin_pct
     label: Margin %
     format: percent
     description: Profit as a share of revenue.
-    expr: sum((unit_price - unit_cost) * quantity) / sum(unit_price * quantity)
+    expr: SUM((unit_price - unit_cost) * quantity) / SUM(unit_price * quantity)
   - name: orders
     label: Orders
-    expr: count_distinct(order_id)
+    expr: COUNT(DISTINCT order_id)
   - name: units
     label: Units Sold
-    expr: sum(quantity)
+    expr: SUM(quantity)
   - name: aov
     label: Avg Order Value
     format: currency
     synonyms: [average order value, basket size]
-    expr: sum(unit_price * quantity) / count_distinct(order_id)
+    expr: SUM(unit_price * quantity) / COUNT(DISTINCT order_id)
   - name: avg_unit_price
     label: Avg Unit Price
     format: currency
-    expr: mean(unit_price)
+    expr: AVG(unit_price)
   - name: margin_per_unit
     label: Margin / Unit
     format: currency
-    expr: sum((unit_price - unit_cost) * quantity) / sum(quantity)
-  # window measures: running_total()/lag() read sibling measures' already-
-  # aggregated values rather than raw columns, over(partition_by=the query's
-  # other dimensions, order_by=its time dimension) — query by order_date
-  # (any grain) to see these; add a breakout dimension (e.g. channel) and
-  # each gets its own running total / prior-period comparison.
+    expr: SUM((unit_price - unit_cost) * quantity) / SUM(quantity)
+  # window measures: a measure using a window function reads sibling
+  # measures' already-aggregated values rather than raw columns. The engine
+  # supplies `w` — PARTITION BY the query's other dimensions, ORDER BY its
+  # time dimension — so query by order_date (any grain) to see these, and add
+  # a breakout dimension (e.g. channel) to give each member its own running
+  # total / prior-period comparison.
   - name: revenue_running_total
     label: Revenue (Running Total)
     format: currency
     description: Cumulative revenue over the query's date axis.
-    expr: running_total(revenue)
+    expr: SUM(revenue) OVER w
   - name: revenue_pct_change
     label: Revenue % Change vs. Prior Period
     format: percent
     description: >-
       Change vs. the previous point on the query's date axis (e.g. previous
       quarter, if grouped by order_date at quarter grain).
-    expr: (revenue - lag(revenue, 1)) / lag(revenue, 1)
+    expr: (revenue - LAG(revenue) OVER w) / LAG(revenue) OVER w

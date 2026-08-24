@@ -27,11 +27,11 @@ dimensions:
 measures:
   - name: tickets
     label: Tickets
-    expr: count()
+    expr: COUNT(*)
   - name: avg_resolution_hours
     label: Avg Resolution Hours
-    expr: mean(resolution_hours)
+    expr: AVG(resolution_hours)
   - name: sla_breach_rate
     label: SLA Breach Rate
     format: percent
-    expr: sum(sla_breached) / count()
+    expr: SUM(sla_breached) / COUNT(*)

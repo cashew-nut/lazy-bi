@@ -71,36 +71,38 @@ measures:
   - name: active_customers
     label: Active Customers
     description: Distinct customers active at each timeline point.
-    expr: count_distinct(customer_id)
+    expr: COUNT(DISTINCT customer_id)
   - name: mrr
     label: MRR
     format: currency
     description: Monthly recurring revenue of active subscriptions.
-    expr: sum(monthly_fee)
+    expr: SUM(monthly_fee)
   - name: arpu
     label: ARPU
     format: currency
-    expr: sum(monthly_fee) / count_distinct(customer_id)
+    expr: SUM(monthly_fee) / COUNT(DISTINCT customer_id)
   - name: signups
     label: Signups
     description: Use with Signup Date (not the spine) for cohort counts.
-    expr: count()
-  # A measure over an intermediary frame: `end_date - start_date` is date
-  # arithmetic, outside the safe measure DSL (plain `expr:` only compiles
-  # allowlisted column/aggregate calls), so tenure has to be derived in a
-  # `frame` step instead. `dims` carries whatever the query groups by (plan,
-  # region, ...) through the step; `churn_month` in frame_emits means the
-  # frame's own computed churn date buckets a timeline, not the raw rows.
+    expr: COUNT(*)
+  # A measure that needs a step between the scan and the reduce. `expr:` is
+  # an ordinary SQL aggregate, exactly like every measure above it — the only
+  # difference is that it aggregates the rows `from:` produces rather than the
+  # model's own. `{model}` is this model's scan with the query's filters
+  # applied; `{dims}` is whatever the query groups by (plan, region, ...),
+  # always at least one column so it is safe to write unconditionally.
+  # `churn_month` in emits: means the block's own computed churn date buckets
+  # a timeline, rather than the raw rows being bucketed before the step.
   - name: median_tenure_days
     label: Median Tenure (Days)
     description: >
       Median subscription length in days among ended subscriptions,
       bucketed by the month each one churned.
-    frame: |
-      keys = list(dict.fromkeys(["churn_month", *dims]))
-      frame = lf.filter(pl.col("end_date").is_not_null()).with_columns(
-          (pl.col("end_date") - pl.col("start_date")).dt.total_days().alias("tenure_days"),
-          pl.col("end_date").dt.truncate("1mo").alias("churn_month"),
-      ).group_by(keys).agg(pl.col("tenure_days").median())
-    frame_emits: [churn_month]
-    expr: pl.col("tenure_days").median()
+    expr: MEDIAN(tenure_days)
+    from: |
+      SELECT {dims},
+             date_diff('day', start_date, end_date) AS tenure_days,
+             date_trunc('month', end_date)          AS churn_month
+      FROM {model}
+      WHERE end_date IS NOT NULL
+    emits: [churn_month]

@@ -33,12 +33,12 @@ measures:
   - name: spend
     label: Spend
     format: currency
-    expr: sum(spend)
+    expr: SUM(spend)
   - name: impressions
     label: Impressions
-    expr: sum(impressions)
+    expr: SUM(impressions)
   - name: cpm
     label: Cost per Mille
     format: currency
     description: Spend per thousand impressions.
-    expr: sum(spend) / (sum(impressions) / 1000)
+    expr: SUM(spend) / (SUM(impressions) / 1000)
