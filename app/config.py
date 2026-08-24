@@ -172,6 +172,26 @@ SANDBOX_ROW_LIMIT = 200
 # Hard cap on rows returned to the browser
 MAX_ROWS = 10_000
 
+# ── DuckDB runtime (app/duck.py) ──────────────────────────────────────────
+# One connection per process holds every cache that makes a second query
+# cheap, so where it lives matters. In-memory by default: the caches are
+# rebuilt from the bucket on start, and nothing the platform must not lose is
+# ever written here (visuals, dashboards and run history live in
+# cash_intel.db). Point CI_DUCKDB_PATH at a file to keep pinned sources and
+# the external file cache across restarts — worth it against a slow endpoint
+# with data that lands nightly, and a staleness risk otherwise.
+DUCKDB_PATH = os.environ.get("CI_DUCKDB_PATH", ":memory:")
+# Left unset, DuckDB sizes both from the host. Set them in a container, where
+# the host's core count and RAM are not the container's.
+DUCKDB_THREADS = int(os.environ.get("CI_DUCKDB_THREADS", "0")) or None
+DUCKDB_MEMORY_LIMIT = os.environ.get("CI_DUCKDB_MEMORY_LIMIT", "")
+
+# HTTP behaviour against the object store. DuckDB's defaults (3 retries, 30s)
+# are tuned for a well-behaved endpoint; both are worth raising against a
+# throttling bucket and lowering in a test suite that would rather fail fast.
+HTTP_RETRIES = int(os.environ.get("CI_HTTP_RETRIES", "3"))
+HTTP_TIMEOUT_MS = int(os.environ.get("CI_HTTP_TIMEOUT_MS", "30000"))
+
 # Read-only S3 lookup cache (app/cache.py) — schema introspection and
 # spine-dimension bounds are re-derived from S3 far more often than the
 # backing data actually changes (every query re-resolves its own schema,
