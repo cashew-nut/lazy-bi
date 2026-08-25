@@ -1,11 +1,11 @@
-"""Sandbox notebook endpoints: ad hoc polars/python scratch scripts (see
-app/sandbox.py's module docstring for the trust model — identical carve-out
-to a pipeline's `script:`, admin-gated for both authoring and execution).
+"""Sandbox notebook endpoints: ad hoc SQL scratch scripts (see app/sandbox.py's
+module docstring for the trust model — the same I/O boundary a pipeline's
+`sql:` sits behind, admin-gated for both authoring and execution).
 Reads (list/get saved notebooks) are open to any authenticated role, same as
 pipeline definitions; create/update/delete/run/convert all require admin.
 
 The coding agent (POST /sandbox/agent/stream, and convert's opt-in lineage
-generation) is admin-gated too, for two reasons: its whole output is code
+generation) is admin-gated too, for two reasons: its whole output is SQL
 destined for an admin-trust notebook, and calling it spends money and sends
 the notebook's code to a third party (app/sandbox_agent.py's docstring
 details the egress). It is 503 unless CI_LLM_API_KEY is configured, exactly

@@ -1,4 +1,4 @@
-"""SQLite persistence for saved sandbox notebooks (ad hoc polars/python
+"""SQLite persistence for saved sandbox notebooks (ad hoc SQL
 scratch scripts — see app/sandbox.py). Same DB as everything else
 (config.DB_PATH). A notebook is just {name, cells}; no execution state is
 persisted — a run's output is ephemeral, recomputed on demand, never saved

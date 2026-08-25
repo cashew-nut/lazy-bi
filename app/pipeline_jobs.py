@@ -84,10 +84,10 @@ def _execute(run_id: int, pipeline: Pipeline, registry) -> None:
     store.mark_running(run_id)
     job = {
         "pipeline": _pipeline_job_spec(pipeline),
-        # two storage_options shapes: polars-style lowercase for scanning
-        # declared sources (any format — matches app/engine.py), deltalake's
-        # own uppercase env-var-style for the target read/write/merge
-        # (matches app/seed.py's existing delta-write precedent).
+        # only the write path needs credentials here: the runner reads its
+        # sources through DuckDB's own S3 secret (app/duck.py), and deltalake
+        # wants its own uppercase env-var-style keys for the target's
+        # read/write/merge (matching app/seed.py's delta-write precedent).
         "storage": {"write": config.delta_write_options()},
     }
 
