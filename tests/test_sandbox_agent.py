@@ -298,7 +298,8 @@ def test_system_prompt_is_sent_as_a_cached_block():
                        "cache_control": {"type": "ephemeral"}}]
 
 
-@pytest.mark.parametrize("phrase", ["read(", "collect", "map_elements", "group_by"])
+@pytest.mark.parametrize("phrase", [
+    "read_parquet(", "iceberg_scan(", "TEMP VIEW", "GROUP BY", "EXPLAIN"])
 def test_system_prompt_covers_the_runtime_and_the_perf_rules(phrase):
     assert phrase in sandbox_agent._ASSIST_SYSTEM_PROMPT
 

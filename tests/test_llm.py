@@ -228,8 +228,8 @@ def test_propose_query_tool_declares_inline_measures():
 
 
 def test_system_prompt_explains_inline_measures():
-    assert "running_total" in llm._SYSTEM_PROMPT
-    assert "lag(measure" in llm._SYSTEM_PROMPT
+    assert "SUM(revenue) OVER w" in llm._SYSTEM_PROMPT
+    assert "LAG(revenue) OVER w" in llm._SYSTEM_PROMPT
     assert "inline_measures" in llm._SYSTEM_PROMPT
 
 
