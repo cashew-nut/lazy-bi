@@ -10,7 +10,7 @@ chart.
 """
 import pytest
 
-from app import engine, semantic
+from app import duck, engine, semantic
 from app.semantic import ModelError
 
 
@@ -358,6 +358,24 @@ def test_each_fact_tables_measure_matches_what_it_returns_alone(models):
         merged = _by_date(together, name)
         for bucket, value in solo_by_date.items():
             assert merged[bucket] == pytest.approx(value), f"{name} @ {bucket}"
+
+
+def test_several_fact_tables_answer_in_one_statement(models):
+    """SC-003: the merge is CTEs and joins inside a single statement, not a
+    query per fact table stitched together in Python. Asserted rather than
+    assumed, because "one statement" is what keeps the fact tables on one
+    connection, sharing one set of caches (constitution Principle II)."""
+    sql, params, columns = engine.build_sql(models["commercial_overview"], {
+        "dimensions": [{"name": "calendar_date", "grain": "1mo"}, "region"],
+        "measures": ["revenue", "ad_spend", "active_customers"],
+        "limit": 500,
+    })
+    assert sql.count(";") == 0                     # one statement, no chaining
+    assert sql.lstrip().upper().startswith("WITH")  # its parts are CTEs
+    assert "FULL OUTER JOIN" in sql                 # merged, not cross-joined
+    # and it is the statement that actually runs: DuckDB binds it as one
+    duck.cursor().execute(f"SELECT * FROM ({sql}) LIMIT 0", list(params))
+    assert {c["name"] for c in columns} >= {"revenue", "ad_spend", "active_customers"}
 
 
 def test_the_merged_axis_is_the_union_of_the_buckets(models):
