@@ -44,29 +44,31 @@ def test_get_update_delete_unknown_notebook_404(client):
 
 def test_run_executes_cells_in_order_and_returns_display(client):
     res = client.post("/api/sandbox/run", json={
-        "cells": [_cell("c1", "x = 21"), _cell("c2", "x * 2")],
+        "cells": [_cell("c1", "CREATE OR REPLACE TEMP VIEW v AS SELECT 21 AS x"),
+                  _cell("c2", "SELECT x * 2 AS doubled FROM v")],
         "run_upto": 1,
     })
     assert res.status_code == 200, res.text
     data = res.json()
     assert data["ok"] is True
-    assert data["cells"][1]["display"] == {"kind": "text", "text": "42"}
+    assert data["cells"][0]["display"] is None      # a CREATE shows nothing
+    assert data["cells"][1]["display"]["rows"] == [{"doubled": 42}]
 
 
 def test_run_stops_on_error_and_reports_it(client):
     res = client.post("/api/sandbox/run", json={
-        "cells": [_cell("c1", "1 / 0"), _cell("c2", "1")],
+        "cells": [_cell("c1", "SELECT * FROM no_such_table"), _cell("c2", "SELECT 1")],
         "run_upto": 1,
     })
     data = res.json()
     assert data["cells"][0]["ok"] is False
-    assert "ZeroDivisionError" in data["cells"][0]["error"]
+    assert "no_such_table" in data["cells"][0]["error"]
     assert data["cells"][1]["ok"] is None
 
 
 def test_run_can_scan_the_real_bucket(client):
     res = client.post("/api/sandbox/run", json={
-        "cells": [_cell("c1", f'read("{SALES_SOURCE}").select(["order_id"]).limit(3)')],
+        "cells": [_cell("c1", f"SELECT order_id FROM read_parquet('{SALES_SOURCE}') LIMIT 3")],
         "run_upto": 0,
     })
     assert res.status_code == 200, res.text
@@ -87,7 +89,10 @@ def test_run_out_of_range_run_upto_rejected(client):
 
 def test_run_timeout_is_killed(client):
     res = client.post("/api/sandbox/run", json={
-        "cells": [_cell("c1", "import time; time.sleep(5)")],
+        # a cross join over a 60k-row table, which cannot finish in a second
+        "cells": [_cell("c1", f"SELECT count(*) FROM read_parquet('{SALES_SOURCE}') a, "
+                              f"read_parquet('{SALES_SOURCE}') b, "
+                              f"read_parquet('{SALES_SOURCE}') c")],
         "run_upto": 0,
         "timeout_seconds": 1,
     })
@@ -100,14 +105,18 @@ def test_run_timeout_is_killed(client):
 def test_convert_detects_sources_and_rewrites_script(client):
     res = client.post("/api/sandbox/convert", json={
         "name": "my scratch pipe",
-        "cells": [_cell("c1", f'df = read("{SALES_SOURCE}")'), _cell("c2", "output = df.head(5)")],
+        "cells": [_cell("c1", f"CREATE OR REPLACE TEMP VIEW df AS "
+                              f"SELECT * FROM read_parquet('{SALES_SOURCE}')"),
+                  _cell("c2", "SELECT * FROM df LIMIT 5")],
     })
     assert res.status_code == 200, res.text
     data = res.json()
     assert data["warnings"] == []
     assert data["sources"][0]["path"] == SALES_SOURCE
-    assert "read(" not in data["yaml"]
-    assert "sources[" in data["yaml"]
+    assert "read_parquet(" not in data["yaml"]
+    # a declared source is registered as a view under its name, so the
+    # rewritten sql reads FROM that name
+    assert 'FROM "sales"' in data["yaml"]
     assert "name: my_scratch_pipe" in data["yaml"]
 
     from app import pipelines

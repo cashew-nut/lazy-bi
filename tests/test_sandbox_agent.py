@@ -16,8 +16,8 @@ from app import sandbox, sandbox_agent
 
 def test_valid_cells_pass_through_with_targets_resolved():
     cells, warnings = sandbox.validate_agent_cells(
-        [{"target": "c1", "source": "df = read('s3://b/x.parquet')"},
-         {"target": sandbox.NEW_CELL, "source": "df.head()"}],
+        [{"target": "c1", "source": "SELECT 1"},
+         {"target": sandbox.NEW_CELL, "source": "SELECT 1"}],
         ["c1", "c2"],
     )
     assert warnings == []
@@ -131,7 +131,7 @@ def test_generated_yaml_with_lineage_loads_as_a_real_pipeline():
         ["orders"], ["net_revenue"],
     )
     text = sandbox.build_pipeline_yaml(
-        "my nb", 'output = sources["orders"]',
+        "my nb", 'SELECT * FROM orders',
         [{"name": "orders", "format": "parquet", "path": "s3://cash-intel/sales/*.parquet"}],
         entries, "Cleaned order lines: enriched, deduped.",
     )
@@ -260,13 +260,13 @@ def test_empty_notebook_leaves_the_target_unconstrained():
 def test_lineage_prompt_names_declared_sources_and_output_columns():
     prompt = sandbox_agent.build_lineage_prompt(sandbox_agent.LineageContext(
         pipeline_name="silver_orders",
-        script='output = sources["orders"].head()',
+        script='SELECT * FROM orders LIMIT 5',
         sources=[{"name": "orders", "format": "parquet", "path": "s3://b/o/*.parquet"}],
         output_columns=[{"name": "order_id", "dtype": "Int64"}],
     ))
     assert "orders (parquet) <- s3://b/o/*.parquet" in prompt
     assert "order_id Int64" in prompt
-    assert 'output = sources["orders"].head()' in prompt
+    assert 'SELECT * FROM orders LIMIT 5' in prompt
 
 
 def test_lineage_prompt_says_when_there_was_no_run():
