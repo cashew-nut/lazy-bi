@@ -929,10 +929,7 @@ def _build_single(model: Model, query: dict, row_cap: Optional[int] = None) -> t
     dim_names = [dim.name for dim, _ in dim_entries]
 
     group_select = [_group_column(dim, grain, schema, emitted) for dim, grain in dim_entries]
-    for dim, _ in dim_entries:
-        if dim.geo:
-            group_select.append(f"avg({_q(dim.geo.lat)}) AS {_q('__lat_' + dim.name)}")
-            group_select.append(f"avg({_q(dim.geo.lon)}) AS {_q('__lon_' + dim.name)}")
+    group_select.extend(_geo_select(dim) for dim, _ in dim_entries if dim.geo)
     group_select.extend(f"{sql} AS {_q(name)}" for name, sql in plain)
 
     if plain or not framed:
@@ -952,6 +949,8 @@ def _build_single(model: Model, query: dict, row_cap: Optional[int] = None) -> t
     if framed:
         result = _framed_ctes(build, model, model_cte, result, dim_entries,
                               dim_names, framed, schema, resolved_params)
+    if agg is None:
+        result = _geo_lookup(build, model_cte, dim_entries, schema, emitted, result)
 
     measure_names = list(query.get("measures") or [])
     columns = _columns(model, dim_entries, measure_names, query)
@@ -1207,6 +1206,41 @@ def _window_cte(build: _Build, model: Model, agg: Optional[str], dim_entries: li
     exprs = [f"{_compile(name, text, None, resolved_params, window_spec=spec)} AS {_q(name)}"
              for name, text in window_specs]
     return build.cte("__win", f"SELECT *, {', '.join(exprs)} FROM {agg}")
+
+
+def _geo_select(dim: Dimension) -> str:
+    """A geo dimension's coordinates in an aggregate's select list. Averaged
+    because the group may hold several source rows; the coordinates are an
+    attribute of the dimension member, so every one of them is the same."""
+    return (f"avg({_q(dim.geo.lat)}) AS {_q('__lat_' + dim.name)}, "
+            f"avg({_q(dim.geo.lon)}) AS {_q('__lon_' + dim.name)}")
+
+
+def _geo_lookup(build: _Build, model_cte: str, dim_entries: list, schema: dict,
+                emitted: set, result: str) -> str:
+    """Attach geo coordinates when no aggregate over the fact rows produced
+    them.
+
+    _geo_select rides along on the __agg CTE ordinarily, but a query whose
+    measures are *all* `from:` measures has no such CTE — the derived
+    relations alone decide which groups exist, deliberately, so that an
+    emitted timeline doesn't inherit raw-row buckets. The map renderer still
+    needs the coordinates, so they are looked up per dimension member and
+    LEFT JOINed on: the framed side keeps deciding the rows.
+    """
+    for index, (dim, grain) in enumerate(dim_entries):
+        if not dim.geo:
+            continue
+        lookup = build.cte(
+            f"__geo{index}",
+            f"SELECT {_group_column(dim, grain, schema, emitted)}, {_geo_select(dim)} "
+            f"FROM {model_cte} GROUP BY ALL")
+        result = build.cte(
+            f"__geoj{index}",
+            f"SELECT {result}.*, {lookup}.* EXCLUDE ({_q(dim.name)}) "
+            f"FROM {result} LEFT JOIN {lookup} "
+            f"ON {result}.{_q(dim.name)} IS NOT DISTINCT FROM {lookup}.{_q(dim.name)}")
+    return result
 
 
 def _framed_ctes(build: _Build, model: Model, model_cte: str, result: Optional[str],

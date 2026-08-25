@@ -540,6 +540,36 @@ def test_imported_dimension_carries_geo(models):
     assert "__lat_region" in r["rows"][0] and "__lon_region" in r["rows"][0]
 
 
+def test_geo_survives_a_query_whose_measures_are_all_framed(models):
+    """Regression: the coordinates ride along on the aggregate over the fact
+    rows, and a query whose every measure has a `from:` block deliberately
+    builds no such aggregate (the derived relations alone decide which groups
+    exist). The map renderer still needs them, so they get looked up per
+    dimension member instead — this used to fail binding on __lat_region."""
+    framed = [{"name": "big_orders", "expr": "COUNT(*)",
+               "from": "SELECT {dims}, order_id FROM {model} "
+                       "GROUP BY {dims}, order_id HAVING SUM(quantity) > 2"}]
+    r = run(models, "sales", dimensions=["region"], measures=["big_orders"],
+            inline_measures=framed)
+    assert r["row_count"] == 5
+    for row in r["rows"]:
+        assert row["big_orders"] > 0
+        assert isinstance(row["__lat_region"], float)
+        assert isinstance(row["__lon_region"], float)
+
+    # the coordinates are the same ones the ordinary aggregate path produces,
+    # and adding a plain measure alongside must not change either number
+    plain = run(models, "sales", dimensions=["region"], measures=["orders"])
+    both = run(models, "sales", dimensions=["region"], measures=["orders", "big_orders"],
+               inline_measures=framed)
+    by_region = {row["region"]: row for row in r["rows"]}
+    for row in plain["rows"]:
+        assert row["__lat_region"] == by_region[row["region"]]["__lat_region"]
+        assert row["__lon_region"] == by_region[row["region"]]["__lon_region"]
+    for row in both["rows"]:
+        assert row["big_orders"] == by_region[row["region"]]["big_orders"]
+
+
 def test_scan_builds_one_relation_with_its_joins(models):
     """scan() is SQL now — one subquery carrying the model's own source, its
     joins and the bundles a query reads from."""
