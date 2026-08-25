@@ -286,7 +286,7 @@ def test_resolve_rejects_non_window_inline_measure(models):
     ])
     decision = nlq.resolve("double the revenue", _catalog(models), [], models, translator)
     assert isinstance(decision, nlq.Decline)
-    assert "running_total" in decision.reason_text
+    assert "window expression" in decision.reason_text
 
 
 def test_resolve_rejects_inline_measure_reusing_a_declared_name(models):

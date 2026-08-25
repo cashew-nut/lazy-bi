@@ -509,7 +509,7 @@ def test_inline_measures_are_refused_across_fact_tables(models):
 
 
 def test_scanning_a_multi_table_model_says_why_it_cannot(models):
-    with pytest.raises(engine.QueryError, match="no single frame to scan"):
+    with pytest.raises(engine.QueryError, match="no single relation to scan"):
         engine.scan(models["commercial_overview"])
 
 

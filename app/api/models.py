@@ -69,6 +69,11 @@ class MeasureSpec(BaseModel):
     from_: Optional[str] = Field(default=None, alias="from")
     emits: list[str] = []
     synonyms: list[str] = []
+    # retired: the python intermediary-frame construct. Declared only so a body
+    # still carrying one is refused with the message that names its
+    # replacement, rather than silently accepted as a plain measure.
+    frame: Optional[str] = None
+    frame_emits: Optional[list[str]] = None
 
     model_config = {"populate_by_name": True}
 
@@ -123,6 +128,12 @@ class MeasureIn(BaseModel):
     # a `from:` relation the expression aggregates, instead of the fact scan
     from_: Optional[str] = Field(default=None, alias="from")
     emits: list[str] = []
+    # retired: the python intermediary-frame construct. Declared only so a body
+    # still carrying one is refused with the message that names its
+    # replacement, rather than silently accepted as a plain measure.
+    frame: Optional[str] = None
+    frame_emits: Optional[list[str]] = None
+
     # the measure lab (measurelab.js) never surfaces this field or
     # `description` — it only ever sends name/label/format/expr, and
     # update_measure() replaces the measure's whole yaml block — so, like
@@ -190,7 +201,7 @@ def _model_out(parsed: semantic.Model) -> dict:
     errors = []
     for part in parsed.parts:
         try:
-            schema = engine.scan(part.model).collect_schema()
+            schema = engine.scan_schema(part.model)
         except Exception as exc:
             errors.append(f"{part.name}: {exc}")
             continue
@@ -325,12 +336,19 @@ class MeasureCheckIn(BaseModel):
     columns: list[str] = []        # source column names, for a plain/window-free expr
     measure_names: list[str] = []  # sibling measure names, for a window expr
     parameters: list[dict] = []    # the visual's currently-declared parameters, if any
+    # retired: the python intermediary-frame construct. Declared only so a body
+    # still carrying one is refused with the message that names its
+    # replacement, rather than silently accepted as a plain measure.
+    frame: Optional[str] = None
+    frame_emits: Optional[list[str]] = None
 
     model_config = {"populate_by_name": True}
 
 
 @router.post("/measures/check")
 def check_measure(body: MeasureCheckIn):
+    if _has_legacy_frame(body):
+        return {"ok": False, "window": False, "error": LEGACY_FRAME_DETAIL}
     if not body.expr.strip():
         return {"ok": False, "error": "measure needs an expression", "window": False}
     if body.emits and not body.from_:
@@ -413,6 +431,18 @@ def _apply_measure(model: semantic.Model, text: str, name: str,
     return semantic.spec_to_yaml(spec)
 
 
+LEGACY_FRAME_DETAIL = (
+    "'frame:' was the python intermediary-frame construct and is gone — write the "
+    "same step as SQL under 'from:' (and 'emits:' for a dimension it computes itself)")
+
+
+def _has_legacy_frame(m) -> bool:
+    """A body still carrying the retired construct has to be told what to write
+    instead — accepting it as a plain measure would drop the whole intermediary
+    step and quietly change every number the measure produced."""
+    return m.frame is not None or m.frame_emits is not None
+
+
 def _validate_measure_body(model: semantic.Model, m: MeasureIn) -> None:
     if m.format not in ("number", "currency", "percent"):
         raise HTTPException(status_code=400, detail=f"unknown format '{m.format}'")
@@ -478,6 +508,8 @@ def _measure_entry(m: MeasureIn) -> dict:
 def add_measure(name: str, m: MeasureIn, user: User = Depends(require_role("author"))):
     """Append a measure to the model's yaml file (comment-preserving) and
     hot-reload — the 'save to model' path of the measure lab."""
+    if _has_legacy_frame(m):
+        raise HTTPException(status_code=400, detail=LEGACY_FRAME_DETAIL)
     model = _single_fact_or_400(name)
     if not _MEASURE_NAME.match(m.name):
         raise HTTPException(status_code=400, detail="measure name must be snake_case (a-z, 0-9, _)")
@@ -503,6 +535,8 @@ def add_measure(name: str, m: MeasureIn, user: User = Depends(require_role("auth
 def update_measure(name: str, measure_name: str, m: MeasureIn,
                    user: User = Depends(require_role("author"))):
     """Rewrite an existing measure's yaml block in place and hot-reload."""
+    if _has_legacy_frame(m):
+        raise HTTPException(status_code=400, detail=LEGACY_FRAME_DETAIL)
     model = _single_fact_or_400(name)
     if measure_name not in model.measures:
         raise HTTPException(status_code=404, detail=f"unknown measure '{measure_name}' on model '{name}'")

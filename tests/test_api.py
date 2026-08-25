@@ -1035,58 +1035,57 @@ def test_saved_measure_queryable_by_any_signed_in_role(client, author_client, vi
 
 # ── 008-safe-measure-compilation: framed-measure carve-out (US3) ──────────
 
-def test_authenticated_frame_measure_saves_and_computes(client):
+def test_authenticated_from_measure_saves_and_computes(client):
     """A frame-bearing measure is an authenticated-model-measure-only
     construct: it's accepted here (with provenance), but never inline
     (see test_engine.py's inline-frame-rejected tests)."""
     _probe_model(client)
     try:
         body = {
-            # a framed measure's `expr` still uses the pre-existing eval
-            # syntax (it aggregates the frame's own output column, which
-            # isn't part of the base schema) — only the scalar DSL path
-            # (no `frame`) uses the new function-call grammar.
-            "name": "distinct_regions_via_frame",
-            "expr": 'pl.n.SUM()',
-            "frame": 'frame = lf.group_by(dims).agg(pl.len().alias("n"))',
+            # the same metric in the one grammar: `expr:` is a SQL aggregate
+            # either way, and `from:` is what says which rows it reads
+            "name": "distinct_regions_via_from",
+            "expr": "SUM(n)",
+            "from": "SELECT {dims}, count(*) AS n FROM {model} GROUP BY {dims}",
         }
         res = client.post("/api/models/auth_probe/measures", json=body)
-        assert res.status_code == 201
+        assert res.status_code == 201, res.text
         history = client.get(
-            "/api/models/auth_probe/measures/distinct_regions_via_frame/history"
+            "/api/models/auth_probe/measures/distinct_regions_via_from/history"
         ).json()
-        assert history[0]["frame"] == body["frame"]
+        assert history[0]["from"] == body["from"]
 
         q = client.post("/api/query", json={
             "model": "auth_probe", "dimensions": ["region"],
-            "measures": ["distinct_regions_via_frame"]})
+            "measures": ["distinct_regions_via_from"]})
         assert q.status_code == 200
         assert q.json()["row_count"] > 0
     finally:
         client.delete("/api/models/auth_probe")
 
 
-def test_frame_measure_mutation_requires_admin(client, anon_client, author_client):
-    """The frame: escape hatch escalates beyond author — admin only
-    (spec 011, Principle VI)."""
+def test_a_frame_measure_body_is_refused_with_its_replacement(client, anon_client, author_client):
+    """The construct is gone, and a body still carrying one has to be told
+    what to write instead — accepting it as a plain measure would drop the
+    whole intermediary step and quietly change every number."""
     _probe_model(client)
     try:
         body = {"name": "probe_frame", "expr": "COUNT(*)", "frame": "frame = lf"}
         assert anon_client.post("/api/models/auth_probe/measures", json=body).status_code == 401
         res = author_client.post("/api/models/auth_probe/measures", json=body)
-        assert res.status_code == 403
-        assert "admin" in res.json()["detail"]
+        assert res.status_code == 400
+        assert "'frame:'" in res.json()["detail"]
     finally:
         client.delete("/api/models/auth_probe")
 
 
-def test_frame_emits_without_frame_rejected(client):
+def test_emits_without_from_rejected(client):
     _probe_model(client)
     try:
-        body = {"name": "bad", "expr": "COUNT(*)", "frame_emits": ["region"]}
+        body = {"name": "bad", "expr": "COUNT(*)", "emits": ["region"]}
         res = client.post("/api/models/auth_probe/measures", json=body)
         assert res.status_code == 400
-        assert "frame_emits" in res.json()["detail"]
+        assert "'emits' needs a 'from'" in res.json()["detail"]
     finally:
         client.delete("/api/models/auth_probe")
 
@@ -1262,7 +1261,7 @@ def test_measures_check_rejects_undeclared_parameter(client):
 
 def test_measures_check_resolves_float_param_in_comparison(client):
     res = client.post("/api/measures/check", json={
-        "expr": "revenue > param('threshold')",
+        "expr": "SUM(revenue) FILTER (WHERE revenue > param('threshold'))",
         "columns": ["revenue"],
         "parameters": [{"name": "threshold", "type": "float", "values": [10, 50.5, 100], "default": 50.5}],
     })
@@ -1273,7 +1272,7 @@ def test_measures_check_resolves_float_param_in_comparison(client):
 
 def test_measures_check_resolves_string_param_in_coalesce(client):
     res = client.post("/api/measures/check", json={
-        "expr": "coalesce(revenue, param('fallback'))",
+        "expr": "MAX(COALESCE(CAST(revenue AS VARCHAR), param('fallback')))",
         "columns": ["revenue"],
         "parameters": [{"name": "fallback", "type": "string", "values": ["n/a", "unknown"], "default": "n/a"}],
     })
@@ -1292,7 +1291,7 @@ def test_measures_check_rejects_string_param_as_lag_periods(client):
     })
     body = res.json()
     assert body["ok"] is False
-    assert "int-typed param" in body["error"]
+    assert "not an integer" in body["error"]
 
 
 def test_measures_check_rejects_float_param_as_lag_periods_even_when_whole(client):
@@ -1303,7 +1302,7 @@ def test_measures_check_rejects_float_param_as_lag_periods_even_when_whole(clien
     })
     body = res.json()
     assert body["ok"] is False
-    assert "int-typed param" in body["error"]
+    assert "not an integer" in body["error"]
 
 
 def test_upload_then_reupload_serves_the_new_rows(client):
@@ -1312,7 +1311,7 @@ def test_upload_then_reupload_serves_the_new_rows(client):
     to drop what it is holding, or the uploader sees their old file back."""
     import io
 
-    from app import engine, semantic
+    from app import duck, semantic
 
     def upload(body: bytes):
         return client.post(
@@ -1322,9 +1321,13 @@ def test_upload_then_reupload_serves_the_new_rows(client):
     try:
         assert upload(b"a,b\n1,2\n").status_code == 201
         source = semantic.Source(path="s3://cash-intel/local/cache_probe/rows.csv", format="csv")
-        assert engine._scan_source(source).collect().height == 1
+        assert duck.cursor().execute(
+                f"SELECT count(*) FROM {duck.relation(source.path, source.format)}"
+            ).fetchone()[0] == 1
 
         assert upload(b"a,b\n1,2\n3,4\n5,6\n").status_code == 201
-        assert engine._scan_source(source).collect().height == 3
+        assert duck.cursor().execute(
+                f"SELECT count(*) FROM {duck.relation(source.path, source.format)}"
+            ).fetchone()[0] == 3
     finally:
         client.delete("/api/datasets/local/cache_probe")

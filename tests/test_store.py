@@ -81,16 +81,18 @@ def test_measure_provenance_scoped_per_model_measure_pair(store):
     assert r["version"] == 1  # independent sequence for a different model
 
 
-def test_measure_history_newest_first_with_frame_fields(store):
+def test_measure_history_newest_first_with_from_fields(store):
     store.record_measure_provenance(
         "subscriptions", "median_tenure_days", "create", "dana",
-        expr="MEDIAN(tenure_days)", frame="frame = lf", frame_emits=["churn_month"],
+        expr="MEDIAN(tenure_days)", from_block="SELECT {dims} FROM {model}",
+        emits=["churn_month"],
     )
     store.record_measure_provenance(
         "subscriptions", "median_tenure_days", "update", "dana",
-        expr="MEDIAN(tenure_days)", frame="frame = lf.filter(x)", frame_emits=["churn_month"],
+        expr="MEDIAN(tenure_days)", from_block="SELECT {dims}, x FROM {model}",
+        emits=["churn_month"],
     )
     history = store.measure_history("subscriptions", "median_tenure_days")
     assert [h["version"] for h in history] == [2, 1]
-    assert history[0]["frame_emits"] == ["churn_month"]
+    assert history[0]["emits"] == ["churn_month"]
     assert history[0]["action"] == "update"

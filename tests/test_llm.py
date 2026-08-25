@@ -165,7 +165,7 @@ def test_catalog_text_includes_measure_formula_when_present():
         ),
     ]
     text = llm._catalog_text(catalog)
-    assert "computed as: sum(unit_price * quantity)" in text
+    assert "computed as: SUM(unit_price * quantity)" in text
 
 
 def test_catalog_text_omits_formula_marker_when_absent():

@@ -465,6 +465,17 @@ def _substitute_params(text: str, parameter_values: Optional[dict]) -> str:
                 kind="unknown_parameter")
         return _sql_literal(parameter_values[name])
 
+    # LAG/LEAD's offset must be a genuine integer. A float-typed parameter is
+    # refused there even when its value happens to be whole, and a string one
+    # always — the declared type governs eligibility, not incidental JSON
+    # shape, and DuckDB only complains about it when it binds.
+    for name in lag_period_param_names(text):
+        value = parameter_values.get(name)
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise SqlCompileError(
+                f"LAG()'s offset argument references parameter '{name}', whose value "
+                f"{value!r} is not an integer", kind="unknown_parameter")
+
     substituted = _PARAM_RE.sub(replace, text)
     # anything still spelling `param(` after that is a form the grammar does
     # not accept (a non-literal name, say), and must not reach the walk as a

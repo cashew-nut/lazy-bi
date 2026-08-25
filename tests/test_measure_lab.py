@@ -72,14 +72,14 @@ def test_append_quotes_awkward_exprs():
     out = semantic.append_measure_yaml(DOC, {
         "name": "tricky", "expr": 'SUM(a) FILTER (WHERE b > 0)'})
     m = semantic.parse_model_text(out)
-    assert m.measures["tricky"].expr() is not None
+    assert m.measures["tricky"].sql() is not None
 
 
 # ── API surface ──────────────────────────────────────────────
 
 def test_schema_endpoint(client):
     cols = {c["name"]: c["dtype"] for c in client.get("/api/models/sales/schema").json()["columns"]}
-    assert cols["unit_price"] == "Float64"
+    assert cols["unit_price"] == "DOUBLE"
     assert "supplier" in cols  # join columns included
 
 
