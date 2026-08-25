@@ -155,7 +155,7 @@ function toSpec() {
         .filter((m) => m.name.trim() && m.expr.trim())
         .map((m) => ({
           name: m.name, label: m.label, expr: m.expr, format: m.format, description: m.description,
-          ...(hasFrame(m) ? { frame: m.frame, frame_emits: m.frame_emits || [] } : {}),
+          ...(hasFrom(m) ? { from: m.from, emits: m.emits || [] } : {}),
           ...(m.synonyms && m.synonyms.length ? { synonyms: m.synonyms } : {}),
         })),
     })),
@@ -920,7 +920,7 @@ function renderDimSection(main) {
   if (generated && !generated.ok) main.append(el("div", { class: "mf-warn" }, "⚠ " + generated.error));
   else if (generated?.schema_error) main.append(el("div", { class: "mf-warn" }, "⚠ " + generated.schema_error));
   main.append(note("refine each dataset's dimensions — label, type and synonyms (synonyms help Chat "
-    + "match plain-language questions). Datasets related to each other read one joined frame, so a "
+    + "match plain-language questions). Datasets related to each other read one joined relation, so a "
     + "dimension may name any column its fact table brings in."));
   if (!form.datasets.length) {
     main.append(note("add a dataset first (DATASETS section)"));
@@ -1031,22 +1031,25 @@ function grainSelect(dim) {
 
 // ── section: MEASURES (per dataset — a measure belongs to one fact table) ──
 
-const FRAME_TEMPLATE =
-  `frame = (\n    lf.group_by(dims)\n    .agg(pl.col("...").sum())\n)`;
+// {model} is the fact scan with the query's filters applied; {dims} is
+// whatever the query groups by, always at least one column so it is safe to
+// write unconditionally.
+const FROM_TEMPLATE =
+  "SELECT {dims}, ...\nFROM {model}\nGROUP BY {dims}, ...";
 
 const blankMeasure = () => ({ name: "", label: "", expr: "", format: "number", description: "", synonyms: [] });
 const blankFramedMeasure = () =>
-  ({ name: "", label: "", expr: "", format: "number", description: "", synonyms: [], frame: FRAME_TEMPLATE, frame_emits: [] });
+  ({ name: "", label: "", expr: "", format: "number", description: "", synonyms: [], from: FROM_TEMPLATE, emits: [] });
 
-// the one place that decides whether a measure counts as "framed" — blank
-// frame text (e.g. cleared by the author) reverts it to a plain measure
-// rather than saving/rendering it as an empty, invisible frame
-const hasFrame = (m) => !!(m.frame && m.frame.trim());
+// the one place that decides whether a measure declares what it aggregates —
+// blank from: text (e.g. cleared by the author) reverts it to a plain measure
+// over the fact scan rather than saving an empty, invisible block
+const hasFrom = (m) => !!(m.from && m.from.trim());
 
 // combined completion pool for a measure's expr: the columns of the fact table
 // that owns it, plus its sibling measure names — a bare identifier is one or
 // the other depending on whether the expr turns out to be a window measure
-// (running_total()/lag()), which the client can't know until it parses
+// (something OVER w), which the client can't know until it parses
 function exprColumns(owner) {
   const cols = columnsFor(owner.name);
   const names = new Set(cols.map((c) => c.name));
@@ -1065,14 +1068,14 @@ function scheduleCheck(m, owner, statusEl) {
 }
 
 async function runCheck(m, owner, statusEl) {
-  const framed = hasFrame(m);
+  const framed = hasFrom(m);
   const hasBody = framed ? true : m.expr.trim();
   if (!m.name.trim() || !hasBody) { statusEl.innerHTML = ""; return; }
   statusEl.innerHTML = '<span class="pending">checking…</span>';
   const body = {
     expr: m.expr || "",
-    frame: framed ? m.frame : null,
-    frame_emits: framed ? (m.frame_emits || []) : [],
+    from: framed ? m.from : null,
+    emits: framed ? (m.emits || []) : [],
     columns: columnsFor(owner.name).map((c) => c.name),
     measure_names: componentOf(owner.name)
       .flatMap((d) => d.measures.map((x) => x.name))
@@ -1090,23 +1093,23 @@ async function runCheck(m, owner, statusEl) {
     : `<span class="err">✗ ${res.error}</span>`;
 }
 
-// dimensions the fact table has declared so far, offered as frame_emits
-// candidates (frame_emits names dimension(s) the frame recomputes itself —
+// dimensions the fact table has declared so far, offered as emits
+// candidates (emits names dimension(s) the from: block computes itself —
 // e.g. a per-entity milestone date — see subscriptions.yaml's
 // median_tenure_days)
-function frameEmitsPicker(m, owner, redraw) {
+function emitsPicker(m, owner, redraw) {
   const wrap = el("div", { class: "mf-subset" });
   const dims = componentOf(owner.name).flatMap((d) => d.dimensions);
   if (!dims.length) {
-    wrap.append(note("declare a dimension above to offer it here, or type its name once the frame computes it"));
+    wrap.append(note("declare a dimension above to offer it here, or type its name once the block outputs it"));
     return wrap;
   }
   for (const d of dims) {
-    const on = (m.frame_emits || []).includes(d.name);
+    const on = (m.emits || []).includes(d.name);
     const chip = el("button", { class: "chip" + (on ? " on" : "") },
       el("span", { class: "tick" }, on ? "✓" : ""), el("span", { class: "lbl" }, d.name));
     chip.addEventListener("click", () => {
-      m.frame_emits = on ? (m.frame_emits || []).filter((x) => x !== d.name) : [...(m.frame_emits || []), d.name];
+      m.emits = on ? (m.emits || []).filter((x) => x !== d.name) : [...(m.emits || []), d.name];
       markDirty();
       redraw();
     });
@@ -1120,8 +1123,9 @@ function frameEmitsPicker(m, owner, redraw) {
    expanded editor modal. */
 function exprEditor(m, owner, statusEl, { rows = 1, cls = "mf-expr" } = {}) {
   const wrap = el("div", { class: "mf-expr-wrap" });
-  // a framed measure's expr aggregates the frame with polars syntax, not the DSL
-  const ph = hasFrame(m) ? 'pl.col("...").median()' : "mean(unit_price)";
+  // the same kind of expression either way — an aggregate; the only
+  // difference is whether it reads the from: block's output or the fact scan
+  const ph = hasFrom(m) ? "MEDIAN(tenure_days)" : "AVG(unit_price)";
   const ta = el("textarea", { class: cls, rows: String(rows), spellcheck: "false", placeholder: ph });
   ta.value = m.expr;
   const suggest = el("div", { class: "mf-suggest" });
@@ -1138,19 +1142,20 @@ function exprEditor(m, owner, statusEl, { rows = 1, cls = "mf-expr" } = {}) {
   return wrap;
 }
 
-/* Frame editor (complex measures): python-ish escape hatch; only the
-   col("...") trigger completes inside it. */
-function frameEditor(m, owner, statusEl) {
+/* The from: editor (complex measures): the SQL SELECT the measure's
+   aggregate reads instead of the fact scan. Column completion works inside it
+   like anywhere else. */
+function fromEditor(m, owner, statusEl) {
   const wrap = el("div", { class: "mf-expr-wrap" });
   const ta = el("textarea", { class: "mf-frame", rows: "7", spellcheck: "false" });
-  ta.value = m.frame || "";
+  ta.value = m.from || "";
   const suggest = el("div", { class: "mf-suggest" });
   suggest.hidden = true;
   const completer = makeCompleter(ta, suggest, (upto, after, caret) => {
     const ctx = dslContext(upto, caret);
-    return ctx && ctx.kind === "col" ? { items: dslItems(ctx, exprColumns(owner), after), start: ctx.start } : null;
+    return ctx ? { items: dslItems(ctx, exprColumns(owner), after), start: ctx.start } : null;
   });
-  ta.addEventListener("input", () => { m.frame = ta.value; markDirty(); completer.update(); scheduleCheck(m, owner, statusEl); });
+  ta.addEventListener("input", () => { m.from = ta.value; markDirty(); completer.update(); scheduleCheck(m, owner, statusEl); });
   ta.addEventListener("keydown", (e) => completer.onKeydown(e));
   ta.addEventListener("blur", () => setTimeout(() => completer.hide(), 150));
   wrap.append(ta, suggest);
@@ -1158,7 +1163,7 @@ function frameEditor(m, owner, statusEl) {
 }
 
 function measureCard(m, owner, idx, box) {
-  const isFramed = hasFrame(m);
+  const isFramed = hasFrom(m);
   const card = el("div", { class: "mf-measure-card" + (isFramed ? " framed" : "") });
   const status = el("div", { class: "mf-measure-status" });
 
@@ -1180,8 +1185,8 @@ function measureCard(m, owner, idx, box) {
 
   if (isFramed) {
     card.append(el("div", { class: "field-label", style: "margin-top:6px" }, "FRAME · derived step ahead of the aggregation (open the full editor for guidance)"));
-    card.append(frameEditor(m, owner, status));
-    card.append(el("div", { class: "field-label", style: "margin-top:8px" }, "EXPR · aggregates the frame's own output columns"));
+    card.append(fromEditor(m, owner, status));
+    card.append(el("div", { class: "field-label", style: "margin-top:8px" }, "EXPR · aggregates the from: block's output"));
     card.append(exprEditor(m, owner, status));
   } else {
     card.append(exprEditor(m, owner, status));
@@ -1197,10 +1202,10 @@ function measureCard(m, owner, idx, box) {
 
 function renderMeasureSection(main) {
   main.append(el("div", { class: "sec-title" }, "Measures"));
-  main.append(note("safe DSL expressions (e.g. sum(revenue), mean(price)) — every measure reduces to one "
+  main.append(note("SQL aggregates (e.g. SUM(revenue), AVG(price)) — every measure reduces to one "
     + "value per group. A measure belongs to the dataset it's declared on, which is what scopes it to "
     + "one fact table; names have to be unique across the whole model. Use ⤢ EXPAND for the full editor "
-    + "with a function reference; complex measures add a derived-frame step ahead of their aggregation."));
+    + "with a function reference; a complex measure adds a from: block saying which rows its aggregate reads."));
   if (!form.datasets.length) {
     main.append(note("add a dataset first (DATASETS section)"));
     return;
@@ -1218,7 +1223,7 @@ function renderMeasures(box, owner) {
   owner.measures.forEach((m, idx) => box.append(measureCard(m, owner, idx, box)));
   const add = el("button", { class: "ghost" }, "+ add measure");
   add.addEventListener("click", () => { owner.measures.push(blankMeasure()); markDirty(); renderMeasures(box, owner); });
-  const addFramed = el("button", { class: "ghost" }, "+ add complex measure (frame)");
+  const addFramed = el("button", { class: "ghost" }, "+ add complex measure (from:)");
   addFramed.addEventListener("click", () => {
     const m = blankFramedMeasure();
     owner.measures.push(m);
@@ -1287,14 +1292,14 @@ function drawMeasureModal() {
   const owner = modalOwner;
   const overlay = $("#measure-modal");
   overlay.innerHTML = "";
-  const isFramed = hasFrame(m);
+  const isFramed = hasFrom(m);
   const status = el("div", { class: "mf-measure-status" });
 
   const done = el("button", { class: "btn" }, "✓ DONE");
   done.addEventListener("click", dismissMeasureModal);
   const toggle = el("button", { class: "btn alt" }, isFramed ? "✕ DROP FRAME" : "⚡ MAKE COMPLEX");
   toggle.addEventListener("click", () => {
-    if (isFramed) { m.frame = null; m.frame_emits = []; } else { m.frame = m.frame || FRAME_TEMPLATE; m.frame_emits = m.frame_emits || []; }
+    if (isFramed) { m.from = null; m.emits = []; } else { m.from = m.from || FROM_TEMPLATE; m.emits = m.emits || []; }
     markDirty();
     drawMeasureModal();
   });
@@ -1316,11 +1321,11 @@ function drawMeasureModal() {
     editorCol.append(
       el("div", { class: "field-label" }, "FRAME · builds a derived LazyFrame ahead of the aggregation"),
       note("lf (filtered scan), dims (the query's other grouping columns) and pl are in scope; assign the "
-        + "result to `frame`. Saving a framed measure requires the admin role."),
-      frameEditor(m, owner, status),
-      el("div", { class: "field-label", style: "margin-top:10px" }, "FRAME_EMITS · dimensions the frame computes itself"),
-      frameEmitsPicker(m, owner, drawMeasureModal),
-      el("div", { class: "field-label", style: "margin-top:10px" }, "EXPR · aggregates the frame's own output columns"),
+        + "reads. {model} is the filtered fact scan, {dims} the query's grouping."),
+      fromEditor(m, owner, status),
+      el("div", { class: "field-label", style: "margin-top:10px" }, "EMITS · dimensions the block computes itself"),
+      emitsPicker(m, owner, drawMeasureModal),
+      el("div", { class: "field-label", style: "margin-top:10px" }, "EXPR · aggregates the from: block's output"),
       exprEditor(m, owner, status, { rows: 2, cls: "mf-expr mm-expr" }));
   } else {
     editorCol.append(
@@ -1331,7 +1336,7 @@ function drawMeasureModal() {
     el("div", { class: "field-label", style: "margin-top:10px" }, "SYNONYMS · plain-language names Chat can match"),
     synonymsInput(m.synonyms || (m.synonyms = []), markDirty));
 
-  // clickable DSL reference: inserts at the caret of the last-focused editor
+  // clickable function reference: inserts at the caret of the last-focused editor
   const ref = el("div", { class: "mm-ref" }, el("div", { class: "sec-title" }, "Function reference"));
   for (const [insert, hint, off] of DSL_FUNCTIONS) {
     const row = el("button", { class: "mm-fn", title: "insert at cursor" },

@@ -1,8 +1,9 @@
-/* Sandbox: ad hoc polars/python scratch notebooks. Multiple cells share one
-   namespace when run (see app/sandbox_runner.py) — there's no persistent
-   kernel between separate runs, each run replays every cell from the top
-   through the one you clicked RUN on. Same trust/role posture as a pipeline
-   script (app/pipelines.py): any signed-in role can browse saved notebooks
+/* Sandbox: ad hoc SQL scratch notebooks. Multiple cells share one DuckDB
+   session when run (see app/sandbox_runner.py) — there's no persistent
+   session between separate runs, each run replays every cell from the top
+   through the one you clicked RUN on, so a TEMP VIEW an early cell declares
+   is there for every later one. Same trust/role posture as a pipeline
+   (app/pipelines.py): any signed-in role can browse saved notebooks
    read-only, only admin can edit/run/save/delete/convert.
 
    Cell DOM nodes are created once per structural change (open/add/move/
@@ -15,7 +16,7 @@ import { isAdmin } from "./auth.js";
 import { openEditor } from "./editor.js";
 import { makeCompleter } from "./completion.js";
 import { $, api, el, fmtBytes } from "./lib.js";
-import { highlightPython } from "./pyhighlight.js";
+import { highlightSql } from "./sqlhighlight.js";
 import { navigate, paths, setPath } from "./router.js";
 import { hooks, showView, state } from "./state.js";
 
@@ -34,11 +35,10 @@ const newCellId = () => `c${Date.now().toString(36)}_${++cellSeq}`;
 const newCell = (source = "") => ({ id: newCellId(), source, output: null });
 
 const TEMPLATE_SOURCE =
-  '# pick a file under "Bucket Files" (right) to insert a read("s3://…") call —\n'
-  + "# read() infers parquet/csv/delta from the path (iceberg needs an explicit\n"
-  + '# read("...", format="iceberg")), and later cells can use earlier cells\'\n'
-  + "# variables, like a real notebook\n"
-  + 'df = read("s3://cash-intel/sales/*.parquet")\ndf';
+  '-- pick a file under "Bucket Files" (right) to insert a reader call at the\n'
+  + "-- cursor. Cells share one session, so a TEMP VIEW here is visible to every\n"
+  + "-- later cell.\n"
+  + "SELECT * FROM read_parquet('s3://cash-intel/sales/*.parquet') LIMIT 100";
 
 // { id -> { row, ta, pre, outBox } } — rebuilt every renderCells() call.
 let cellRefs = new Map();
@@ -109,7 +109,7 @@ function renderFiles() {
     return;
   }
   for (const f of filtered.slice(0, 300)) {
-    const chip = el("div", { class: "col-chip", title: `insert read("${f.path}") at the cursor` },
+    const chip = el("div", { class: "col-chip", title: `insert a reader for ${f.path} at the cursor` },
       el("span", {}, f.key), el("span", { class: "dt" }, `${f.format} · ${fmtBytes(f.size)}`));
     chip.addEventListener("click", () => insertReadAtActiveCell(f));
     box.append(chip);
@@ -130,25 +130,44 @@ function insertReadAtActiveCell(f) {
   if (!isAdmin()) return;
   const ta = lastFocusedTa && document.body.contains(lastFocusedTa) ? lastFocusedTa : null;
   if (!ta) { alert("click inside a cell first, then click a file to insert it there"); return; }
-  insertAtCursorTa(ta, `read("${f.path}")`);
+  insertAtCursorTa(ta, readerCall(f));
 }
 
-// ── autocomplete: read("...") bucket paths, pl.xxx members, bare names ───
+// ── autocomplete: bucket paths in a reader call, keywords, declared names ──
 
-const PL_MEMBERS = [
-  ["DataFrame(", "construct a DataFrame"], ["LazyFrame(", "construct a LazyFrame"],
-  ["scan_parquet(", "lazily scan parquet"], ["scan_csv(", "lazily scan csv"],
-  ["scan_delta(", "lazily scan a Delta table"], ["scan_iceberg(", "lazily scan an Iceberg table"],
-  ["read_parquet(", "eagerly read parquet"],
-  ["col(", "reference a column"], ["when(", "conditional expression"],
-  ["concat(", "concatenate frames"], ["lit(", "a literal value"],
-  ["Config", "polars configuration"], ["Int64", "dtype"], ["Float64", "dtype"],
-  ["Utf8", "dtype"], ["Boolean", "dtype"], ["Date", "dtype"], ["Datetime", "dtype"],
+// SQL names its reader explicitly, so a file's format decides which call to
+// insert — an iceberg root is never mistaken for a delta one the way an
+// extension guess could be.
+const READERS = {
+  parquet: "read_parquet", csv: "read_csv", delta: "delta_scan", iceberg: "iceberg_scan",
+};
+
+function readerCall(f) {
+  return `${READERS[f.format] || "read_parquet"}('${f.path}')`;
+}
+
+const SQL_KEYWORDS = [
+  ["SELECT", "start a query"], ["FROM", "the relation to read"],
+  ["WHERE", "filter rows in the scan, where it can be pushed down"],
+  ["GROUP BY ALL", "group by every non-aggregate in the select list"],
+  ["ORDER BY", "sort"], ["LIMIT", "cap the rows"],
+  ["QUALIFY", "filter on a window result without a subquery"],
+  ["CREATE OR REPLACE TEMP VIEW", "name a relation for later cells"],
+  ["FILTER (WHERE )", "aggregate only the rows matching a predicate"],
+  ["EXCLUDE ()", "SELECT * minus some columns"],
+  ["USING SAMPLE", "a real sample, unlike LIMIT"],
+  ["EXPLAIN ANALYZE", "check whether pushdown is actually happening"],
+  ["read_parquet('')", "read parquet from the bucket"],
+  ["read_csv('')", "read csv from the bucket"],
+  ["delta_scan('')", "read a Delta table root"],
+  ["iceberg_scan('')", "read an Iceberg table root"],
 ];
 
+// Relations earlier cells declare, which later ones can read by name — the
+// SQL equivalent of the old notebook's assigned variables.
 function assignedNames() {
-  const names = new Set(["read", "pl", "bucket"]);
-  const re = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=[^=]/gm;
+  const names = new Set();
+  const re = /\bcreate\s+(?:or\s+replace\s+)?(?:temp(?:orary)?\s+)?(?:table|view)\s+(?:if\s+not\s+exists\s+)?"?([A-Za-z_][A-Za-z0-9_]*)"?/gi;
   for (const cell of sandbox.cells) {
     let m;
     while ((m = re.exec(cell.source))) names.add(m[1]);
@@ -159,10 +178,11 @@ function assignedNames() {
 function sandboxResolve(upto, after, caret) {
   const line = upto.slice(upto.lastIndexOf("\n") + 1);
 
-  let m = upto.match(/read\(\s*(["'])([^"']*)$/);
+  // inside a reader's quoted argument: complete the bucket path
+  let m = upto.match(/(?:read_parquet|read_csv|read_json|delta_scan|iceberg_scan|glob)\(\s*\[?\s*'([^']*)$/i);
   if (m) {
-    const prefix = m[2];
-    const closer = after.startsWith('"') || after.startsWith("'") ? "" : '")';
+    const prefix = m[1];
+    const closer = after.startsWith("'") ? "" : "')";
     const skip = closer ? 0 : 2;
     const items = sandbox.bucketFiles
       .filter((f) => f.path.toLowerCase().includes(prefix.toLowerCase()))
@@ -171,21 +191,20 @@ function sandboxResolve(upto, after, caret) {
     if (items.length) return { items, start: caret - prefix.length };
   }
 
-  m = upto.match(/pl\.([A-Za-z_]*)$/);
+  m = line.match(/(?:^|[-+*/%()<>=,!&|;[\s])([A-Za-z_][A-Za-z0-9_]*)$/);
   if (m) {
     const prefix = m[1];
-    const items = PL_MEMBERS
-      .filter(([t]) => t.toLowerCase().startsWith(prefix.toLowerCase()))
-      .map(([t, hint]) => ({ text: t, hint, insert: t, caretOffset: 0 }));
-    if (items.length) return { items, start: caret - prefix.length };
-  }
-
-  m = line.match(/(?:^|[-+*/%()<>=,!&|:[\s])([A-Za-z_][A-Za-z0-9_]*)$/);
-  if (m) {
-    const prefix = m[1];
-    const items = [...assignedNames()].filter((n) => n.startsWith(prefix) && n !== prefix)
-      .sort()
-      .map((n) => ({ text: n, hint: "", insert: n, caretOffset: 0 }));
+    const lower = prefix.toLowerCase();
+    // keywords match case-insensitively (typing `sel` offers SELECT), the
+    // relations earlier cells declared match on their own case
+    const items = [
+      ...SQL_KEYWORDS
+        .filter(([t]) => t.toLowerCase().startsWith(lower))
+        .map(([t, hint]) => ({ text: t, hint, insert: t, caretOffset: t.endsWith("')") || t.endsWith("()") ? -2 : t.endsWith(")") ? -1 : 0 })),
+      ...[...assignedNames()].filter((n) => n.startsWith(prefix) && n !== prefix)
+        .sort()
+        .map((n) => ({ text: n, hint: "declared above", insert: n, caretOffset: 0 })),
+    ];
     if (items.length) return { items, start: caret - prefix.length };
   }
   return null;
@@ -251,7 +270,7 @@ function renderCellRow(cell, idx, total) {
   }
 
   const editorWrap = el("div", { class: "sbx-cell-editor" });
-  const pre = el("pre", { class: "py-highlight", "aria-hidden": "true" }, el("code", {}));
+  const pre = el("pre", { class: "sql-highlight", "aria-hidden": "true" }, el("code", {}));
   const ta = el("textarea", { spellcheck: "false", autocomplete: "off", rows: "1" });
   ta.value = cell.source;
   if (!admin) ta.readOnly = true;
@@ -264,7 +283,7 @@ function renderCellRow(cell, idx, total) {
   const row = el("div", { class: "sbx-cell" }, head, editorWrap, outBox);
 
   const refreshHighlight = () => {
-    pre.querySelector("code").innerHTML = highlightPython(ta.value);
+    pre.querySelector("code").innerHTML = highlightSql(ta.value);
     autoSize(ta, editorWrap);
   };
   refreshHighlight();
@@ -483,7 +502,7 @@ function lastOutputColumns() {
 // conversion (see app/api/sandbox.py's convert()).
 async function convertToPipeline(withLineage = false) {
   if (!sandbox.cells.some((c) => c.source.trim())) {
-    alert("nothing to convert — write some code first");
+    alert("nothing to convert — write some sql first");
     return;
   }
   const btn = $(withLineage ? "#sbx-convert-ai" : "#sbx-convert");

@@ -1,6 +1,6 @@
 /* Measure lab: author a measure directly on the visual.
-   Type polars expression syntax with completion (source columns + expression
-   methods), watch it resolve live in the chart, then keep it on the visual
+   Type a SQL aggregate with completion (source columns + aggregate
+   functions), watch it resolve live in the chart, then keep it on the visual
    (saved with the visual's spec) or promote it to the model yaml. */
 "use strict";
 
@@ -30,9 +30,9 @@ async function loadSchema() {
   } catch { /* completion just won't offer columns */ }
 }
 
-// param()'s one legal position is lag()'s periods argument — this is a
-// client-side heuristic for UX only (disabling "save to model" early); the
-// server's measure_dsl.referenced_parameter_names guard is authoritative.
+// param()'s one legal position is a LAG/LEAD offset — this is a client-side
+// heuristic for UX only (disabling "save to model" early); the server's
+// sqlgrammar.referenced_parameter_names guard is authoritative.
 const PARAM_REF = /\bparam\s*\(/;
 
 function refreshParamInsertOptions() {
@@ -59,7 +59,8 @@ export function openLab(def = null) {
   $("#lab-label").value = (def && def.label) || "";
   $("#lab-format").value = (def && def.format) || "number";
   $("#lab-expr").value = (def && def.expr) || "";
-  setStatus('type an expression — e.g. <b>sum(revenue)</b>; <b>col("</b> triggers column suggestions');
+  setStatus('type a SQL aggregate — e.g. <b>SUM(unit_price * quantity)</b>; '
+    + 'a bare name offers columns, sibling measures and functions');
   loadSchema();
   refreshParamInsertOptions();
   updateSaveModelGuard(labDef());
@@ -201,13 +202,13 @@ async function renderLabHistory(name) {
   } catch { /* the strip is informational only */ }
 }
 
-// ── completion (shared engine, polars-expression context) ────
+// ── completion (shared engine, SQL-expression context) ────
 
 // combined completion pool for a bare identifier: source columns plus
 // sibling measure names (model measures + this visual's other inline
 // measures) — a bare name is one or the other depending on whether the
-// expr turns out to be a window measure (running_total()/lag()), which
-// isn't known until it's parsed, so both are offered together (mirrors
+// expr turns out to be a window measure (something OVER w), which isn't
+// known until it's parsed, so both are offered together (mirrors
 // modelform.js's exprColumns()). The measure currently being edited is
 // excluded so it's never suggested as its own sibling.
 function exprPool() {

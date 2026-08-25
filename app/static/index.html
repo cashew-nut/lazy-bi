@@ -43,7 +43,7 @@
 <div id="app" hidden>
   <header>
     <div class="logo" id="logo">CASH<b>_</b>INTELLIGENCE</div>
-    <div class="tagline">// lazy polars over s3 · semantic layer · night city build v1</div>
+    <div class="tagline">// duckdb over s3 · semantic layer · night city build v1</div>
     <nav id="mode-nav">
       <button data-mode="home">HOME</button>
       <button data-mode="studio">STUDIO</button>
@@ -455,7 +455,7 @@
           <button class="btn plain" id="sbx-run-all" data-role="admin">▶ RUN ALL</button>
           <!-- no data-role: these two are admin-only *and* LLM-gated, so sandbox.js/sandboxagent.js own their
                visibility outright rather than letting auth.js's role sweep unhide them on an unconfigured server -->
-          <button class="btn plain" id="sbx-agent-toggle" title="ask the coding agent for polars — it sees this notebook" hidden>◈ AGENT</button>
+          <button class="btn plain" id="sbx-agent-toggle" title="ask the coding agent for sql — it sees this notebook" hidden>◈ AGENT</button>
           <button class="btn plain" id="sbx-convert" data-role="admin">→ CONVERT TO PIPELINE</button>
           <button class="btn plain" id="sbx-convert-ai" title="convert, and have the agent fill in the pipeline's description + field lineage" hidden>→ CONVERT + LINEAGE</button>
           <button class="btn plain" id="sbx-delete" data-role="admin" hidden>DELETE</button>

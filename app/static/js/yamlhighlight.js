@@ -16,7 +16,7 @@ function escapeHtml(s) {
 
 // Split a line into "code" and a trailing "# comment" — a '#' only starts a
 // comment outside a quoted string and at the start of a token (start of
-// line or preceded by whitespace), matching both yaml and python conventions.
+// line or preceded by whitespace), matching yaml's comment convention.
 function splitComment(line) {
   let inQuote = null;
   for (let i = 0; i < line.length; i++) {

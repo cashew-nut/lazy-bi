@@ -89,7 +89,7 @@ export async function openNotebook(id) {
 hooks.openNotebook = openNotebook;
 
 // author-authored (role-gated) content, same trust boundary as the model
-// yaml/measure DSL authors can already write server-side — this strip is
+// yaml/measure SQL authors can already write server-side — this strip is
 // belt-and-braces against an accidental paste, not a security boundary.
 // Exported for the composer's live preview, which renders in-flight LLM
 // output that hasn't reached the server-side sanitizer yet.

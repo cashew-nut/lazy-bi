@@ -248,7 +248,7 @@ function renderPipelinesList() {
   $("#mk-pipelines-count").textContent = String(lastPipelines.length);
   const box = $("#mk-pipelines-list");
   box.innerHTML = "";
-  if (!lastPipelines.length) { box.append(el("div", { class: "empty-note" }, "none yet — hosted polars transformation scripts")); return; }
+  if (!lastPipelines.length) { box.append(el("div", { class: "empty-note" }, "none yet — hosted SQL transformations")); return; }
   const pipelines = lastPipelines.filter((p) => matchesQuery(pipelinesFilter, p.label, p.name));
   if (!pipelines.length) { box.append(el("div", { class: "empty-note" }, "no matches")); return; }
   for (const p of pipelines) {

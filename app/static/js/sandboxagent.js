@@ -1,4 +1,4 @@
-/* Sandbox coding agent panel: ask for polars, get cells you can apply into
+/* Sandbox coding agent panel: ask for SQL, get cells you can apply into
    the notebook with one click (app/sandbox_agent.py is the server seam).
 
    Deliberately not a chat about data — it writes code for the notebook that
@@ -17,7 +17,7 @@
 import { isAdmin } from "./auth.js";
 import { parseSSE } from "./chat.js";
 import { $, el } from "./lib.js";
-import { highlightPython } from "./pyhighlight.js";
+import { highlightSql } from "./sqlhighlight.js";
 import { applyAgentCell, cellIndexById, notebookContext, runThrough } from "./sandbox.js";
 import { hooks } from "./state.js";
 
@@ -81,9 +81,9 @@ export function resetAgentThread() {
 // ── thread rendering ─────────────────────────────────────────────────────
 
 function codeBlock(source) {
-  const pre = el("pre", { class: "py-highlight sbx-agent-code" });
+  const pre = el("pre", { class: "sql-highlight sbx-agent-code" });
   const code = el("code", {});
-  code.innerHTML = highlightPython(source);
+  code.innerHTML = highlightSql(source);
   pre.append(code);
   return pre;
 }
@@ -144,7 +144,7 @@ function renderThread() {
   thread.innerHTML = "";
   if (!agent.messages.length) {
     thread.append(el("div", { class: "empty-note" },
-      "ask for polars — it sees this notebook's cells, their last run's errors and result schemas, "
+      "ask for sql — it sees this notebook's cells, their last run's errors and result schemas, "
       + "and the bucket's paths. Nothing here is saved."));
     return;
   }
