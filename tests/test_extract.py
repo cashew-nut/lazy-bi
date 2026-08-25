@@ -37,21 +37,22 @@ def test_mean_decomposes_into_sum_over_count():
     wrong, but summing the two additive halves and dividing once is exact."""
     plan = sqlgrammar.rollup_plan("AVG(fare_amount)")
     assert plan["components"] == [
-        {"agg": "sum", "expr": "SUM(fare_amount)"},
-        {"agg": "sum", "expr": "COUNT(fare_amount)"},
+        {"agg": "sum", "expr": "sum(fare_amount)"},
+        {"agg": "sum", "expr": "count(fare_amount)"},
     ]
     assert plan["formula"] == {"op": "/", "l": {"ref": 0}, "r": {"ref": 1}}
 
 
 def test_ratio_of_sums_decomposes():
     plan = sqlgrammar.rollup_plan("SUM(tip_amount) / SUM(fare_amount)")
-    assert [c["expr"] for c in plan["components"]] == ["SUM(tip_amount)", "SUM(fare_amount)"]
+    # rendered from the validated AST, which is why the case is DuckDB's
+    assert [c["expr"] for c in plan["components"]] == ["sum(tip_amount)", "sum(fare_amount)"]
     assert plan["formula"] == {"op": "/", "l": {"ref": 0}, "r": {"ref": 1}}
 
 
 def test_constants_stay_in_the_formula_not_the_components():
     plan = sqlgrammar.rollup_plan("SUM(spend) / (SUM(impressions) / 1000)")
-    assert [c["expr"] for c in plan["components"]] == ["SUM(spend)", "SUM(impressions)"]
+    assert [c["expr"] for c in plan["components"]] == ["sum(spend)", "sum(impressions)"]
     assert plan["formula"]["r"] == {"op": "/", "l": {"ref": 1}, "r": {"const": 1000}}
 
 
@@ -73,7 +74,7 @@ def test_repeated_component_is_fetched_once():
 def test_filtered_aggregate_carries_its_filter_into_the_component():
     plan = sqlgrammar.rollup_plan("SUM(revenue) FILTER (WHERE region = 'EU')")
     assert plan["components"] == [
-        {"agg": "sum", "expr": "SUM(revenue) FILTER (WHERE (region = 'EU'))"}]
+        {"agg": "sum", "expr": "sum(revenue) FILTER (WHERE (region = 'EU'))"}]
 
 
 @pytest.mark.parametrize("text", [
@@ -125,6 +126,9 @@ class _Frame:
 
     def to_dicts(self):
         return self.table.to_pylist()
+
+    def select(self, name):
+        return self[name]
 
     def sort(self, name):
         order = sorted(range(self.height), key=lambda i: (self[name][i] is None, self[name][i]))
@@ -314,7 +318,7 @@ def test_extract_rolled_back_up_equals_the_live_query(client):
     # an aggregate share one extract column, so this is what the browser
     # hands Perspective as its aggregate map
     aggs = {c["col"]: c["agg"] for m in meta["measures"] for c in m["components"]}
-    assert len(aggs) < SUM(len(m["components"]) for m in meta["measures"]), \
+    assert len(aggs) < sum(len(m["components"]) for m in meta["measures"]), \
         "revenue and margin_pct share sum(unit_price * quantity) — it should be fetched once"
     rolled = _rollup(df.to_dicts(), "region", aggs)
     values = {}
@@ -413,7 +417,7 @@ def test_every_dtype_normalizes_to_something_perspective_can_read(client):
     # cross-filter value from a live tile won't match one in an extract
     row = out.to_pylist()[0]
     assert row["d"] == "2024-01-15"
-    assert row["ts"] == "2024-01-15T05:30:00"
+    assert row["ts"] == "2024-01-15T05:30:00.123456"   # what isoformat() gives
     assert (row["cat"], row["s"], row["b"], row["i64"], row["f64"], row["u32"]) == \
         ("a", "hi", True, 3, 1.5, 7)
     assert row["dec"] == pytest.approx(1.5)
@@ -448,7 +452,7 @@ def test_coarser_grain_buckets_are_precomputed(client):
     df = _frame(res)
     for column in dim["coarser"].values():
         assert column in df.columns
-    quarters = df.select(dim["coarser"]["1q"]).to_series()
+    quarters = df.select(dim["coarser"]["1q"])
     assert all(q[5:7] in ("01", "04", "07", "10") for q in quarters)
 
 

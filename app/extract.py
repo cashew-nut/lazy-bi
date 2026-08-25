@@ -493,12 +493,18 @@ def _iso_strings(column):
     """A temporal column as the ISO strings the JSON path produces: a date as
     `2024-01-01`, a timestamp as `2024-01-01T00:00:00`. Written out rather than
     left to a plain cast, which would give a date a time component it never
-    had and break equality against a live tile's value."""
+    had and break equality against a live tile's value.
+
+    The trailing-zeros trim is what matches `datetime.isoformat()`, which omits
+    the fractional part only when it is zero — a truncated bucket and a raw
+    timestamp both have to render the same way here as they do in JSON, or a
+    cross-filter value clicked on a live tile won't match one in an extract."""
     dtype = column.type
     if pa.types.is_date(dtype):
-        formatted = pc.strftime(column, format="%Y-%m-%d")
-    elif pa.types.is_time(dtype):
-        formatted = pc.strftime(column, format="%H:%M:%S")
-    else:
-        formatted = pc.strftime(column, format="%Y-%m-%dT%H:%M:%S")
-    return formatted.cast(pa.large_string())
+        return pc.strftime(column, format="%Y-%m-%d").cast(pa.large_string())
+    # %S already carries the fractional part at sub-second precision, so the
+    # only work left is dropping it when it is all zeros
+    fmt = "%H:%M:%S" if pa.types.is_time(dtype) else "%Y-%m-%dT%H:%M:%S"
+    formatted = pc.strftime(column, format=fmt)
+    trimmed = pc.replace_substring_regex(formatted, pattern=r"\.0+$", replacement="")
+    return trimmed.cast(pa.large_string())

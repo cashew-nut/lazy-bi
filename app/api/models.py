@@ -244,7 +244,11 @@ def generate_model_yaml(spec: ModelSpec):
     """Render the guided form's structured spec to canonical YAML, then run the
     same parse + schema introspection as /models/validate so the form gets the
     document and its verdict (with post-join columns) in one call."""
-    text = semantic.spec_to_yaml(spec.model_dump())
+    # by_alias: `from` is a python keyword, so the field is declared as
+    # `from_` with an alias — dumping by field name would hand the yaml writer
+    # a key it doesn't know, and the measure would come back without the
+    # relation it aggregates
+    text = semantic.spec_to_yaml(spec.model_dump(by_alias=True))
     try:
         parsed = _resolve(semantic.parse_model_text(text))
     except semantic.ModelError as exc:

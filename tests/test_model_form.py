@@ -304,22 +304,21 @@ def test_dataset_schema_bad_format_is_400(client):
 #    measure through the form silently stripped it and the reconstituted
 #    yaml then failed to compile — "the form says the model is invalid") ──
 
-def test_subscriptions_spec_includes_frame(client):
+def test_subscriptions_spec_includes_the_from_relation(client):
     spec = client.get("/api/models/subscriptions/spec").json()["spec"]
     framed = next(m for m in _dataset(spec, "subscriptions")["measures"]
                   if m["name"] == "median_tenure_days")
-    assert framed["frame"] and "group_by" in framed["frame"]
-    assert framed["frame_emits"] == ["churn_month"]
+    assert framed["from"] and "date_diff" in framed["from"]
+    assert framed["emits"] == ["churn_month"]
 
 
-def test_subscriptions_generate_round_trips_frame(client):
+def test_subscriptions_generate_round_trips_the_from_relation(client):
     """The exact form flow: GET .../spec -> POST /models/generate — must stay
-    ok and keep the frame block, not silently regenerate a broken measure."""
+    ok and keep the from: block, not silently regenerate a broken measure."""
     spec = client.get("/api/models/subscriptions/spec").json()["spec"]
     body = client.post("/api/models/generate", json=spec).json()
     assert body["ok"] is True, body.get("error")
-    assert "frame:" in body["yaml"]
-    assert "frame_emits:" in body["yaml"]
+    assert "from:" in body["yaml"] and "emits:" in body["yaml"]
     check = client.post("/api/models/validate", json={"yaml": body["yaml"]}).json()
     assert check["ok"] is True, check.get("error")
 
@@ -397,30 +396,35 @@ def test_measure_check_window_expr_uses_measure_names(client):
     assert bad["ok"] is False
 
 
-def test_measure_check_frame_ok_and_bad_syntax(client):
+def test_measure_check_from_ok_and_bad_syntax(client):
     ok = client.post("/api/measures/check", json={
-        "expr": "pl.col(\"x\").median()",
-        "frame": "frame = lf.group_by(dims).agg(pl.col('x').sum())",
+        "expr": "MEDIAN(x)",
+        "from": "SELECT {dims}, SUM(x) AS x FROM {model} GROUP BY {dims}",
     }).json()
     assert ok == {"ok": True, "error": None, "window": False}
-    bad = client.post("/api/measures/check", json={"expr": "x", "frame": "frame = ("}).json()
+    bad = client.post("/api/measures/check", json={
+        "expr": "MEDIAN(x)", "from": "SELECT FROM WHERE"}).json()
     assert bad["ok"] is False
     assert "syntax" in bad["error"]
 
+    legacy = client.post("/api/measures/check", json={
+        "expr": "MEDIAN(x)", "frame": "frame = lf"}).json()
+    assert legacy["ok"] is False
+    assert "'frame:'" in legacy["error"]
 
-def test_measure_check_frame_emits_without_frame(client):
-    res = client.post("/api/measures/check", json={"expr": "SUM(x)", "frame_emits": ["event_date"]}).json()
+
+def test_measure_check_emits_without_from(client):
+    res = client.post("/api/measures/check", json={"expr": "SUM(x)", "emits": ["event_date"]}).json()
     assert res["ok"] is False
-    assert "frame_emits" in res["error"]
+    assert "'emits' needs a 'from'" in res["error"]
 
 
-def test_measure_check_framed_requires_an_expr(client):
-    """A framed measure with valid frame syntax but a blank aggregation expr
-    must not be reported ok — the real load path (Measure.expr() ->
-    compile_expr) always requires one, even though validate_frame alone
-    (an empty snippet compiles fine as a no-op) wouldn't catch it."""
+def test_measure_check_a_from_relation_still_requires_an_expr(client):
+    """A `from:` block says what a measure reads, not what it computes, so the
+    aggregate is still required — reporting this ok would let a measure that
+    cannot load reach the yaml."""
     res = client.post("/api/measures/check", json={
-        "expr": "", "frame": "frame = lf.group_by(dims).agg(pl.x.SUM())",
+        "expr": "", "from": "SELECT {dims}, x FROM {model}",
     }).json()
     assert res["ok"] is False
     assert "expression" in res["error"]
