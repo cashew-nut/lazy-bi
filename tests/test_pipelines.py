@@ -454,9 +454,6 @@ sql: |
         run = _create_and_run(client, name, yaml_text)
         assert run["status"] == "succeeded", run
         assert run["rows_written"] == 5
-        import polars as pl
-
-        from app import config
 
         result = read_delta(target)
         assert result.height == 5

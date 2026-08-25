@@ -65,9 +65,9 @@ def test_ask_unambiguous_question_matches_direct_query(viewer_client, fake_trans
 
     direct = viewer_client.post("/api/query", json={
         "model": "sales", "dimensions": ["category"], "measures": ["revenue"]}).json()
-    # approx, not ==: polars sums a float column in whatever order its
-    # partitions finish in, so two runs of the same query legitimately differ
-    # in the last bits — comparing exactly makes this assertion flaky
+    # approx, not ==: a parallel SUM over a float column adds its partitions
+    # in whatever order they finish, so two runs of the same query legitimately
+    # differ in the last bits — comparing exactly makes this assertion flaky
     rows = body["response"]["result"]["rows"]
     assert [r["category"] for r in rows] == [r["category"] for r in direct["rows"]]
     assert [r["revenue"] for r in rows] == pytest.approx([r["revenue"] for r in direct["rows"]])
@@ -413,9 +413,9 @@ def test_ask_stream_matches_direct_query_and_ends_with_a_response_event(viewer_c
 
     direct = viewer_client.post("/api/query", json={
         "model": "sales", "dimensions": ["category"], "measures": ["revenue"]}).json()
-    # approx, not ==: polars sums a float column in whatever order its
-    # partitions finish in, so two runs of the same query legitimately differ
-    # in the last bits — comparing exactly makes this assertion flaky
+    # approx, not ==: a parallel SUM over a float column adds its partitions
+    # in whatever order they finish, so two runs of the same query legitimately
+    # differ in the last bits — comparing exactly makes this assertion flaky
     rows = body["response"]["result"]["rows"]
     assert [r["category"] for r in rows] == [r["category"] for r in direct["rows"]]
     assert [r["revenue"] for r in rows] == pytest.approx([r["revenue"] for r in direct["rows"]])

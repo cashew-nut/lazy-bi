@@ -60,7 +60,7 @@ def test_unknown_model_is_404(client):
 def test_dimension_values_column_missing_from_source_is_400(client, monkeypatch):
     """Regression: a dimension whose declared column drifted from the real
     file underneath it (e.g. the source got repointed at a differently-shaped
-    extract) used to raise a raw polars.exceptions.ColumnNotFoundError that
+    extract) used to raise a raw engine-level column error that
     only the app-wide 500 handler caught — a scary generic error plus a
     traceback dumped to the server console for what is really a routine
     400-worthy "your model and your data disagree" case. It should read the

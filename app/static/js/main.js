@@ -50,7 +50,7 @@ async function init() {
     initTheme();  // sync the chart palette to whatever theme the boot script already applied
     await initAuth();   // renders the login view first when no session exists
     const [health, models] = await Promise.all([api("/api/health"), api("/api/models")]);
-    $("#conn").innerHTML = `<span class="dot">◉</span> S3 ${health.s3_endpoint.replace(/^https?:\/\//, "")} · POLARS ONLINE`;
+    $("#conn").innerHTML = `<span class="dot">◉</span> S3 ${health.s3_endpoint.replace(/^https?:\/\//, "")} · DUCKDB ONLINE`;
     state.models = models;
     if (!models.length) return vizMessage($("#chart"), "no semantic models found — add a yaml file to models/", true);
     initMeasureLab();

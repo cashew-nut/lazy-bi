@@ -454,7 +454,7 @@ def _projection(parts: list[tuple[str, list[str]]]) -> tuple[list[str], list[str
     Explicit rather than `SELECT *` because a join whose two sides share a
     column name would otherwise produce two columns with that name, and every
     reference to it afterwards is ambiguous. First occurrence keeps the name;
-    a later one is suffixed — the same convention polars applied, so a model
+    a later one is suffixed — the same convention the previous engine applied, so a model
     whose dimension reads a `_right` column keeps reading the same one."""
     select: list[str] = []
     names: list[str] = []
@@ -1285,7 +1285,7 @@ def _framed_ctes(build: _Build, model: Model, model_cte: str, result: Optional[s
 def _probe_schema(build: _Build, rendered: str) -> dict:
     """The columns a `from:` relation produces, read from its metadata alone.
 
-    Costs one LIMIT 0 against the CTEs built so far — the same thing the polars
+    Costs one LIMIT 0 against the CTEs built so far — the same thing the previous
     engine's collect_schema() did, and what turns "column not found" three
     layers down into a message naming the dimension the block dropped."""
     sql = build.wrap(f"SELECT * FROM ({rendered}) LIMIT 0")
@@ -1435,7 +1435,7 @@ def _build_parts(model: Model, query: dict, row_cap: Optional[int] = None) -> tu
         }, row_cap)
         # two fact tables can store the same shared dimension differently — a
         # timestamp meets a date — so the merge keys are normalized before they
-        # are compared, exactly as the polars merge cast them
+        # are compared, exactly as the previous engine's merge cast them
         keys = [f"CAST({_q(name)} AS DATE) AS {_q(name)}"
                 if shared[name].type == "time" else _q(name)
                 for name in dim_names]

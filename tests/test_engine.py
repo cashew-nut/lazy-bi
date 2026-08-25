@@ -501,7 +501,7 @@ def test_spine_dimension_has_no_stored_values(models):
 def test_dimension_values_column_missing_from_source_is_a_query_error(models):
     """A dimension's declared column can drift from the real file underneath
     it (e.g. the source path got repointed at a differently-shaped extract).
-    That used to surface as a raw, uncaught polars.exceptions.ColumnNotFoundError
+    That used to surface as a raw, uncaught engine-level column error
     — a 500 with a Python traceback dumped to the server console instead of the
     same clean QueryError every other bad-column path (_as_date, _filter_expr)
     already raises."""
@@ -624,7 +624,7 @@ def test_import_inner_join_drops_unmatched_anchor_rows(import_edge_cases):
 # --- Regression: a "matching columns" (equality) import whose right_on key is
 # itself a declared dimension, under a *different* name than left_on (e.g. a
 # custom calendar bundle's own `date` column imported against a fact's
-# `event_date`). Polars' default join `coalesce` behavior merges differently-
+# `event_date`). The previous engine's default join `coalesce` merged differently-
 # named key columns into the left one and drops the right one entirely — which
 # silently deleted the calendar's own `date` dimension after the join, even
 # though it's declared and importable. An interval (`how: between`) import
@@ -1442,7 +1442,7 @@ def test_model_reload_drops_held_frames(models, monkeypatch):
 
 def test_glob_is_listed_once_and_reused(models, monkeypatch):
     """A parquet glob is resolved to a file list once per TTL and handed to
-    polars already resolved, instead of being re-listed on every collect."""
+    the listing cache already resolved, instead of being re-globbed per query."""
     cache.clear()
     lists = []
     real = duck._list_objects

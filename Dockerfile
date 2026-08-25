@@ -13,6 +13,14 @@ COPY models/ models/
 COPY dimensions/ dimensions/
 COPY pipelines/ pipelines/
 
+# DuckDB's extensions ship as pinned wheels (see requirements.txt) and are
+# loaded from disk at runtime, never INSTALLed over the network. A wheel that
+# won't load is silent at runtime — the format needing it just reports as
+# unavailable — so fail the *build* instead. This goes through app/duck.py's
+# own loader, so it asserts the real path rather than a lookalike, and it is
+# what catches a version skew between duckdb and an extension after a bump.
+RUN python -c "import sys; from app import duck; loaded = duck.loaded_extensions(); missing = sorted(set(duck.EXTENSIONS) - loaded); sys.exit('duckdb extensions failed to load: ' + ', '.join(missing)) if missing else print('duckdb extensions ok:', ', '.join(sorted(loaded)))"
+
 # state lives outside the image: sqlite db + uploaded-dataset cache, both in
 # the /data volume so they survive a container restart/recreate
 ENV CI_DB_PATH=/data/cash_intel.db \
