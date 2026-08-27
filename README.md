@@ -73,13 +73,16 @@ cp .env.example .env           # optional: LLM settings/secrets, gitignored
 ```
 
 `.env` is read by both ways of running the app — Docker Compose loads it, and
-`app/config.py` loads it for `./run.sh` and a bare `uvicorn`. A real
-environment variable always wins over a value in the file, so
-`CI_LLM_MODEL=gpt-5 ./run.sh` overrides one line without editing it. Values
-are taken literally (no shell expansion), so a key containing `$`, `#` or
-spaces needs no escaping. `CI_ENV_FILE` points somewhere else, or disables
-file loading entirely when set empty — which is what the test suite does, so
-a real key in your `.env` can't change what a test run sees.
+`app/config.py` loads it for `./run.sh` and a bare `uvicorn`. A value in the
+file always wins over an already-exported environment variable of the same
+name, so editing `.env` is always enough — no hunting down some earlier
+experiment's `export` first. For a genuine one-off override from the shell
+instead, skip the file for that run: `CI_ENV_FILE= CI_LLM_MODEL=gpt-5
+./run.sh`. Values are taken literally (no shell expansion), so a key
+containing `$`, `#` or spaces needs no escaping. `CI_ENV_FILE` points
+somewhere else, or disables file loading entirely when set empty — which is
+what the test suite does, so a real key in your `.env` can't change what a
+test run sees.
 
 **Tests:**
 
@@ -1939,18 +1942,27 @@ Different means it was mangled on the way in, and the length usually says
 how. (Leading/trailing whitespace is trimmed before use, so that one is
 already handled.) Auth failures log the same fingerprint.
 
-**An exported variable beats `.env`** — deliberately, so a one-off override
-needs no edit, but it makes a forgotten `export CI_LLM_API_KEY=...` from an
-earlier experiment silently outrank the `.env` written to replace it. Startup
-names any setting shadowed that way:
+**`.env` beats an already-exported variable** — deliberately, so editing the
+file is always enough and a stale `export CI_LLM_API_KEY=...` from an earlier
+experiment can never silently outrank the `.env` written to replace it. The
+trade-off runs the other way for a real deployed secret (a task role's env
+var, a value injected by your orchestrator): a `.env` that shouldn't be there
+would override it just the same. Startup names any setting overridden this
+way:
 
 ```
-[cash-intel] .env ignored for CI_LLM_API_KEY — already set in the environment, which wins
+[cash-intel] .env overrode CI_LLM_API_KEY — already set in the environment, but .env wins
 ```
 
-Docker Compose applies the same precedence (shell first, then `.env`) but
-resolves it before the container exists, so that line can't appear there.
-Check what Compose will actually inject — without printing the secret — with:
+For a one-off override from the shell instead of editing the file, skip file
+loading for that run: `CI_ENV_FILE= CI_LLM_MODEL=gpt-5 ./run.sh`.
+
+Docker Compose resolves `${CI_LLM_API_KEY:-}` with its own fixed precedence
+(shell first, then `.env`) before the container exists, and nothing here
+changes that — app/config.py's own precedence above only governs a `.env`
+file read from *inside* the container, which the compose file never mounts,
+so that startup line never appears under Compose. Check what Compose will
+actually inject — without printing the secret — with:
 
 ```bash
 docker compose config --format json | python3 -c "
@@ -1962,8 +1974,10 @@ for k, v in sorted(env.items()):
 "
 ```
 
-`unset CI_LLM_API_KEY` clears a stale export for the current shell; if it
-came from `~/.bashrc` or `~/.zshrc` it will return on the next one.
+Under Compose specifically, `unset CI_LLM_API_KEY` clears a stale export for
+the current shell so `.env` reaches the container instead; if it came from
+`~/.bashrc` or `~/.zshrc` it will return on the next one. `./run.sh` and a
+bare `uvicorn` never need this — `.env` already wins there.
 
 Four details the abstraction absorbs rather than pushing onto you:
 

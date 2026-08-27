@@ -16,7 +16,9 @@ change what a test run sees.
 The load happens before anything below reads os.environ, so a `.env` entry
 is indistinguishable from an exported variable — including for settings whose
 meaning depends on mere presence, like CI_S3_ENDPOINT disabling the embedded
-emulator.
+emulator. `.env` takes precedence over an already-exported variable of the
+same name (_load_env_file below), so editing the file is always enough — no
+`unset` of some earlier experiment's export required.
 """
 import os
 from dataclasses import dataclass
@@ -27,16 +29,20 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _load_env_file() -> list[str]:
-    """Seed os.environ from a `.env` file, without overriding anything the
-    real environment already sets — an explicit `export` (or a `-e` on a
-    container) always wins over the file, which is what makes a one-off
-    override possible without editing it.
+    """Seed os.environ from a `.env` file, overriding anything the real
+    environment already set for the same name — a `.env` edit takes effect
+    on the next run without also having to hunt down and `unset` whatever
+    exported it before. For a genuine one-off override from the shell
+    instead of the file, skip the file for that run: `CI_ENV_FILE=
+    CI_LLM_MODEL=gpt-5 ./run.sh`.
 
-    Returns the keys the file set that were ignored for that reason. A
-    forgotten `export CI_LLM_API_KEY=...` from an earlier experiment beats
-    the `.env` written to replace it, and the only symptom is the old value
-    being used — so the names of the shadowed settings get reported at
-    startup (app/main.py) rather than left to be discovered from a 401.
+    Returns the keys the file overrode that way. An old `export
+    CI_LLM_API_KEY=...` left over from an earlier experiment is exactly the
+    case this exists to protect against: a fresh key written to `.env`
+    would otherwise keep silently losing to it, and the only symptom would
+    be a 401 that looks like the new key was never picked up — so the names
+    of the settings this happened to (never the values) get reported at
+    startup (app/main.py) rather than left to be discovered that way.
 
     Deliberately a literal parser, not a shell: a value is taken exactly as
     written, so an API key containing `$`, `#`, backticks or spaces needs no
@@ -59,7 +65,7 @@ def _load_env_file() -> list[str]:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return []       # absent or unreadable: the environment alone decides
-    shadowed = []
+    overrode = []
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -68,18 +74,17 @@ def _load_env_file() -> list[str]:
         key = key.removeprefix("export ").strip()
         if not key:
             continue
-        if key in os.environ:
-            shadowed.append(key)
-            continue
         value = value.strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
             value = value[1:-1]
+        if key in os.environ:
+            overrode.append(key)
         os.environ[key] = value
-    return shadowed
+    return overrode
 
 
 # names only — the values are the point of keeping them out of a log
-ENV_FILE_SHADOWED = _load_env_file()
+ENV_FILE_OVERRODE = _load_env_file()
 
 
 def _env(name: str, default: str = "") -> str:

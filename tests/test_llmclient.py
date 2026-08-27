@@ -829,14 +829,14 @@ def test_env_file_supplies_settings(tmp_path, reloaded_config):
     assert cfg.LLM_ENABLED is True
 
 
-def test_real_environment_wins_over_the_env_file(tmp_path, reloaded_config):
-    """So a one-off `CI_LLM_MODEL=... ./run.sh` overrides the file without
-    editing it — the same precedence every other dotenv loader uses."""
+def test_the_env_file_wins_over_the_real_environment(tmp_path, reloaded_config):
+    """So editing `.env` is always enough — no hunting down and `unset`ting
+    whatever an earlier experiment left exported first."""
     env_file = tmp_path / ".env"
     env_file.write_text("CI_LLM_API_KEY=sk-from-file\nCI_LLM_MODEL=gpt-4o\n", encoding="utf-8")
     cfg = reloaded_config(env_file, CI_LLM_MODEL="gpt-5")
-    assert cfg.LLM_MODEL == "gpt-5"
-    assert cfg.LLM_API_KEY == "sk-from-file"      # not overridden, so still read
+    assert cfg.LLM_MODEL == "gpt-4o"              # the file's line wins
+    assert cfg.LLM_API_KEY == "sk-from-file"      # not exported, so still read
 
 
 def test_env_file_values_are_literal_not_shell_expanded(tmp_path, reloaded_config):
@@ -877,22 +877,23 @@ def test_env_file_loading_can_be_disabled(tmp_path, reloaded_config):
     assert reloaded_config().LLM_ENABLED is False
 
 
-def test_a_shadowed_env_file_setting_is_reported_by_name(tmp_path, reloaded_config):
-    """A forgotten `export CI_LLM_API_KEY=...` beats the .env written to
-    replace it, and the only symptom is the old value being used — a 401 that
-    looks like a bad key. The names (never the values) surface at startup."""
+def test_an_overridden_real_env_var_is_reported_by_name(tmp_path, reloaded_config):
+    """A `.env` written to replace a stale `export CI_LLM_API_KEY=...` now
+    wins outright — but for a real deployed secret an unwanted `.env` would
+    override just the same, so the names (never the values) it overrode
+    still surface at startup."""
     env_file = tmp_path / ".env"
     env_file.write_text("CI_LLM_API_KEY=key-from-file\nCI_LLM_MODEL=gpt-5\n", encoding="utf-8")
 
     cfg = reloaded_config(env_file, CI_LLM_API_KEY="key-already-exported")
-    assert cfg.LLM_API_KEY == "key-already-exported"      # the environment wins
-    assert cfg.LLM_MODEL == "gpt-5"                       # the unshadowed line still applies
-    assert cfg.ENV_FILE_SHADOWED == ["CI_LLM_API_KEY"]
+    assert cfg.LLM_API_KEY == "key-from-file"              # the file wins
+    assert cfg.LLM_MODEL == "gpt-5"                        # never exported, applies either way
+    assert cfg.ENV_FILE_OVERRODE == ["CI_LLM_API_KEY"]
 
     # nothing exported: the file applies in full and there is nothing to report
     cfg = reloaded_config(env_file)
     assert cfg.LLM_API_KEY == "key-from-file"
-    assert cfg.ENV_FILE_SHADOWED == []
+    assert cfg.ENV_FILE_OVERRODE == []
 
 
 def test_an_api_key_is_trimmed_of_whitespace(reloaded_config):
