@@ -30,6 +30,9 @@ SQLite (visuals + dashboards +            S3 (your bucket, and the demo one
                                            per-bucket, on one cached connection
 ```
 
+See [docs/architecture.md](docs/architecture.md) for the full component and
+request-flow diagrams (pipelines, sandbox runs, conversational analytics).
+
 ## Run the demo
 
 **Docker (recommended):**
