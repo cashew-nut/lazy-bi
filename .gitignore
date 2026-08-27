@@ -6,3 +6,5 @@ __pycache__/
 cash_intel.db
 data_cache/
 local_data/
+benchmarks/data/
+benchmarks/run/
