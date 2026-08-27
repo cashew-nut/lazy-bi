@@ -1,11 +1,16 @@
-"""Embedded moto S3 server for the fully-local demo mode.
+"""Embedded moto S3 server: the demo store.
 
-Started only when CI_S3_ENDPOINT is not set (see config.EMBEDDED_EMULATOR);
-point CI_S3_ENDPOINT at MinIO / LocalStack / real S3 to skip this entirely.
+Runs whenever the demo bucket's endpoint is the built-in loopback address
+(config.EMBEDDED_EMULATOR), which is the default and stays true even when a
+real object store is configured for everything else — that is what keeps the
+built-in demo catalog answering next to a real bucket rather than 404ing
+against an account that has never heard of it.
+
+Point CI_DEMO_S3_ENDPOINT at MinIO / LocalStack / a shared bucket to host the
+demo data somewhere else, or set CI_DEMO=0 to switch the demo off entirely.
 """
 from __future__ import annotations
 
-from typing import Optional
 from urllib.parse import urlparse
 
 from . import config
@@ -19,7 +24,7 @@ def start_if_embedded() -> bool:
         return False
     from moto.server import ThreadedMotoServer
 
-    parsed = urlparse(config.S3_ENDPOINT)
+    parsed = urlparse(config.DEMO_S3_ENDPOINT)
     _server = ThreadedMotoServer(ip_address=parsed.hostname, port=parsed.port, verbose=False)
     _server.start()
     return True

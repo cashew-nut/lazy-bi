@@ -69,7 +69,13 @@ class Registry:
         pipelines validate their layer references against them. Pipelines
         load after models since target->model matching (lineage) needs
         models loaded."""
-        self.dimension_bundles = semantic.load_dimension_bundles(config.DIMENSIONS_DIR)
+        # The built-in catalog reads the demo bucket by absolute path, so it
+        # is only loadable while there is a demo store to read. With CI_DEMO=0
+        # there isn't one: skipping it here is what keeps a deployment that
+        # wants only its own data from listing seven models that cannot answer.
+        self.dimension_bundles = (
+            semantic.load_dimension_bundles(config.DIMENSIONS_DIR)
+            if config.DEMO_ENABLED else {})
         if self.local_bundle_store is not None:
             for row in self.local_bundle_store.list():
                 try:
@@ -81,7 +87,8 @@ class Registry:
                 local.locked = False
                 local.origin = None
                 self.dimension_bundles[local.name] = local
-        self.models = semantic.load_models(config.MODELS_DIR)
+        self.models = (
+            semantic.load_models(config.MODELS_DIR) if config.DEMO_ENABLED else {})
         if self.local_model_store is not None:
             for row in self.local_model_store.list():
                 try:

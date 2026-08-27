@@ -91,7 +91,8 @@ async function loadBucketFiles() {
   try {
     const data = await api("/api/explorer");
     sandbox.bucketFiles = data.files.map((f) => ({
-      path: `s3://${data.bucket}/${f.key}`, key: f.key, size: f.size, format: inferFormat(f.key),
+      path: `s3://${f.bucket || data.bucket}/${f.key}`, key: f.key, size: f.size,
+      format: inferFormat(f.key),
     }));
   } catch {
     sandbox.bucketFiles = [];

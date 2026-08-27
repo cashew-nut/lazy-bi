@@ -3,8 +3,11 @@
 Run:  uvicorn app.main:app --port 8080
 
 App factory + lifecycle only; endpoints live in app/api/*, runtime state in
-app/registry.py. In demo mode (no CI_S3_ENDPOINT) an embedded moto S3 server
-is started and seeded with demo data if the bucket is empty.
+app/registry.py. The demo bucket is served by an embedded moto S3 server,
+seeded on start if it is empty — including alongside a real object store, so
+the built-in catalog and a real bucket both answer. Set CI_BUCKET (and,
+outside AWS, CI_S3_ENDPOINT) to point everything else at the real one, or
+CI_DEMO=0 to drop the demo entirely.
 """
 from __future__ import annotations
 
@@ -111,8 +114,23 @@ def _s3_banner() -> str:
     that already burned once.
     """
     auth = (f"profile={config.AWS_PROFILE}" if config.AWS_PROFILE
-            else f"key={llmclient.key_fingerprint(config.AWS_ACCESS_KEY_ID)}")
-    return f"S3: endpoint={config.S3_ENDPOINT} bucket={config.BUCKET} {auth}"
+            else f"key={llmclient.key_fingerprint(config.AWS_ACCESS_KEY_ID)}"
+            if config.AWS_ACCESS_KEY_ID else "key=(boto3 credential chain)")
+    store = config.primary_store()
+    line = f"S3: endpoint={store.label} bucket={config.BUCKET} {auth}"
+    if not config.DEMO_ENABLED:
+        line += " | demo catalog off (CI_DEMO=0)"
+        if config.BUCKET == config.DEMO_BUCKET:
+            # No demo and no bucket of your own leaves the app pointed at an
+            # emulator that is not running. Say so here rather than leaving it
+            # to be inferred from a connection error naming port 9600.
+            line += " — and CI_BUCKET is unset, so nothing is readable"
+    elif config.stores_split():
+        # Two stores is the configuration most worth stating out loud: it is
+        # the one where a path's bucket, not the global endpoint, decides
+        # where it is read from.
+        line += f" | demo bucket={config.DEMO_BUCKET} on {config.DEMO_S3_ENDPOINT}"
+    return line
 
 
 def _llm_banner() -> str:
@@ -155,9 +173,12 @@ async def lifespan(app: FastAPI):
                   f"— already set in the environment, which wins")
         print(f"[cash-intel] {_s3_banner()}")
         if emulator.start_if_embedded():
-            print(f"[cash-intel] embedded S3 emulator on {config.S3_ENDPOINT}")
+            print(f"[cash-intel] embedded S3 emulator on {config.DEMO_S3_ENDPOINT}")
         if seed.seed_bucket():
-            print(f"[cash-intel] seeded demo data into s3://{config.BUCKET}")
+            print(f"[cash-intel] seeded demo data into s3://{config.DEMO_BUCKET}")
+        restored = seed.restore_local_uploads()
+        if restored:
+            print(f"[cash-intel] restored {restored} uploaded file(s) into s3://{config.BUCKET}")
         registry.init()
         print(f"[cash-intel] loaded models: {', '.join(registry.models) or '(none)'}")
         print(f"[cash-intel] loaded agents: {', '.join(registry.agents) or '(none)'}")

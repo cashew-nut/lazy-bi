@@ -47,6 +47,10 @@ export async function loadDatasets() {
 
    Shared with the model editor's side panel (editor.js) so both pickers are
    the same object; `bucket` is only needed to build single-object paths. */
+/* `bucket` is only the fallback for a payload that predates per-dataset
+   buckets — with a real store configured next to the demo one the list holds
+   datasets from both, so each row's own ds.bucket is what builds an object's
+   path. */
 export function datasetLedger(list, bucket, onpick, current) {
   const box = el("div", { class: "ds-ledger" });
   for (const ds of list) {
@@ -75,7 +79,7 @@ export function datasetLedger(list, bucket, onpick, current) {
           el("span", { class: "nm" }, o.key.split("/").pop()),
           el("span", { class: "dt" }, o.format));
         leaf.addEventListener("click", () => {
-          onpick({ key: o.key, path: `s3://${bucket}/${o.key}`, format: o.format });
+          onpick({ key: o.key, path: `s3://${ds.bucket || bucket}/${o.key}`, format: o.format });
         });
         objects.append(leaf);
       }

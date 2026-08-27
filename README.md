@@ -25,8 +25,9 @@ FastAPI (auth middleware: viewer/author/admin roles)
    └──► semantic layer (models/*.yaml) ──► one DuckDB statement (CTEs + joins)
    │                                          │ predicate/projection pushdown
    ▼                                          ▼
-SQLite (visuals + dashboards +            S3 (moto emulator in demo mode)
-        users/sessions/audit)              via httpfs, on one cached connection
+SQLite (visuals + dashboards +            S3 (your bucket, and the demo one
+        users/sessions/audit)              on an embedded emulator) via httpfs,
+                                           per-bucket, on one cached connection
 ```
 
 ## Run the demo
@@ -34,12 +35,20 @@ SQLite (visuals + dashboards +            S3 (moto emulator in demo mode)
 **Docker (recommended):**
 
 ```bash
-docker compose up              # demo mode on http://127.0.0.1:8080
-docker compose --profile minio up   # + MinIO-backed instance on :8081
+docker compose up                        # demo mode on http://127.0.0.1:8080
+CI_BUCKET=my-lake docker compose up      # + your own bucket, demo still on
+docker compose --profile minio up        # + MinIO-backed instance on :8081
 ```
 
 The default service runs the embedded S3 emulator in-process and seeds it on
-start. SQLite state lives in the `app-data` volume; `./models` is mounted so
+start. Every S3 setting (`CI_BUCKET`, `CI_BUCKET_PREFIX`, `CI_DEMO`,
+`AWS_PROFILE`, `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN`,
+`AWS_REGION`, `CI_S3_ENDPOINT`) is forwarded from your shell or `.env`, and
+`~/.aws` is mounted read-only so `AWS_PROFILE` — SSO included — resolves
+against the host's own config and cached token. Set `CI_DUCKDB_THREADS` and
+`CI_DUCKDB_MEMORY_LIMIT` if you cap the container: DuckDB otherwise sizes
+both from the *host*, which turns a container memory limit into an OOM kill
+instead of a spill to disk. SQLite state lives in the `app-data` volume; `./models` is mounted so
 semantic models are editable from the host (or the in-app editor); mount
 `./data_cache` after `python -m app.load_taxi` for the big-data model. The
 image runs a single uvicorn worker by design — the emulator is in-process and
@@ -81,7 +90,9 @@ a real key in your `.env` can't change what a test run sees.
 
 Open http://127.0.0.1:8080. On startup the app launches an **embedded moto S3
 server** on `127.0.0.1:9600`, creates the `cash-intel` bucket, and seeds it with
-demo data — only if the bucket is empty. One dataset per source format:
+demo data — only if the bucket is empty. That emulator stays up even when a
+real bucket is configured (see below), so the demo catalog never depends on
+someone else's account. One dataset per source format:
 
 | S3 key | format | model |
 |---|---|---|
@@ -91,9 +102,43 @@ demo data — only if the bucket is empty. One dataset per source format:
 | `marketing/spend.parquet` | parquet | `marketing` |
 | `support/tickets` | Iceberg | `support` (15k support tickets) |
 
-To point at a real bucket or an external emulator (MinIO, LocalStack), set
-`CI_S3_ENDPOINT` (this also disables the embedded moto server) plus
-`CI_BUCKET` and credentials. Two ways to supply those:
+### Your own bucket, next to the demo
+
+Set **`CI_BUCKET`** to a real bucket and that is the whole configuration:
+
+```sh
+CI_BUCKET=my-data-lake AWS_REGION=eu-west-2 ./run.sh
+```
+
+The demo bucket keeps its own emulator. Both are readable at once — the
+built-in catalog goes on answering while your own models read your own data,
+and one browser tab shows datasets from both, each labelled with the bucket
+it came from. A bucket, not a global endpoint, decides where a path is read
+from: `s3://cash-intel/...` goes to the emulator and everything else to your
+store, each with its own credential (DuckDB picks between them by scope, so
+a single query can read both). Nothing demo-shaped is ever written into your
+account, and `CI_DEMO=0` drops the demo entirely — no emulator, no seeding,
+and `models/`+`dimensions/` unloaded, so the catalog lists only what you
+built.
+
+**Leave `CI_S3_ENDPOINT` unset for real AWS.** Both boto3 and DuckDB then
+address the bucket by region, and each bucket's *actual* region is resolved
+rather than assumed. Pinning `s3.amazonaws.com` instead sends every request
+to the us-east-1 frontend, which answers for a bucket living anywhere else
+with a redirect nobody follows — that failure surfaces as a bare `HTTP 404`
+or `403` on a bucket you can list from the CLI in the same shell. Set the
+endpoint only for MinIO, LocalStack or an S3-compatible vendor; setting it
+*without* `CI_BUCKET` puts the demo bucket itself there, which is what the
+compose file's `minio` profile and the test suite both do.
+
+On a shared bucket, point discovery at the part that's yours with
+**`CI_BUCKET_PREFIX=warehouse/`**. Every bucket walk is capped at
+`CI_LIST_MAX_KEYS` (20k) and reports itself as truncated past that: S3
+returns 1000 keys per round trip, so an unbounded walk of a real bucket is
+not a slow Modelling page, it is one that never finishes.
+
+Credentials are for your bucket only — the demo emulator has its own dummy
+pair and never sees them. Three ways to supply them:
 
 - **`AWS_PROFILE`** (recommended for a human's own access, especially AWS
   SSO): set it to a profile name from `~/.aws/config` and every S3 call asks
@@ -111,10 +156,20 @@ To point at a real bucket or an external emulator (MinIO, LocalStack), set
   you. A temporary access key (`ASIA...`) used without its paired token
   fails as `InvalidAccessKeyId`, which reads like a wrong key rather than a
   missing token.
+- **Nothing at all**: boto3's default chain answers instead, which is how an
+  instance or task role (EC2, ECS, EKS, Lambda) works with no credential
+  configuration. The emulator's dummy `testing`/`testing` pair is only the
+  default while the app is pointed at the emulator — it is never what gets
+  sent to a real endpoint.
+
+In Docker, pass these through with `docker-compose.yml`'s `environment:`
+block (already wired for every variable above) — and `~/.aws` is mounted
+read-only into the container, so `AWS_PROFILE` resolves against the host's
+own config and its cached SSO token.
 
 **Your own raw data**: drop a folder of `.csv`/`.parquet` files under
 `raw_data/<dataset-name>/` (committed to the repo, unlike the gitignored
-`data_cache/`) and it's uploaded unmodeled on startup into the same
+`data_cache/`) and it's uploaded unmodeled on startup into the demo
 `cash-intel` bucket, flat under `<dataset-name>/<filename>` — pick it up from
 the Modelling workspace's source picker and build a model on it from
 scratch. The repo doesn't ship a `raw_data/` dataset by default; the demo
@@ -993,6 +1048,23 @@ source quietly falls back to letting DuckDB glob it per query rather than
 failing. Grant `s3:ListBucket` on the prefixes your models read to get the
 speedup.
 
+**It is also bounded.** A source resolving to more than `CI_LIST_MAX_KEYS`
+objects takes the same fallback: past that many, turning a glob into an
+explicit file list stops being the cheaper option — it is a listing to walk
+on a cache miss and tens of thousands of string literals in the SQL. The
+same cap covers dataset discovery and the explorer, which is what keeps a
+real bucket from making the Modelling workspace a page that never loads;
+`CI_BUCKET_PREFIX` narrows the walk to the part of a shared bucket that is
+actually yours.
+
+**Each bucket is signed for its own region.** Resolved once per process via
+`GetBucketLocation` (and from the `x-amz-bucket-region` header on the error
+when that call is denied), because SigV4 puts the region in the credential
+scope: a bucket in `eu-west-2` signed for `us-east-1` is refused outright,
+and the request that goes to the wrong regional endpoint comes back as a
+redirect DuckDB reports as a bare HTTP error. A bucket whose region isn't
+`AWS_REGION` gets a DuckDB secret of its own, scoped to it.
+
 **Memory ceiling** is the two caps multiplied by how many sources a
 deployment has: nothing is pinned above `CI_SOURCE_CACHE_MAX_RESIDENT_BYTES`
 each, and the set of sources is whatever `models/` and `dimensions/` declare,
@@ -1152,12 +1224,14 @@ gitignored, override with `CI_LOCAL_DATA_DIR`). This matters because the
 default embedded S3 emulator is in-memory — its bucket is entirely rebuilt
 from scratch (`app/seed.py`) on every process start, so anything written only
 to the bucket (an upload included) would otherwise vanish the moment the app
-restarts. `app/seed.py`'s `_upload_local_data` re-uploads everything under
-`local_data/` alongside the generated demo data and `raw_data/`, so an upload
-survives a restart the same way `app/load_taxi.py`'s `data_cache/` does.
-Point `CI_S3_ENDPOINT` at a real bucket (MinIO, real S3 — see `docker-compose
---profile minio`) and this becomes moot: the bucket itself persists, so the
-disk cache is just a backup copy.
+restarts. `app/seed.py`'s `restore_local_uploads` puts everything under
+`local_data/` back on start, so an upload survives a restart the same way
+`app/load_taxi.py`'s `data_cache/` does — but *only* into a store that
+forgets. Against a real bucket it does nothing: the bucket remembers by
+itself, and re-uploading every start would resurrect anything deleted from
+outside the app and re-pay for bytes already sitting there. The disk copy is
+still kept either way, so moving a deployment back to the emulator doesn't
+lose uploads.
 
 ## API
 
@@ -1727,6 +1801,24 @@ export CI_LLM_MODEL=qwen2.5-coder:32b
 | `CI_LLM_MAX_TOKENS_PARAM` | `auto` (default) / `max_tokens` / `max_completion_tokens` — see below |
 | `CI_LLM_REASONING_TOKENS` | headroom added for reasoning on the OpenAI wire (default `8192`) |
 | `CI_ENV_FILE` | read settings from a different file than `./.env`; empty = read none |
+
+Object stores (all optional — unset means the fully-local demo):
+
+| variable | meaning |
+|---|---|
+| `CI_BUCKET` | your bucket. Naming one is the whole configuration for real AWS |
+| `CI_S3_ENDPOINT` | MinIO / LocalStack / an S3-compatible vendor. Leave **unset** for AWS, which is addressed by region |
+| `CI_BUCKET_PREFIX` | where in `CI_BUCKET` this deployment's data lives — narrows dataset discovery on a shared bucket |
+| `CI_LIST_MAX_KEYS` | cap on any single bucket walk (default `20000`); past it a listing reports itself truncated |
+| `CI_DEMO` | `0` drops the built-in demo entirely: no emulator, no seeding, `models/`+`dimensions/` unloaded |
+| `CI_DEMO_BUCKET` / `CI_DEMO_S3_ENDPOINT` | move the demo bucket somewhere other than the embedded emulator |
+| `AWS_PROFILE` | a `~/.aws/config` profile, SSO included — re-resolved per call so it refreshes |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` | static keys; unset falls through to boto3's default chain (instance/task role) |
+| `AWS_REGION` | the default region. Each bucket's *own* region is resolved on top of it |
+
+Every setting the app reads treats an **empty** value as unset, so a
+`${VAR:-}` in `docker-compose.yml` or a bare `KEY=` in `.env` means "leave
+this one alone" rather than "set it to nothing".
 
 All of these can live in `.env` instead of your shell. A *blank* value there
 means "use the default", not "empty" — blank is what an unset variable looks

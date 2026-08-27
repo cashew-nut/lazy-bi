@@ -1,9 +1,23 @@
 # CASH INTELLIGENCE — single-container build.
-# Demo mode by default: an embedded moto S3 server runs in-process and the
-# bucket is seeded on start. Point CI_S3_ENDPOINT at MinIO/real S3 to disable.
+#
+# Demo mode by default: an embedded moto S3 server runs in-process holding the
+# demo bucket, seeded on start. Set CI_BUCKET to read a real bucket alongside
+# it (credentials via AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, AWS_PROFILE
+# with ~/.aws mounted, or an instance/task role) — the demo keeps its own
+# emulator, so both answer. CI_S3_ENDPOINT is for MinIO/LocalStack only; real
+# AWS is addressed by region. CI_DEMO=0 drops the demo entirely.
+# See docker-compose.yml for the full set of variables to pass through.
 FROM python:3.12-slim
 
 WORKDIR /srv
+
+# ca-certificates: every read from real S3 is TLS, and a container without a
+# trust store fails all of them with an error that names a certificate rather
+# than the missing package. Stated rather than inherited so a future base
+# image can't quietly drop it.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

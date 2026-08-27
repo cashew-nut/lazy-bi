@@ -24,11 +24,11 @@ survive here:
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import re
 import threading
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlparse
 
 import duckdb
 
@@ -51,7 +51,10 @@ FORMAT_EXTENSION = {"delta": "delta", "iceberg": "iceberg"}
 
 _lock = threading.Lock()
 _con: Optional[duckdb.DuckDBPyConnection] = None
-_secret_key: Optional[tuple] = None
+# what the store-level secrets were last built from, and the same per
+# bucket for the narrower ones — see _install_store_secrets
+_store_secrets: dict[str, tuple] = {}
+_bucket_secrets: dict[str, tuple] = {}
 _loaded: set[str] = set()
 # tables pinned by _pin_source, so invalidate() can drop them again
 _pinned: set[str] = set()
@@ -120,47 +123,121 @@ def loaded_extensions() -> set[str]:
 
 
 # ── credentials ──────────────────────────────────────────────────────────
+# One DuckDB secret per store, and DuckDB picks between them by longest
+# matching scope — which is what lets a demo path and a real path be read by
+# the same query, from two different endpoints, with two different
+# credentials. The primary store takes the default scope (every s3:// url);
+# the demo store, when it is a separate place, takes `s3://<demo bucket>` and
+# wins there because it is the more specific match.
+#
+# A bucket whose region differs from its store's gets a third, still narrower
+# secret of its own (see _bucket_secret) — see app/s3.py's bucket_region for
+# why that matters more than it sounds like it should.
 
-def _install_secret(con: duckdb.DuckDBPyConnection) -> None:
-    """(Re)create the S3 secret from the currently resolved credentials.
+_PRIMARY_SECRET = "cash_intel_s3"
+_DEMO_SECRET = "cash_intel_demo_s3"
 
-    Re-resolved rather than cached for the same reason app/s3.py re-resolves:
-    an AWS_PROFILE credential, an SSO one above all, expires and gets refreshed
-    by asking boto3 again. The secret is only rewritten when the resolved
-    values actually change, so the common static-key case costs one dict
-    comparison per query rather than a DDL statement."""
-    global _secret_key
-    access_key, secret_key, session_token = config.resolve_credentials()
-    endpoint = urlparse(config.S3_ENDPOINT)
-    key = (access_key, secret_key, session_token, config.S3_ENDPOINT, config.AWS_REGION)
-    if key == _secret_key:
-        return
-    host = endpoint.netloc or config.S3_ENDPOINT
+
+def _secret_sql(name: str, store: config.Store, region: str, scope: Optional[str]) -> str:
+    """The CREATE SECRET statement for one store, at one scope."""
+    access_key, secret_key, session_token = store.credentials()
     parts = [
         "TYPE s3",
         f"KEY_ID {_sql_str(access_key)}",
         f"SECRET {_sql_str(secret_key)}",
-        f"REGION {_sql_str(config.AWS_REGION)}",
-        f"ENDPOINT {_sql_str(host)}",
-        # path style and plain http for the emulator (and for MinIO, which is
-        # the same shape); a real endpoint over https ignores both because its
-        # url style is vhost and its scheme says https.
-        f"URL_STYLE {_sql_str('path' if _is_local_endpoint(host) else 'vhost')}",
-        f"USE_SSL {'true' if endpoint.scheme == 'https' else 'false'}",
+        f"REGION {_sql_str(region)}",
     ]
+    if store.host:
+        # An explicit host is for an emulator, MinIO, or an S3-compatible
+        # vendor. Real AWS gets no ENDPOINT at all: DuckDB then derives
+        # <bucket>.s3.<region>.amazonaws.com itself, which is both correct
+        # and the only form that doesn't turn a bucket outside the pinned
+        # host's region into a redirect the reader reports as an HTTP error.
+        parts.append(f"ENDPOINT {_sql_str(store.host)}")
+        parts.append(f"URL_STYLE {_sql_str('path' if store.path_style else 'vhost')}")
+    parts.append(f"USE_SSL {'true' if store.use_ssl else 'false'}")
     if session_token:
         parts.append(f"SESSION_TOKEN {_sql_str(session_token)}")
-    con.execute(f"CREATE OR REPLACE SECRET cash_intel_s3 ({', '.join(parts)})")
-    _secret_key = key
+    if scope:
+        parts.append(f"SCOPE {_sql_str(scope)}")
+    return f"CREATE OR REPLACE SECRET {name} ({', '.join(parts)})"
 
 
-def _is_local_endpoint(host: str) -> bool:
-    """Path-style addressing for anything that isn't real S3. Virtual-host
-    style needs a wildcard DNS entry per bucket, which moto, MinIO and
-    LocalStack don't have; real S3 prefers vhost and is the only thing here
-    that gets it."""
-    name = host.split(":")[0]
-    return not name.endswith("amazonaws.com")
+def _secret_inputs(store: config.Store, region: str) -> tuple:
+    """Everything _secret_sql renders, as a comparable key — so the common
+    static-credential case costs one tuple comparison per query instead of a
+    DDL statement, while a rotating (SSO) credential still gets rewritten the
+    moment it actually changes."""
+    return (store, region, store.credentials())
+
+
+def _install_store_secrets(con: duckdb.DuckDBPyConnection) -> None:
+    """(Re)create the per-store secrets from the currently resolved
+    credentials.
+
+    Re-resolved rather than cached for the same reason app/s3.py re-resolves:
+    an AWS_PROFILE credential, an SSO one above all, expires and gets
+    refreshed by asking boto3 again."""
+    global _store_secrets
+    primary, demo = config.primary_store(), config.demo_store()
+    wanted = {_PRIMARY_SECRET: (primary, primary.region, None)}
+    if demo != primary:
+        wanted[_DEMO_SECRET] = (demo, demo.region, f"s3://{config.DEMO_BUCKET}")
+    key = {name: _secret_inputs(store, region) for name, (store, region, _) in wanted.items()}
+    if key == _store_secrets:
+        return
+    # Every store-level secret is written from scratch, and the ones this
+    # config doesn't want are dropped whether or not the memo remembers
+    # installing them. The installed set has to be a function of the current
+    # config alone: a memo that got cleared without the connection being
+    # closed would otherwise leave a secret behind, still scoped to a bucket,
+    # still pointing at an endpoint nothing is serving.
+    for name in (_PRIMARY_SECRET, _DEMO_SECRET):
+        if name in wanted:
+            store, region, scope = wanted[name]
+            con.execute(_secret_sql(name, store, region, scope))
+            continue
+        try:
+            con.execute(f"DROP SECRET IF EXISTS {name}")
+        except duckdb.Error:
+            pass
+    _store_secrets = key
+
+
+def _bucket_secret(bucket: str) -> None:
+    """Give `bucket` its own scoped secret when its region isn't the one its
+    store is configured for.
+
+    Only real AWS can disagree with itself this way, and only once per bucket
+    per process — app/s3.py's bucket_region caches the lookup. Everything
+    else falls through to the store-level secret installed above.
+    """
+    store = config.store_for(bucket)
+    if not store.aws:
+        return
+    region = s3.bucket_region(store, bucket)
+    if region == store.region:
+        return          # the store-level secret already signs for this
+    inputs = _secret_inputs(store, region)
+    with _lock:
+        if _bucket_secrets.get(bucket) == inputs:
+            return
+    name = f"cash_intel_b_{hashlib.sha1(bucket.encode()).hexdigest()[:16]}"
+    try:
+        connection().execute(_secret_sql(name, store, region, f"s3://{bucket}"))
+    except duckdb.Error:
+        return          # the store-level secret is still there to try with
+    with _lock:
+        _bucket_secrets[bucket] = inputs
+
+
+def _prepare(path: str) -> None:
+    """Make sure whatever reads `path` next will be signed correctly. Called
+    from the two places a bucket is first named: the scan SQL a query is built
+    from, and the listing that resolves a glob."""
+    split = split_s3(path)
+    if split:
+        _bucket_secret(split[0])
 
 
 def _sql_str(value: str) -> str:
@@ -219,7 +296,7 @@ def connection() -> duckdb.DuckDBPyConnection:
             _apply_settings(con)
             _load_extensions(con)
             _con = con
-        _install_secret(_con)
+        _install_store_secrets(_con)
         return _con
 
 
@@ -235,11 +312,13 @@ def cursor() -> duckdb.DuckDBPyConnection:
 def reset() -> None:
     """Drop the connection and everything cached in it. Tests use this between
     bucket fixtures; nothing in the request path does."""
-    global _con, _secret_key
+    global _con
     with _lock:
         if _con is not None:
             _con.close()
-        _con, _secret_key = None, None
+        _con = None
+        _store_secrets.clear()
+        _bucket_secrets.clear()
         _loaded.clear()
         _pinned.clear()
 
@@ -291,12 +370,23 @@ def _list_objects(path: str) -> Optional[tuple[list[str], int]]:
     if split is None:
         return None
     bucket, key = split
+    _bucket_secret(bucket)
     prefix = re.split(r"[*?\[]", key, maxsplit=1)[0]
     try:
-        pages = s3.client().get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix)
+        pages = s3.client(bucket).get_paginator("list_objects_v2").paginate(
+            Bucket=bucket, Prefix=prefix,
+            PaginationConfig={"MaxItems": config.LIST_MAX_KEYS + 1})
         contents = [obj for page in pages for obj in page.get("Contents", [])]
     except Exception:
         return None    # no listing permission, wrong endpoint, ... — just scan
+    if len(contents) > config.LIST_MAX_KEYS:
+        # A prefix this wide is not something to resolve into a file list and
+        # hold in memory on every query — and a source that really does span
+        # that many objects is past the point where handing DuckDB the list
+        # beats letting it glob the prefix itself. Fall back to that: one LIST
+        # inside DuckDB per query instead of one here, cached, plus a list
+        # long enough to make the SQL itself a problem.
+        return None
     matches = (
         [o for o in contents if glob_match(key, o["Key"])] if prefix != key
         else [o for o in contents if o["Key"] == key or o["Key"].startswith(key.rstrip("/") + "/")]
@@ -327,6 +417,7 @@ def _scan_sql(fmt: str, path: str) -> str:
     `unsafe_enable_version_guessing`, which globs the metadata directory and
     can pick up an uncommitted snapshot."""
     require_format(fmt)
+    _prepare(path)
     if fmt == "csv":
         return f"read_csv({_sql_str(path)})"
     if fmt == "delta":

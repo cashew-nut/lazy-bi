@@ -35,13 +35,14 @@ def test_the_duckdb_secret_carries_the_session_token(monkeypatch):
     from app import duck
 
     monkeypatch.setattr(config, "AWS_SESSION_TOKEN", "temp-token")
-    duck._secret_key = None                       # force a rewrite
+    duck._store_secrets.clear()                   # force a rewrite
     connection = duck.connection()
-    assert duck._secret_key[2] == "temp-token"    # the resolved credential it wrote
+    # the resolved credential it wrote
+    assert duck._store_secrets["cash_intel_s3"][2][2] == "temp-token"
     secret = connection.execute(
         "SELECT secret_string FROM duckdb_secrets() WHERE name = 'cash_intel_s3'").fetchone()
     # DuckDB redacts the values, which is the right posture for a catalog view
     # — what this can check is that the field is there at all
     assert secret and "session_token=" in secret[0]
-    duck._secret_key = None                       # and put the real one back
+    duck._store_secrets.clear()                   # and put the real one back
     duck.connection()

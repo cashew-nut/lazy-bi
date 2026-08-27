@@ -134,13 +134,16 @@ def _bucket_files() -> list[dict]:
     agent request, and an unbounded listing would cost more latency than the
     model call it decorates. A bucket that can't be reached is not fatal —
     the agent just works from the notebook alone."""
-    try:
-        response = s3.client().list_objects_v2(
-            Bucket=config.BUCKET, MaxKeys=config.SANDBOX_AGENT_FILES * 10)
-        objects = [{"key": o["Key"], "size": o["Size"]} for o in response.get("Contents", [])]
-    except Exception:
-        return []
-    return sandbox_mod.bucket_entries(objects, config.BUCKET)
+    entries: list[dict] = []
+    for bucket, prefix in s3.browsable_buckets():
+        try:
+            response = s3.client(bucket).list_objects_v2(
+                Bucket=bucket, Prefix=prefix, MaxKeys=config.SANDBOX_AGENT_FILES * 10)
+            objects = [{"key": o["Key"], "size": o["Size"]} for o in response.get("Contents", [])]
+        except Exception:
+            continue
+        entries += sandbox_mod.bucket_entries(objects, bucket)
+    return entries
 
 
 @router.get("/sandbox/notebooks")

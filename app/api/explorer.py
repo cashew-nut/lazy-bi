@@ -11,28 +11,34 @@ router = APIRouter(tags=["explorer"])
 
 @router.get("/explorer")
 def explorer():
-    """Every object in the bucket, matched against each model's source and
-    join globs so the UI can show which files feed which models."""
-    client = s3.client()
-    matchers = semantic.model_source_matchers(registry.models.values(), config.BUCKET)
+    """Every object this app can see, matched against each model's source and
+    join globs so the UI can show which files feed which models.
 
-    objects = []
-    paginator = client.get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=config.BUCKET):
-        objects.extend(page.get("Contents", []))
-
-    per_model = semantic.per_model_stats(
-        [{"key": o["Key"], "size": o["Size"]} for o in objects], matchers, registry.models,
-    )
-    files = [{
-        "key": o["Key"],
-        "size": o["Size"],
-        "modified": o["LastModified"].isoformat(timespec="seconds"),
-        "models": [{"model": name, "role": role} for name, role, match in matchers if match(o["Key"])],
-    } for o in objects]
+    Walks the same buckets, with the same bound, as GET /datasets — see
+    app/s3.py's browsable_buckets and walk."""
+    files, per_model, truncated = [], {name: {"files": 0, "bytes": 0} for name in registry.models}, False
+    for bucket, prefix in s3.browsable_buckets():
+        try:
+            objects, cut = s3.walk(bucket, prefix)
+        except Exception:
+            continue      # an unreachable bucket costs its rows, not the page
+        truncated = truncated or cut
+        matchers = semantic.model_source_matchers(registry.models.values(), bucket)
+        for name, stat in semantic.per_model_stats(objects, matchers, registry.models).items():
+            per_model[name]["files"] += stat["files"]
+            per_model[name]["bytes"] += stat["bytes"]
+        files += [{
+            "key": o["key"],
+            "bucket": bucket,
+            "size": o["size"],
+            "modified": o["modified"],
+            "models": [{"model": n, "role": r} for n, r, match in matchers if match(o["key"])],
+        } for o in objects]
+    primary = config.primary_store()
     return {
         "bucket": config.BUCKET,
-        "endpoint": config.S3_ENDPOINT,
+        "endpoint": primary.label,
+        "truncated": truncated,
         "files": files,
         "models": [
             {"name": m.name, "label": m.label,
@@ -47,7 +53,9 @@ def explorer():
 @router.get("/health")
 def health():
     return {
-        "ok": True, "models": list(registry.models), "s3_endpoint": config.S3_ENDPOINT,
+        "ok": True, "models": list(registry.models),
+        "s3_endpoint": config.primary_store().label,
+        "bucket": config.BUCKET, "demo_bucket": config.DEMO_BUCKET if config.DEMO_ENABLED else "",
         "llm_enabled": config.LLM_ENABLED,
         "llm_models": config.LLM_MODEL_CHOICES if config.LLM_ENABLED else [],
         "llm_default_model": config.LLM_MODEL,

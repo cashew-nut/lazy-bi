@@ -259,13 +259,13 @@ def _support_frame(rng: random.Random) -> pa.Table:
 def _upload(client, key: str, table: pa.Table) -> None:
     buf = io.BytesIO()
     pq.write_table(table, buf)
-    client.put_object(Bucket=config.BUCKET, Key=key, Body=buf.getvalue())
+    client.put_object(Bucket=config.DEMO_BUCKET, Key=key, Body=buf.getvalue())
 
 
 def _upload_csv(client, key: str, table: pa.Table) -> None:
     buf = io.BytesIO()
     pa_csv.write_csv(table, buf)
-    client.put_object(Bucket=config.BUCKET, Key=key, Body=buf.getvalue())
+    client.put_object(Bucket=config.DEMO_BUCKET, Key=key, Body=buf.getvalue())
 
 
 def _write_iceberg(table_root: str, table: pa.Table) -> None:
@@ -279,27 +279,27 @@ def _write_iceberg(table_root: str, table: pa.Table) -> None:
     from pyiceberg.catalog.sql import SqlCatalog
 
     catalog = SqlCatalog(
-        "seed", uri="sqlite:///:memory:", warehouse=f"s3://{config.BUCKET}",
-        **config.iceberg_storage_options(),
+        "seed", uri="sqlite:///:memory:", warehouse=f"s3://{config.DEMO_BUCKET}",
+        **config.iceberg_storage_options(config.DEMO_BUCKET),
     )
     catalog.create_namespace("seed")
     iceberg_table = catalog.create_table(
         "seed.table", schema=table.schema,
-        location=f"s3://{config.BUCKET}/{table_root}",
+        location=f"s3://{config.DEMO_BUCKET}/{table_root}",
     )
     iceberg_table.append(table)
 
 
-def _create_bucket(client) -> None:
+def _create_bucket(client, bucket: str, region: str) -> None:
     """us-east-1 is the one region S3's CreateBucket API treats as the
     implicit default: passing a LocationConstraint for it is *also*
     rejected, so it's the one region this must be left out for. Every other
     region needs it, or CreateBucket fails outright with
     IllegalLocationConstraintException instead of creating anything — moto
     enforces this exactly like real S3 does."""
-    kwargs = {"Bucket": config.BUCKET}
-    if config.AWS_REGION != "us-east-1":
-        kwargs["CreateBucketConfiguration"] = {"LocationConstraint": config.AWS_REGION}
+    kwargs = {"Bucket": bucket}
+    if region != "us-east-1":
+        kwargs["CreateBucketConfiguration"] = {"LocationConstraint": region}
     try:
         client.create_bucket(**kwargs)
     except client.exceptions.BucketAlreadyOwnedByYou:
@@ -314,16 +314,26 @@ def _create_bucket(client) -> None:
         # already exists (true by construction of that use case) and move
         # on; the list/read calls right after this fail loudly and
         # specifically if that assumption turns out to be wrong.
-        print(f"[cash-intel] no s3:CreateBucket permission for {config.BUCKET!r} "
+        print(f"[cash-intel] no s3:CreateBucket permission for {bucket!r} "
               f"— assuming it already exists and continuing read-only")
 
 
 def seed_bucket() -> bool:
-    """Create the bucket and upload demo parquet files. Returns True if seeded,
-    False if the bucket already had data."""
-    client = s3.client()
-    _create_bucket(client)
-    existing = client.list_objects_v2(Bucket=config.BUCKET, MaxKeys=1)
+    """Create the demo bucket and upload the demo datasets. Returns True if
+    seeded, False if it already had data (or the demo is switched off).
+
+    Everything here lands in config.DEMO_BUCKET on the demo store, never in
+    whatever bucket CI_BUCKET names. That distinction is the point: with a
+    real store configured the two are different places, and demo data has no
+    business being written into an account someone pays for — while the demo
+    models, which name the demo bucket by absolute path, keep answering
+    exactly as they do locally."""
+    if not config.DEMO_ENABLED:
+        return False
+    store = config.demo_store()
+    client = s3.client_for(store, config.DEMO_BUCKET)
+    _create_bucket(client, config.DEMO_BUCKET, store.region)
+    existing = client.list_objects_v2(Bucket=config.DEMO_BUCKET, MaxKeys=1)
     if existing.get("KeyCount", 0) > 0:
         return False
 
@@ -338,15 +348,14 @@ def seed_bucket() -> bool:
     _upload_csv(client, "ref/products.csv", _products_frame())
     _upload_csv(client, "ref/regions.csv", _regions_frame())
     _upload_csv(client, "ref/territories.csv", _territories_frame())
-    write_deltalake(f"s3://{config.BUCKET}/logistics/shipments", _shipments_frame(rng),
-                    storage_options=config.delta_write_options())
+    write_deltalake(f"s3://{config.DEMO_BUCKET}/logistics/shipments", _shipments_frame(rng),
+                    storage_options=config.delta_write_options(config.DEMO_BUCKET))
     _write_iceberg("support/tickets", _support_frame(rng))
     _upload(client, "subscriptions/subs.parquet", _subscriptions_frame(rng))
     _upload(client, "ref/calendar.parquet", _calendar_frame())
 
     _upload_local_cache(client)
     _upload_raw_data(client)
-    _upload_local_data(client)
     return True
 
 
@@ -358,7 +367,7 @@ def _upload_local_cache(client) -> None:
         return
     for path in sorted(cache.rglob("*.parquet")):
         key = str(path.relative_to(cache))
-        client.upload_file(str(path), config.BUCKET, key)
+        client.upload_file(str(path), config.DEMO_BUCKET, key)
 
 
 def _upload_raw_data(client) -> None:
@@ -376,21 +385,32 @@ def _upload_raw_data(client) -> None:
         for path in sorted(dataset_dir.iterdir()):
             if path.suffix not in (".csv", ".parquet"):
                 continue
-            client.upload_file(str(path), config.BUCKET, f"{dataset_dir.name}/{path.name}")
+            client.upload_file(str(path), config.DEMO_BUCKET, f"{dataset_dir.name}/{path.name}")
 
 
-def _upload_local_data(client) -> None:
-    """config.LOCAL_DATA_DIR (gitignored, outside the repo's tracked
-    directories) caches every file a user has uploaded through the app
-    (POST /api/datasets/local, app/api/datasets.py) — the durable copy,
-    since the embedded emulator's bucket is in-memory and this function only
-    ever runs against a freshly-created (empty) one. Uploaded exactly like
-    _upload_raw_data above, just under local/<name>/ instead of <name>/, to
-    land on the same key each upload already used — recursively, since a
-    folder upload preserves its own subdirectory structure under <name>/."""
+def restore_local_uploads() -> int:
+    """Put every file uploaded through the app (POST /api/datasets/local,
+    app/api/datasets.py) back into the bucket it was uploaded to.
+
+    config.LOCAL_DATA_DIR (gitignored, outside the repo's tracked
+    directories) holds the durable copy, because the embedded emulator's
+    bucket is in memory and would otherwise lose an upload on every restart.
+    Uploaded exactly like _upload_raw_data above, just under local/<name>/
+    instead of <name>/, to land on the same key each upload already used —
+    recursively, since a folder upload preserves its own subdirectory
+    structure under <name>/.
+
+    Only ever runs against an *ephemeral* store. Re-uploading these to a real
+    bucket every start would resurrect anything deleted from outside the app
+    and re-pay for bytes already sitting there — and a real bucket needs no
+    help remembering what was written to it. Returns how many files it put
+    back."""
     root = config.LOCAL_DATA_DIR
-    if not root.is_dir():
-        return
+    store = config.primary_store()
+    if not root.is_dir() or not store.ephemeral:
+        return 0
+    client = s3.client(config.BUCKET)
+    restored = 0
     for dataset_dir in sorted(root.iterdir()):
         if not dataset_dir.is_dir():
             continue
@@ -399,6 +419,8 @@ def _upload_local_data(client) -> None:
                 continue
             rel = path.relative_to(dataset_dir).as_posix()
             client.upload_file(str(path), config.BUCKET, f"local/{dataset_dir.name}/{rel}")
+            restored += 1
+    return restored
 
 
 def seed_bootstrap_admin() -> bool:

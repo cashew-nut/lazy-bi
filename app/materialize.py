@@ -79,7 +79,7 @@ def _replace(table: pa.Table, target: Target, storage_options: dict) -> dict:
         buf = io.BytesIO()
         pq.write_table(table, buf)
         bucket, key = _split_s3_path(target.path)
-        s3.client().put_object(Bucket=bucket, Key=key, Body=buf.getvalue())
+        s3.client(bucket).put_object(Bucket=bucket, Key=key, Body=buf.getvalue())
     return {"rows_written": table.num_rows, "rows_deleted": 0, "rows_flagged": 0}
 
 

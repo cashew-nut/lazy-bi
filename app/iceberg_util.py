@@ -39,7 +39,7 @@ def resolve_metadata_path(path: str) -> str:
     its current (highest-versioned) metadata.json."""
     bucket, root = _split_s3_path(path)
     prefix = f"{root}/metadata/"
-    client = s3.client()
+    client = s3.client(bucket)
     paginator = client.get_paginator("list_objects_v2")
     best_version, best_key = -1, None
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix):

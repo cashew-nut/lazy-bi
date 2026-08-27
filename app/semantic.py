@@ -1318,6 +1318,7 @@ def group_objects(objects: list[dict], bucket: str) -> list[dict]:
         members = table_members[root]
         datasets.append({
             "key": root,
+            "bucket": bucket,
             "path": f"s3://{bucket}/{root}",
             "format": fmt,
             "format_ambiguous": False,
@@ -1338,6 +1339,7 @@ def group_objects(objects: list[dict], bucket: str) -> list[dict]:
         glob = f"s3://{bucket}/{prefix + '/' if prefix else ''}*{ext}"
         datasets.append({
             "key": prefix,
+            "bucket": bucket,
             "path": glob,
             "format": fmt,
             "format_ambiguous": ambiguous,
