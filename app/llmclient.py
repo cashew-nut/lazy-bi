@@ -383,7 +383,7 @@ def _no_tool_call(reason: str | None, model: str, provider: str = "openai") -> L
     return LLMError("model did not call any tool")
 
 
-def _wrap(exc: Exception, provider: str = "", key_fp: str = "") -> LLMError:
+def _wrap(exc: Exception, provider: str = "", key_fp: str = "", model: str = "") -> LLMError:
     """Shared failure path for every provider: the user only ever sees a
     generic "temporarily unavailable" message, so log the real cause
     server-side — a deployer debugging a bad key, a wrong base URL or a proxy
@@ -402,6 +402,11 @@ def _wrap(exc: Exception, provider: str = "", key_fp: str = "") -> LLMError:
         # The key is very often right and merely arrived damaged, so lead with
         # what the key we actually sent looked like — that is the one fact a
         # 401 withholds and the deployer can check against a working client.
+        # `model` is this *request's* model, not config.LLM_MODEL: a
+        # per-conversation override (chat.py's llm_model) or the sandbox
+        # agent's own model setting can differ from the app-wide default, and
+        # naming the wrong deployment sends a deployer checking entitlement
+        # for a deployment this call never touched.
         logger.warning(
             "authentication failed with key %s. A 401 cannot distinguish a wrong key from "
             "a correct one damaged in transit, so compare that fingerprint against the key "
@@ -409,7 +414,7 @@ def _wrap(exc: Exception, provider: str = "", key_fp: str = "") -> LLMError:
             "docker compose interpolate it), wrapping quotes kept as part of the value, or "
             "a line break. If they match, the key really is being rejected — check that it "
             "is entitled to this deployment (%s) on this endpoint.",
-            key_fp or "(unknown)", config.LLM_MODEL,
+            key_fp or "(unknown)", model or config.LLM_MODEL,
         )
     if getattr(exc, "status_code", None) == 404 and provider == "openai":
         # By far the most likely misconfiguration behind a 404 on a URL the
@@ -494,7 +499,7 @@ class AnthropicClient:
                 **self._kwargs(req), **self._thinking_kwargs(req)
             )
         except anthropic.AnthropicError as exc:
-            raise _wrap(exc, self.provider, key_fingerprint(self.api_key)) from exc
+            raise _wrap(exc, self.provider, key_fingerprint(self.api_key), req.model) from exc
         for block in response.content:
             if block.type == "tool_use":
                 return ToolCall(name=block.name, args=block.input or {})
@@ -519,7 +524,7 @@ class AnthropicClient:
                         yield ClientEvent(kind="tool_input", tool_input=snapshot)
                 message = stream.get_final_message()
         except anthropic.AnthropicError as exc:
-            raise _wrap(exc, self.provider, key_fingerprint(self.api_key)) from exc
+            raise _wrap(exc, self.provider, key_fingerprint(self.api_key), req.model) from exc
 
         for block in message.content:
             if block.type == "tool_use":
@@ -654,9 +659,9 @@ class OpenAIClient:
             except openai.BadRequestError as exc:
                 if attempt == 0 and self._swap_token_param(exc, req.model):
                     continue
-                raise _wrap(exc, self.provider, key_fingerprint(self.api_key)) from exc
+                raise _wrap(exc, self.provider, key_fingerprint(self.api_key), req.model) from exc
             except openai.OpenAIError as exc:
-                raise _wrap(exc, self.provider, key_fingerprint(self.api_key)) from exc
+                raise _wrap(exc, self.provider, key_fingerprint(self.api_key), req.model) from exc
         raise LLMError("unreachable")   # pragma: no cover
 
     def call(self, req: ChatRequest) -> ToolCall:
@@ -719,7 +724,7 @@ class OpenAIClient:
                         buffer += fragment
                         yield ClientEvent(kind="tool_input", tool_input=parse_partial_json(buffer))
         except openai.OpenAIError as exc:
-            raise _wrap(exc, self.provider, key_fingerprint(self.api_key)) from exc
+            raise _wrap(exc, self.provider, key_fingerprint(self.api_key), req.model) from exc
 
         if not name:
             raise _no_tool_call(finish_reason, req.model, self.provider)
