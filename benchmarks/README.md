@@ -1,6 +1,6 @@
 # Latency benchmarks
 
-The harness behind the README's "against a real object store" numbers: moto
+The harness behind docs/query-engine.md's "Performance" numbers: moto
 standing in for S3, fronted by `latency_proxy.py` — a counting proxy that
 sleeps a configurable per-request latency (default 40ms) to approximate a
 real endpoint's RTT — with the app driven through its HTTP API exactly the
@@ -23,5 +23,5 @@ Knobs (env):
 
 The proxy preserves `Content-Length` on HEAD responses deliberately: an
 intermediary that rewrites it makes DuckDB fall back to whole-file
-downloads, which is one of the failure modes the README's troubleshooting
-section describes — flip that line if you want to reproduce it.
+downloads, which is one of the failure modes docs/query-engine.md's
+"Performance" section describes — flip that line if you want to reproduce it.
