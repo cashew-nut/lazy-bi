@@ -20,6 +20,7 @@ statement, layer by layer.
 from __future__ import annotations
 
 import calendar
+import itertools
 import json
 import re
 import time
@@ -592,6 +593,16 @@ def _relation_schema(from_sql: str) -> dict:
                             lambda: duck.relation_schema(f"(SELECT * FROM {from_sql})"))
 
 
+# Monotonic per-Model-instance tokens for _model_cache_key. Not id(): CPython
+# recycles a freed object's id, so after a reload replaced a Model, a fresh
+# parse landing on the dead object's address would silently *hit* the dead
+# object's cached schema. A counter never repeats within a process, so an
+# entry keyed on it can only ever be re-read by the very object that wrote it
+# — which is also what lets a reload skip cache-clearing entirely: the old
+# object's entries become unreachable the moment it does.
+_model_token_counter = itertools.count()
+
+
 def _model_cache_key(model: Model) -> tuple:
     """Cache-key component identifying this exact Model object, not just its
     name — a model name isn't a stable identity while it's being edited (the
@@ -599,10 +610,14 @@ def _model_cache_key(model: Model) -> tuple:
     keystroke, sometimes reusing an existing model's own name before it's ever
     saved), so anything cached under the name alone could leak a not-yet-saved
     edit's schema to an unrelated caller, or hand the editor back a stale one.
-    Folding in id(model) means only repeat calls against the very same object
-    ever hit the cache; a fresh reparse always misses and computes its own true
-    answer."""
-    return (model.name, id(model))
+    Folding in a per-instance token means only repeat calls against the very
+    same object ever hit the cache; a fresh reparse always misses and computes
+    its own true answer."""
+    token = getattr(model, "_engine_cache_token", None)
+    if token is None:
+        token = next(_model_token_counter)
+        model._engine_cache_token = token
+    return (model.name, token)
 
 
 def scan_schema(model: Model, dimensions: Optional[dict] = None) -> dict:

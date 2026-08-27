@@ -237,32 +237,72 @@ AWS_REGION = _env("AWS_REGION", "us-east-1")
 AWS_SESSION_TOKEN = _env("AWS_SESSION_TOKEN")
 
 
+# The one boto3 credential resolver this process holds (None until the first
+# profile/chain resolution needs it). What must NOT be rebuilt per call is the
+# resolver, not the credential: constructing a boto3.Session re-parses
+# ~/.aws/config and re-runs the whole provider chain — an SSO token read, a
+# credential_process exec, an STS AssumeRole round trip — which measures
+# 150ms+ on a corp-auth laptop. And resolve_credentials() sits on the hottest
+# path there is: every DuckDB cursor checks the store secrets, and every
+# secret check resolves credentials, so a per-call Session turns each saved
+# model reload (dozens of measure compiles) into tens of seconds of pure
+# credential re-resolution. A failed resolution is never cached — the next
+# call retries from scratch, so `aws sso login` mid-process is picked up.
+# A credential botocore can refresh (SSO, assume-role, an instance role —
+# anything carrying an expiry) is held for good: refreshing is its own job.
+# One it can't refresh (plain keys in ~/.aws/credentials, a credential_process
+# with no Expiration) is re-resolved on a slow cadence instead, so a rotation
+# there is still picked up within minutes rather than never.
+_boto_credentials = None
+_boto_resolved_at = 0.0
+_BOTO_STATIC_TTL = 900.0
+_boto_lock = None
+
+
 def resolve_credentials() -> tuple[str, str, str | None]:
     """(access_key, secret_key, session_token) for this call.
 
-    Re-resolved every time rather than cached at import time: an
-    AWS_PROFILE credential (an SSO one especially) can expire, and asking
-    boto3 again — not caching it ourselves — is how it gets refreshed. The
-    static keys above never expire, so re-reading them costs nothing extra.
+    Still fresh on every call in the sense that matters: the held botocore
+    credential object refreshes *itself* when it nears expiry (that is what
+    RefreshableCredentials is), the same way a long-running AWS CLI process
+    stays signed in — so an AWS_PROFILE/SSO credential keeps working without
+    ever paying the full provider-chain walk per call. The static keys above
+    never touch boto3 at all.
     """
     if not AWS_PROFILE and AWS_ACCESS_KEY_ID:
         return AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN or None
-    import boto3  # local: the static-keys path above never needs this
+    import time as _time
 
-    # No profile and no static key: boto3's own default chain, which is what
-    # already holds the credential on anything running with an instance or
-    # task role. Named profile when there is one — that branch is the reason
-    # this function re-resolves rather than caching (an SSO credential
-    # expires, and asking boto3 again is how it gets refreshed).
-    session = boto3.Session(profile_name=AWS_PROFILE) if AWS_PROFILE else boto3.Session()
-    creds = session.get_credentials()
+    global _boto_credentials, _boto_resolved_at, _boto_lock
+    if _boto_lock is None:
+        import threading
+
+        _boto_lock = threading.Lock()
+    with _boto_lock:
+        creds = _boto_credentials
+        # a refreshable credential manages its own lifetime; a static one is
+        # re-resolved once its TTL lapses, in case the file behind it changed
+        if (creds is not None and not hasattr(creds, "refresh_needed")
+                and _time.monotonic() - _boto_resolved_at > _BOTO_STATIC_TTL):
+            creds = None
     if creds is None:
-        where = (f"`aws sso login --profile {AWS_PROFILE}` (or the profile name "
-                 f"itself) against ~/.aws/config" if AWS_PROFILE else
-                 "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, AWS_PROFILE, or an "
-                 "instance/task role")
-        subject = f"AWS_PROFILE={AWS_PROFILE!r}" if AWS_PROFILE else "this environment"
-        raise RuntimeError(f"{subject} has no resolvable AWS credentials — check {where}")
+        import boto3  # local: the static-keys path above never needs this
+
+        # No profile and no static key: boto3's own default chain, which is
+        # what already holds the credential on anything running with an
+        # instance or task role. Named profile when there is one.
+        session = boto3.Session(profile_name=AWS_PROFILE) if AWS_PROFILE else boto3.Session()
+        creds = session.get_credentials()
+        if creds is None:
+            where = (f"`aws sso login --profile {AWS_PROFILE}` (or the profile name "
+                     f"itself) against ~/.aws/config" if AWS_PROFILE else
+                     "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, AWS_PROFILE, or an "
+                     "instance/task role")
+            subject = f"AWS_PROFILE={AWS_PROFILE!r}" if AWS_PROFILE else "this environment"
+            raise RuntimeError(f"{subject} has no resolvable AWS credentials — check {where}")
+        with _boto_lock:
+            _boto_credentials = creds
+            _boto_resolved_at = _time.monotonic()
     frozen = creds.get_frozen_credentials()
     return frozen.access_key, frozen.secret_key, frozen.token
 

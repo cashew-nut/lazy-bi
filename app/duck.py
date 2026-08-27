@@ -251,14 +251,26 @@ def _sql_str(value: str) -> str:
 
 # Settings that decide what a query costs against a real endpoint. Set once,
 # on the one connection, because that is where the caches they turn on live.
+#
+# What is deliberately NOT here: `enable_http_metadata_cache`. It caches HEAD
+# responses (size, etag) per path with no TTL and no invalidation, and both
+# byte-cache validation and the parquet footer cache trust it — so once it
+# holds an entry, an object overwritten in the bucket keeps answering with the
+# old rows for the life of the process, and a partially-evicted byte cache can
+# even mix old metadata with new bytes into a corrupt read. Measured without
+# it: the external file cache below still serves repeat reads from memory
+# (validation rides on the reads themselves), and an overwritten object is
+# picked up on the very next query, with only the changed file re-fetched.
 _SETTINGS = {
     # parquet footers, cached process-wide: the single biggest win, since a
-    # footer read is a round trip that returns no data
+    # footer read is a round trip that returns no data. Keyed by the file's
+    # own version (etag/last-modified), so an overwrite misses rather than
+    # serving the old footer.
     "enable_object_cache": "true",
-    # file *bytes*, cached block-level with an LRU: what replaces the polars
-    # engine's whole-frame cache for everything above the pin threshold
+    # file *bytes*, cached block-level with an LRU and validated against the
+    # object's version on each open: what replaces the polars engine's
+    # whole-frame cache for everything above the pin threshold
     "enable_external_file_cache": "true",
-    "enable_http_metadata_cache": "true",
     # no TCP+TLS handshake per range read
     "http_keep_alive": "true",
 }
@@ -492,32 +504,42 @@ def relation(path: str, fmt: str) -> str:
 
 
 def invalidate() -> None:
-    """Drop everything derived from bucket contents: the listing cache, the
-    pin decisions, and the pinned tables themselves.
+    """Drop everything derived from bucket contents: the pin decisions and the
+    pinned tables themselves, plus DuckDB's cached file bytes.
 
-    Called wherever the platform changes the bucket in a way this process can
-    see — a model or bundle reload (a path can resolve somewhere new), a
-    successful pipeline run, a dataset upload or delete. The TTL is only the
-    backstop for changes made from outside the app."""
+    Called wherever the platform *writes to the bucket* — a successful
+    pipeline run, a dataset upload or delete — never for a mere model/bundle
+    edit, which changes YAML but not a single byte in the object store (every
+    cache this would drop is keyed on source paths, and a path that resolves
+    somewhere new is a different key that misses on its own). The byte-cache
+    clear is belt and braces on top of DuckDB's own per-open validation: that
+    validation needs the endpoint to version its objects (etag), and the one
+    moment we *know* the data changed shouldn't depend on it."""
     with _lock:
         names = list(_pinned)
         _pinned.clear()
-    if names and _con is not None:
-        cur = _con.cursor()
-        for name in names:
-            try:
-                cur.execute(f'DROP TABLE IF EXISTS "{name}"')
-            except duckdb.Error:
-                pass
-    # the external file cache holds bytes read from paths that may now hold
-    # different data; DuckDB has no per-path eviction, so drop the lot
-    if _con is not None:
-        for statement in ("PRAGMA clear_external_file_cache", "PRAGMA clear_cache"):
-            try:
-                _con.execute(statement)
-                break
-            except duckdb.Error:
-                continue
+    if _con is None:
+        return
+    cur = _con.cursor()
+    for name in names:
+        try:
+            cur.execute(f'DROP TABLE IF EXISTS "{name}"')
+        except duckdb.Error:
+            pass
+    # DuckDB has no clear-cache statement; turning the external file cache
+    # off evicts every entry, so off-then-on is the supported way to drop the
+    # lot. Two statements, and the second must run even if the first throws —
+    # a failure mode that left the cache disabled would quietly turn every
+    # query cold for the life of the process.
+    try:
+        cur.execute("SET enable_external_file_cache = false")
+    except duckdb.Error:
+        pass
+    finally:
+        try:
+            cur.execute("SET enable_external_file_cache = true")
+        except duckdb.Error:
+            pass
 
 
 # ── schema ───────────────────────────────────────────────────────────────

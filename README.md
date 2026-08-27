@@ -981,8 +981,17 @@ with these set on it:
 |---|---|
 | `enable_object_cache` | re-reading a parquet footer — a round trip that returns no data |
 | `enable_external_file_cache` | re-reading file *bytes*, cached block-level with an LRU |
-| `enable_http_metadata_cache` | a HEAD before every read |
 | `http_keep_alive` | a TCP+TLS handshake per range read |
+
+One DuckDB setting is deliberately **off**: `enable_http_metadata_cache`. It
+caches HEAD responses (size, etag) per path with no TTL and no invalidation,
+and both caches above validate against it — so once it holds an entry, an
+object overwritten in the bucket keeps answering with its old rows for the
+life of the process, and a partially evicted byte cache can even pair stale
+metadata with fresh bytes into a corrupt read. Left off, DuckDB validates
+cached footers and bytes against the object's *real* version on each open:
+repeat reads still come from memory, and an overwritten object is picked up
+on the very next query with only the changed file re-fetched.
 
 Two things DuckDB can't know are cached on top, in `app/duck.py`:
 
@@ -1006,7 +1015,7 @@ Two things DuckDB can't know are cached on top, in `app/duck.py`:
 
 Measured against an S3 endpoint with **40ms of injected per-request latency**,
 on the `sales` model (parquet glob + a CSV join + two dimension bundles).
-*naive* is every cache off — DuckDB's three and `CI_SOURCE_CACHE_TTL=0` —
+*naive* is every cache off — DuckDB's own and `CI_SOURCE_CACHE_TTL=0` —
 which is what pointing an untuned engine at `s3://` costs; *tuned* is the
 shipped defaults:
 
@@ -1023,6 +1032,27 @@ the re-LISTing and the per-read handshakes). What goes away is paying for it
 *again* on every interaction after — the number that decides whether clicking
 around a dashboard feels alive.
 
+The same harness on the **model-authoring loop** — a 130MB, 4-file parquet
+fact table on the latency-injected endpoint, with the demo catalog loaded
+alongside and credentials supplied by an `AWS_PROFILE` whose resolution
+costs 150ms (an SSO/corporate stand-in) — before and after the three fixes
+above (one held credential resolver, no cache-clearing on save, no HTTP
+metadata cache):
+
+| | before | after |
+|---|---|---|
+| open the model form (cold validate) | 2019ms | 253ms |
+| per-keystroke re-validation | ~990ms | **11ms** |
+| save the model | **20,668ms** | **149ms** |
+| first query (cold read of the data) | 2558ms | 1312ms |
+| re-run / after-save query | 2144–3001ms, re-reading everything | **185–214ms**, 4 requests |
+
+The save was the headline failure: with a slow credential chain, every
+DuckDB cursor re-resolved it under the connection lock, a save re-validates
+every measure in the catalog through a cursor each, and the editor's
+debounced re-validations queued behind the lot — so "saving…" sat for tens
+of seconds while the browser looked hung.
+
 **The TTL is a staleness contract.** Until an entry expires, a query may answer
 from bytes read up to `CI_SOURCE_CACHE_TTL` seconds ago. The 60s default keeps
 that inside "clicking around gives consistent answers"; raise it to 600+ when
@@ -1031,15 +1061,35 @@ data lands hourly or nightly, which is where the largest wins are. Set it to
 from the object store on every query.
 
 The TTL is only the backstop for changes the app can't see. Everything the
-platform does to the bucket itself invalidates immediately, because this cache
-holds source *contents* and not just derived schemas: a model or bundle edit
-(`registry.reload_all()`, since a path can resolve somewhere new), a successful
-pipeline run (which writes from a subprocess this one can't see into), and a
-dataset upload or delete. So "run a pipeline, look at the dashboard" and
-"upload a file, see its columns" stay immediate — the TTL is what covers data
-that lands in the bucket from outside the app. Invalidation drops the pinned
-tables *and* clears DuckDB's external file cache, since that holds bytes read
-from paths that may now hold different data.
+platform *writes to the bucket* invalidates immediately, because this cache
+holds source contents and not just derived schemas: a successful pipeline run
+(which writes from a subprocess this one can't see into), and a dataset
+upload or delete. So "run a pipeline, look at the dashboard" and "upload a
+file, see its columns" stay immediate — the TTL is what covers data that
+lands in the bucket from outside the app (and DuckDB's own per-open version
+validation covers the streamed bytes even there). Invalidation drops the
+pinned tables *and* clears DuckDB's external file cache, since that holds
+bytes read from paths that now hold different data.
+
+A model or bundle **edit invalidates nothing**, deliberately: it changes
+YAML, not a byte in the object store, and every cached answer is keyed on
+what actually determines it (a source path, a rendered scan's SQL). The
+authoring loop — edit, save, re-run the visual — therefore stays warm: a
+save costs milliseconds, and the query after it reads from the same caches
+the query before it filled. Clearing on save is what used to make authoring
+against a real bucket feel broken, with every keystroke's validation and
+every post-save query paying a full cold walk of the endpoint.
+
+**Credentials are resolved once, not per query.** An `AWS_PROFILE` (SSO,
+assume-role, `credential_process`) resolution walks boto3's provider chain —
+config parsing, token cache reads, sometimes an STS round trip — which
+measures 150ms+ per call on a corporate setup. The app holds one resolver
+per process and lets botocore refresh it near expiry, the same way the AWS
+CLI stays signed in; a static credential is re-checked on a slow cadence in
+case the file behind it rotates. Before this, every DuckDB cursor re-ran the
+full chain under the connection lock, which compounded into 20-second model
+saves (a save re-validates every measure, and every validation takes a
+cursor).
 
 **It needs `s3:ListBucket`.** The listing is what supplies both the file list
 and the byte total, so a bucket that grants `GetObject` and denies
@@ -1047,6 +1097,23 @@ and the byte total, so a bucket that grants `GetObject` and denies
 source quietly falls back to letting DuckDB glob it per query rather than
 failing. Grant `s3:ListBucket` on the prefixes your models read to get the
 speedup.
+
+**If every query takes as long as the first** — the same visual re-run costs
+the same tens of seconds, forever — the likely culprit is between you and
+the bucket, not in it: DuckDB probes range-request support when it opens a
+file, and an intermediary that mangles that probe (corporate TLS-inspection
+proxies and some VPN gateways rewrite HEAD responses, dropping or zeroing
+`Content-Length`) makes it fall back to downloading **entire objects** into
+memory, every query, bypassing the byte cache — column pruning and all. The
+tell is DuckDB's own warning (`Falling back to full file download … the
+server does not support HTTP range requests`) and cold-sized timings on
+warm repeats. Verify with
+`curl -sI -H "Range: bytes=0-99" https://<bucket>.s3.<region>.amazonaws.com/<key>`
+from the same network: anything other than `206` with a `Content-Range` is
+the proxy talking, not S3. Fixes are network-side: exempt
+`*.s3.<region>.amazonaws.com` from inspection, or run the app inside the
+network boundary (same VPC/region as the bucket — which also turns the
+cold read's bandwidth from home-broadband into backbone).
 
 **It is also bounded.** A source resolving to more than `CI_LIST_MAX_KEYS`
 objects takes the same fallback: past that many, turning a glob into an

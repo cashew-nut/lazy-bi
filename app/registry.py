@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Optional
 
 from . import agents as agents_mod
-from . import cache, config, duck, pipelines as pipelines_mod, semantic
+from . import config, pipelines as pipelines_mod, semantic
 from .authstore import AuthStore
 from .conversationstore import ConversationStore
 from .localbundlestore import LocalBundleStore
@@ -146,13 +146,18 @@ class Registry:
         # list and reloading changes what the MCP server exposes, with no
         # code change (spec 017 User Story 3).
         self.agents = agents_mod.load_agents(config.AGENTS_DIR)
-        # a reload can change what a model/bundle name or source path now
-        # resolves to (engine.py's schema/bounds cache keys some entries on
-        # little more than that), so any cached answer from before it might now
-        # be wrong in a way its own TTL won't catch in time — including the
-        # pinned tables and cached file bytes DuckDB is holding for the old path
-        cache.clear()
-        duck.invalidate()
+        # Deliberately NO cache.clear() / duck.invalidate() here. A reload
+        # changes YAML, not a byte in the bucket, and every S3-derived cache
+        # entry is keyed on what actually determines its answer — a source
+        # path, a rendered scan's SQL text, or a per-Model-instance token
+        # (engine._model_cache_key) that dies with the object this reload just
+        # replaced. A model that repoints its source is a new key that misses
+        # on its own. Clearing here is what used to make the authoring loop
+        # run cold: every save re-listed every source, re-pinned every lookup
+        # table and re-derived every schema, against a real endpoint, while
+        # the editor's debounced re-validations queued up behind it. The
+        # data-changing call sites (a pipeline run, an upload/delete) still
+        # clear both — see app/pipeline_jobs.py and app/api/datasets.py.
 
     def read_model_text(self, model: semantic.Model) -> str:
         if model.locked:
