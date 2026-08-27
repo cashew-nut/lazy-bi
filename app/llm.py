@@ -169,10 +169,11 @@ _TOOLS = [
                     "description": (
                         "Ad-hoc measures computed only for this query, for a calculation "
                         "the catalog has no declared measure for (a running total, a "
-                        "period-over-period change/growth, etc.). Each must be a window "
-                        "expression — running_total(measure) or lag(measure[, periods]) — "
-                        "over one of the catalog's own declared measure names, never a raw "
-                        "column. Include the chosen name(s) in `measures` above to have "
+                        "period-over-period change/growth, etc.). Each must be a SQL window "
+                        "expression over `w` — the window the engine supplies, partitioned "
+                        "by the query's other dimensions and ordered by its time dimension "
+                        "— reading one of the catalog's own declared measure names, never a "
+                        "raw column. Include the chosen name(s) in `measures` above to have "
                         "them appear in the result."
                     ),
                     "items": {
@@ -182,9 +183,11 @@ _TOOLS = [
                             "expr": {
                                 "type": "string",
                                 "description": (
-                                    "e.g. running_total(revenue), lag(revenue), lag(revenue, 4), "
-                                    "or (revenue - lag(revenue)) / lag(revenue) for a % change. "
-                                    "Bare names must be declared measures of this query's model."
+                                    "e.g. SUM(revenue) OVER w for a running total, "
+                                    "LAG(revenue) OVER w or LAG(revenue, 4) OVER w for a prior "
+                                    "period, or (revenue - LAG(revenue) OVER w) / LAG(revenue) "
+                                    "OVER w for a % change. Bare names must be declared "
+                                    "measures of this query's model."
                                 ),
                             },
                             "label": {"type": "string"},
@@ -416,16 +419,18 @@ _SYSTEM_PROMPT = (
     "If the question needs a calculation the catalog has no declared measure "
     "for — a running total, a period-over-period change or growth rate, "
     "etc. — define it yourself with propose_query's `inline_measures`: give "
-    "it a new name and an expr built from running_total(measure) and/or "
-    "lag(measure[, periods]) over one of the catalog's own declared measure "
-    "names (never a raw column, and never a synonym or formula string). "
-    "Plain arithmetic (+ - * /) is allowed around those, so e.g. a "
-    "quarter-over-quarter change is lag(revenue) and a % change is "
-    "(revenue - lag(revenue)) / lag(revenue). Then include the inline "
-    "measure's own name in `measures` so it appears in the result — the "
-    "sibling measure it references doesn't need to be listed separately, "
-    "it's pulled in automatically. Never invent a running total/lag over "
-    "something that isn't a declared measure.\n\n"
+    "it a new name and an expr that is a SQL window function over `w`, "
+    "reading one of the catalog's own declared measure names (never a raw "
+    "column, and never a synonym or formula string). `w` is supplied by the "
+    "engine: PARTITION BY the query's other dimensions, ORDER BY its time "
+    "dimension — you never write the OVER clause's contents yourself. Plain "
+    "arithmetic (+ - * /) is allowed around those, so a running total is "
+    "SUM(revenue) OVER w, a quarter-over-quarter change is LAG(revenue) OVER "
+    "w, and a % change is (revenue - LAG(revenue) OVER w) / LAG(revenue) OVER "
+    "w. Then include the inline measure's own name in `measures` so it "
+    "appears in the result — the sibling measure it references doesn't need "
+    "to be listed separately, it's pulled in automatically. Never write a "
+    "window function over something that isn't a declared measure.\n\n"
     "Follow-ups: the prompt lists this conversation's prior turns, oldest "
     "first — each one's question and the exact query that answered it. Most "
     "questions after the first are follow-ups that adjust the most recent "

@@ -1,7 +1,7 @@
 """FIFO pipeline run worker (specs/014-polars-pipeline-module/): a single
 daemon thread drains queued runs one at a time, spawning each in its own
 subprocess (app/pipeline_runner.py) so a hard timeout can actually be
-enforced — a plain thread cannot be killed — and a script crash or infinite
+enforced — a plain thread cannot be killed — and a runaway query or infinite
 loop never takes the app down. The worker is the only writer of
 pipeline_runs rows, extending this app's existing single-writer posture
 (embedded S3 emulator, sqlite store) to pipeline execution: at most one run
@@ -18,7 +18,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Optional
 
-from . import cache, config, semantic
+from . import cache, config, duck, semantic
 from . import pipelines as pipelines_mod
 from .pipelines import Pipeline
 from .pipelinestore import PipelineStore
@@ -31,8 +31,8 @@ _stop_event = threading.Event()
 def _pipeline_job_spec(pipeline: Pipeline) -> dict:
     """The subset of a Pipeline the runner subprocess needs — see
     contracts/pipelines-api.md's runner protocol. Built directly from the
-    dataclasses (not Pipeline.to_public(), which omits `script` — that
-    summary is for the list API, not execution)."""
+    dataclasses (not Pipeline.to_public(), which omits `sql` — that summary
+    is for the list API, not execution)."""
     return {
         "name": pipeline.name,
         "sources": [
@@ -48,7 +48,7 @@ def _pipeline_job_spec(pipeline: Pipeline) -> dict:
             "delete_predicate": pipeline.materialization.delete_predicate,
             "allow_empty_sync": pipeline.materialization.allow_empty_sync,
         },
-        "script": pipeline.script,
+        "sql": pipeline.sql,
     }
 
 
@@ -82,13 +82,16 @@ def _sync_lineage(registry, pipeline: Pipeline, output_schema: Optional[list]) -
 def _execute(run_id: int, pipeline: Pipeline, registry) -> None:
     store: PipelineStore = registry.pipeline_store
     store.mark_running(run_id)
+    target = duck.split_s3(pipeline.target.path)
     job = {
         "pipeline": _pipeline_job_spec(pipeline),
-        # two storage_options shapes: polars-style lowercase for scanning
-        # declared sources (any format — matches app/engine.py), deltalake's
-        # own uppercase env-var-style for the target read/write/merge
-        # (matches app/seed.py's existing delta-write precedent).
-        "storage": {"read": config.storage_options(), "write": config.delta_write_options()},
+        # only the write path needs credentials here: the runner reads its
+        # sources through DuckDB's own S3 secrets (app/duck.py), and deltalake
+        # wants its own uppercase env-var-style keys for the target's
+        # read/write/merge (matching app/seed.py's delta-write precedent).
+        # Resolved against the target's *own* bucket, so a pipeline writing to
+        # a real bucket is credentialed for it even while the demo store is up.
+        "storage": {"write": config.delta_write_options(target[0] if target else "")},
     }
 
     try:
@@ -132,12 +135,14 @@ def _execute(run_id: int, pipeline: Pipeline, registry) -> None:
 
     if result.get("ok"):
         # the run wrote to the bucket, from a subprocess this one can't see
-        # into, so anything this process is holding for the written path is
-        # now stale. app/engine.py caches source *contents*, not just derived
-        # schemas, which is what makes this a correctness step rather than a
-        # freshness nicety: without it a model reading the pipeline's target
-        # would keep answering from pre-run rows until the TTL lapsed.
+        # into, so anything this process is holding for the written path is now
+        # stale. app/duck.py pins source *contents*, not just derived schemas,
+        # and DuckDB's file cache holds the bytes of everything else, which is
+        # what makes this a correctness step rather than a freshness nicety:
+        # without it a model reading the pipeline's target would keep answering
+        # from pre-run rows until the TTL lapsed.
         cache.clear()
+        duck.invalidate()
         lineage_ok, lineage_issues = _sync_lineage(registry, pipeline, result.get("output_schema"))
         store.finish_run(
             run_id, "succeeded",

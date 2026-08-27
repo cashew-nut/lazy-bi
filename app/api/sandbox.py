@@ -1,11 +1,11 @@
-"""Sandbox notebook endpoints: ad hoc polars/python scratch scripts (see
-app/sandbox.py's module docstring for the trust model — identical carve-out
-to a pipeline's `script:`, admin-gated for both authoring and execution).
+"""Sandbox notebook endpoints: ad hoc SQL scratch scripts (see app/sandbox.py's
+module docstring for the trust model — the same I/O boundary a pipeline's
+`sql:` sits behind, admin-gated for both authoring and execution).
 Reads (list/get saved notebooks) are open to any authenticated role, same as
 pipeline definitions; create/update/delete/run/convert all require admin.
 
 The coding agent (POST /sandbox/agent/stream, and convert's opt-in lineage
-generation) is admin-gated too, for two reasons: its whole output is code
+generation) is admin-gated too, for two reasons: its whole output is SQL
 destined for an admin-trust notebook, and calling it spends money and sends
 the notebook's code to a third party (app/sandbox_agent.py's docstring
 details the egress). It is 503 unless CI_LLM_API_KEY is configured, exactly
@@ -134,13 +134,16 @@ def _bucket_files() -> list[dict]:
     agent request, and an unbounded listing would cost more latency than the
     model call it decorates. A bucket that can't be reached is not fatal —
     the agent just works from the notebook alone."""
-    try:
-        response = s3.client().list_objects_v2(
-            Bucket=config.BUCKET, MaxKeys=config.SANDBOX_AGENT_FILES * 10)
-        objects = [{"key": o["Key"], "size": o["Size"]} for o in response.get("Contents", [])]
-    except Exception:
-        return []
-    return sandbox_mod.bucket_entries(objects, config.BUCKET)
+    entries: list[dict] = []
+    for bucket, prefix in s3.browsable_buckets():
+        try:
+            response = s3.client(bucket).list_objects_v2(
+                Bucket=bucket, Prefix=prefix, MaxKeys=config.SANDBOX_AGENT_FILES * 10)
+            objects = [{"key": o["Key"], "size": o["Size"]} for o in response.get("Contents", [])]
+        except Exception:
+            continue
+        entries += sandbox_mod.bucket_entries(objects, bucket)
+    return entries
 
 
 @router.get("/sandbox/notebooks")
@@ -191,7 +194,6 @@ def run(body: RunIn, user: User = Depends(require_role("admin"))):
         "run_upto": body.run_upto,
         "bucket": config.BUCKET,
         "row_limit": config.SANDBOX_ROW_LIMIT,
-        "storage": {"read": config.storage_options()},
     }
     try:
         proc = subprocess.Popen(
@@ -243,7 +245,8 @@ def convert(body: ConvertIn, user: User = Depends(require_role("admin"))):
     warnings = []
     if not sandbox_mod.has_output_assignment(rewritten):
         warnings.append(
-            "no 'output = ...' assignment found — add one (the pipeline script contract) before saving"
+            "the notebook's sql doesn't end on a SELECT and creates no relation named "
+            "'output' — a pipeline needs one or the other before saving"
         )
     lineage: list[dict] = []
     description = ""

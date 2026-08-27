@@ -4,10 +4,11 @@ import io
 import re
 from datetime import date, timedelta
 
-import polars as pl
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
-from app import cache, config, engine, s3, semantic
+from app import cache, config, duck, engine, s3, semantic
 
 
 def run(models, model, **query):
@@ -222,24 +223,33 @@ def test_spine_window_bounds_timeline(models):
 # One record open from Jan 1st 2026 with no end, one open Feb 2nd-15th only.
 # Both point-in-time mechanisms must place them in the same periods.
 
+def _calendar(start: date, end: date, quarter: bool = False) -> "pa.Table":
+    """A day-per-row date table, the shape a `how: between` import reads."""
+    days = []
+    day = start
+    while day <= end:
+        days.append(day)
+        day += timedelta(days=1)
+    columns = {"date": pa.array(days, pa.date32()),
+               "year": pa.array([d.year for d in days])}
+    if quarter:
+        columns["quarter"] = pa.array([f"{d.year}-Q{(d.month - 1) // 3 + 1}" for d in days])
+    return pa.table(columns)
+
+
 @pytest.fixture(scope="module")
 def two_records(seeded):
     client = s3.client()
     buf = io.BytesIO()
-    pl.DataFrame(
-        {"id": ["A", "B"],
-         "start_date": [date(2026, 1, 1), date(2026, 2, 2)],
-         "end_date": [None, date(2026, 2, 15)]},
-        schema_overrides={"start_date": pl.Date, "end_date": pl.Date},
-    ).write_parquet(buf)
+    pq.write_table(pa.table({
+        "id": pa.array(["A", "B"]),
+        "start_date": pa.array([date(2026, 1, 1), date(2026, 2, 2)], pa.date32()),
+        "end_date": pa.array([None, date(2026, 2, 15)], pa.date32()),
+    }), buf)
     client.put_object(Bucket=config.BUCKET, Key="test/two_records.parquet", Body=buf.getvalue())
 
-    days = pl.date_range(date(2026, 1, 1), date(2026, 12, 31), interval="1d", eager=True).alias("date")
     cal = io.BytesIO()
-    pl.DataFrame(days).with_columns(
-        pl.format("{}-Q{}", pl.col("date").dt.year(), pl.col("date").dt.quarter()).alias("quarter"),
-        pl.col("date").dt.year().alias("year"),
-    ).write_parquet(cal)
+    pq.write_table(_calendar(date(2026, 1, 1), date(2026, 12, 31), quarter=True), cal)
     client.put_object(Bucket=config.BUCKET, Key="test/two_records_cal.parquet", Body=cal.getvalue())
 
     bundle = semantic.parse_bundle_text(f"""
@@ -264,7 +274,7 @@ dimensions:
   - {{name: active_at, label: Active At, type: time,
       spine: {{start: start_date, end: end_date, match: {match}}}}}
 measures:
-  - {{name: n, expr: count()}}
+  - {{name: n, expr: COUNT(*)}}
 """)
         return semantic.resolve_model(model, {"two_cal": bundle})
 
@@ -411,10 +421,10 @@ def test_interval_import_skipped_when_no_calendar_dimension_used(models):
     subs = models["subscriptions"]
     # the bundle arrives with its dimensions under their dimension names, never
     # its own raw column names — see engine._scan_bundle
-    assert "calendar_quarter" not in engine.scan(subs, {"plan": None}).collect_schema()
-    assert "calendar_quarter" in engine.scan(subs, {"calendar_quarter": None}).collect_schema()
-    assert "calendar_quarter" in engine.scan(subs).collect_schema()  # None = introspection
-    assert "quarter" not in engine.scan(subs).collect_schema()
+    assert "calendar_quarter" not in duck.relation_schema(engine.scan(subs, {"plan": None}))
+    assert "calendar_quarter" in duck.relation_schema(engine.scan(subs, {"calendar_quarter": None}))
+    assert "calendar_quarter" in duck.relation_schema(engine.scan(subs))  # None = introspection
+    assert "quarter" not in duck.relation_schema(engine.scan(subs))
 
 
 def test_matching_columns_import_skipped_when_none_of_its_dimensions_are_used(models):
@@ -422,14 +432,14 @@ def test_matching_columns_import_skipped_when_none_of_its_dimensions_are_used(mo
     them must not pay for the join — sales imports the calendar purely to
     conform with its neighbours, and most sales queries never touch it."""
     sales = models["sales"]
-    plain = engine.scan(sales, {"category": None}).collect_schema()
+    plain = duck.relation_schema(engine.scan(sales, {"category": None}))
     assert "calendar_quarter" not in plain
     assert "territory" not in plain               # geography is `left` too
     assert "category" in plain                    # ...the model's own is untouched
     # ...but anything that reads one keeps it, whether grouped by or filtered on
-    assert "calendar_quarter" in engine.scan(sales, {"calendar_quarter": None}).collect_schema()
-    assert "territory" in engine.scan(sales, {"territory": None}).collect_schema()
-    assert "calendar_quarter" in engine.scan(sales).collect_schema()  # None = introspection
+    assert "calendar_quarter" in duck.relation_schema(engine.scan(sales, {"calendar_quarter": None}))
+    assert "territory" in duck.relation_schema(engine.scan(sales, {"territory": None}))
+    assert "calendar_quarter" in duck.relation_schema(engine.scan(sales))  # None = introspection
 
 
 def test_skipping_an_import_does_not_change_a_measure(models):
@@ -491,7 +501,7 @@ def test_spine_dimension_has_no_stored_values(models):
 def test_dimension_values_column_missing_from_source_is_a_query_error(models):
     """A dimension's declared column can drift from the real file underneath
     it (e.g. the source path got repointed at a differently-shaped extract).
-    That used to surface as a raw, uncaught polars.exceptions.ColumnNotFoundError
+    That used to surface as a raw, uncaught engine-level column error
     — a 500 with a Python traceback dumped to the server console instead of the
     same clean QueryError every other bad-column path (_as_date, _filter_expr)
     already raises."""
@@ -530,8 +540,43 @@ def test_imported_dimension_carries_geo(models):
     assert "__lat_region" in r["rows"][0] and "__lon_region" in r["rows"][0]
 
 
-def test_scan_with_imports_stays_lazy(models):
-    assert isinstance(engine.scan(models["sales"]), pl.LazyFrame)
+def test_geo_survives_a_query_whose_measures_are_all_framed(models):
+    """Regression: the coordinates ride along on the aggregate over the fact
+    rows, and a query whose every measure has a `from:` block deliberately
+    builds no such aggregate (the derived relations alone decide which groups
+    exist). The map renderer still needs them, so they get looked up per
+    dimension member instead — this used to fail binding on __lat_region."""
+    framed = [{"name": "big_orders", "expr": "COUNT(*)",
+               "from": "SELECT {dims}, order_id FROM {model} "
+                       "GROUP BY {dims}, order_id HAVING SUM(quantity) > 2"}]
+    r = run(models, "sales", dimensions=["region"], measures=["big_orders"],
+            inline_measures=framed)
+    assert r["row_count"] == 5
+    for row in r["rows"]:
+        assert row["big_orders"] > 0
+        assert isinstance(row["__lat_region"], float)
+        assert isinstance(row["__lon_region"], float)
+
+    # the coordinates are the same ones the ordinary aggregate path produces,
+    # and adding a plain measure alongside must not change either number
+    plain = run(models, "sales", dimensions=["region"], measures=["orders"])
+    both = run(models, "sales", dimensions=["region"], measures=["orders", "big_orders"],
+               inline_measures=framed)
+    by_region = {row["region"]: row for row in r["rows"]}
+    for row in plain["rows"]:
+        assert row["__lat_region"] == by_region[row["region"]]["__lat_region"]
+        assert row["__lon_region"] == by_region[row["region"]]["__lon_region"]
+    for row in both["rows"]:
+        assert row["big_orders"] == by_region[row["region"]]["big_orders"]
+
+
+def test_scan_builds_one_relation_with_its_joins(models):
+    """scan() is SQL now — one subquery carrying the model's own source, its
+    joins and the bundles a query reads from."""
+    sql = engine.scan(models["sales"])
+    assert sql.startswith("(SELECT ") and sql.endswith(")")
+    assert sql.count(";") == 0
+    assert "JOIN" in sql
 
 
 def test_geography_bundle_shared_across_two_fact_models(models):
@@ -557,7 +602,8 @@ def import_edge_cases(seeded):
     client.put_object(Bucket=config.BUCKET, Key="test/import_territories.csv",
                        Body=b"territory,name\nT1,Territory One\nT2,Territory Two\n")
     buf = io.BytesIO()
-    pl.DataFrame({"id": [1, 2, 3], "region": ["A", "B", "Z"], "amount": [10, 20, 30]}).write_parquet(buf)
+    pq.write_table(pa.table({"id": pa.array([1, 2, 3]), "region": pa.array(["A", "B", "Z"]),
+                             "amount": pa.array([10, 20, 30])}), buf)
     client.put_object(Bucket=config.BUCKET, Key="test/import_fact.parquet", Body=buf.getvalue())
 
     bundle = semantic.parse_bundle_text(f"""
@@ -577,7 +623,7 @@ datasets:
 name: test_fact
 source: {{format: parquet, path: s3://{config.BUCKET}/test/import_fact.parquet}}
 dimensions: [{{name: id, label: Id}}]
-measures: [{{name: total, expr: sum(amount)}}]
+measures: [{{name: total, expr: SUM(amount)}}]
 dimension_imports:
   - {{bundle: test_geo, anchor_dataset: regions, on: region, how: {how}}}
 """)
@@ -608,7 +654,7 @@ def test_import_inner_join_drops_unmatched_anchor_rows(import_edge_cases):
 # --- Regression: a "matching columns" (equality) import whose right_on key is
 # itself a declared dimension, under a *different* name than left_on (e.g. a
 # custom calendar bundle's own `date` column imported against a fact's
-# `event_date`). Polars' default join `coalesce` behavior merges differently-
+# `event_date`). The previous engine's default join `coalesce` merged differently-
 # named key columns into the left one and drops the right one entirely — which
 # silently deleted the calendar's own `date` dimension after the join, even
 # though it's declared and importable. An interval (`how: between`) import
@@ -618,16 +664,15 @@ def test_import_inner_join_drops_unmatched_anchor_rows(import_edge_cases):
 def renamed_key_import(seeded):
     client = s3.client()
     buf = io.BytesIO()
-    pl.DataFrame({
-        "study": ["s1", "s1"],
-        "event_date": [date(2026, 1, 5), date(2026, 2, 10)],
-        "event_count": [3, 7],
-    }).write_parquet(buf)
+    pq.write_table(pa.table({
+        "study": pa.array(["s1", "s1"]),
+        "event_date": pa.array([date(2026, 1, 5), date(2026, 2, 10)], pa.date32()),
+        "event_count": pa.array([3, 7]),
+    }), buf)
     client.put_object(Bucket=config.BUCKET, Key="test/renamed_key_fact.parquet", Body=buf.getvalue())
 
-    days = pl.date_range(date(2026, 1, 1), date(2026, 2, 28), interval="1d", eager=True).alias("date")
     cal = io.BytesIO()
-    pl.DataFrame(days).with_columns(pl.col("date").dt.year().alias("year")).write_parquet(cal)
+    pq.write_table(_calendar(date(2026, 1, 1), date(2026, 2, 28)), cal)
     client.put_object(Bucket=config.BUCKET, Key="test/renamed_key_cal.parquet", Body=cal.getvalue())
 
     bundle = semantic.parse_bundle_text(f"""
@@ -647,13 +692,13 @@ dimension_imports:
 dimensions:
   - {{name: study, label: Study}}
 measures:
-  - {{name: n, expr: sum(event_count)}}
+  - {{name: n, expr: SUM(event_count)}}
 """)
     return semantic.resolve_model(model, {"renamed_key_cal": bundle})
 
 
 def test_renamed_equality_import_key_stays_queryable(renamed_key_import):
-    assert "date" in engine.scan(renamed_key_import, {"date": None}).collect_schema()
+    assert "date" in duck.relation_schema(engine.scan(renamed_key_import, {"date": None}))
     r = engine.run_query(renamed_key_import, {
         "dimensions": [{"name": "date", "grain": "1mo"}], "measures": ["n"],
     })
@@ -667,7 +712,7 @@ def test_renamed_equality_import_non_key_column_still_worked_before(renamed_key_
     assert {row["year"]: row["n"] for row in r["rows"]} == {2026: 10}
 
 
-# --- Framed measures: expr aggregates over an intermediary derived frame ---
+# --- from: measures: expr aggregates a relation the measure declares -------
 # Synthetic event log with hand-computable answers: per study, the "days to
 # reach 75% of that study's events" is the date of the ceil(0.75 * n)-th
 # event minus the first event's date.
@@ -684,8 +729,9 @@ def framed_model(seeded):
         for sid, offsets in days.items() for d in offsets
     ]
     buf = io.BytesIO()
-    pl.DataFrame(rows).write_parquet(buf)
-    s3.client().put_object(Bucket=config.BUCKET, Key="test/framed_events.parquet", Body=buf.getvalue())
+    pq.write_table(pa.Table.from_pylist(rows), buf)
+    s3.client().put_object(Bucket=config.BUCKET, Key="test/framed_events.parquet",
+                           Body=buf.getvalue())
 
     return semantic.parse_model_text(f"""
 name: test_framed
@@ -696,34 +742,31 @@ dimensions:
     type: time
 measures:
   - name: events
-    expr: count()
+    expr: COUNT(*)
   - name: median_days_to_75
-    frame: |
-      keys = list(dict.fromkeys(["study_id", *dims]))
-      ordered = lf.sort("event_date").with_columns(
-          (pl.int_range(1, pl.len() + 1).over(keys) / pl.len().over(keys)).alias("cume"),
-          pl.col("event_date").min().over(keys).alias("first_event"),
+    expr: MEDIAN(days_to_75)
+    from: |
+      WITH ranked AS (
+        SELECT {{dims}}, study_id, event_date,
+               ROW_NUMBER() OVER (PARTITION BY study_id, {{dims}} ORDER BY event_date)
+                 / COUNT(*) OVER (PARTITION BY study_id, {{dims}}) AS cume,
+               MIN(event_date) OVER (PARTITION BY study_id, {{dims}}) AS first_event
+        FROM {{model}}
       )
-      frame = (
-          ordered.filter(pl.col("cume") >= 0.75)
-          .group_by(keys)
-          .agg(pl.col("first_event").first(), pl.col("event_date").min().alias("date_75"))
-          .with_columns(
-              (pl.col("date_75") - pl.col("first_event")).dt.total_days().alias("days_to_75"),
-              pl.col("date_75").alias("event_date"),
-          )
-      )
-    frame_emits: [event_date]
-    expr: pl.col("days_to_75").median()
-  - name: bad_frame_drops_dims
-    frame: 'lf.group_by("study_id").agg(pl.len())'
-    expr: pl.len()
-  - name: bad_frame_emits_declared_not_output
-    frame: |
-      keys = list(dict.fromkeys(["study_id", *dims]))
-      frame = lf.group_by(keys).agg(pl.len())
-    frame_emits: [event_date]
-    expr: pl.len()
+      SELECT {{dims}}, study_id,
+             date_diff('day', MIN(first_event), MIN(event_date)) AS days_to_75,
+             MIN(event_date) AS event_date
+      FROM ranked
+      WHERE cume >= 0.75
+      GROUP BY {{dims}}, study_id
+    emits: [event_date]
+  - name: bad_from_drops_dims
+    expr: COUNT(*)
+    from: 'SELECT study_id FROM {{model}} GROUP BY study_id'
+  - name: bad_emits_declared_not_output
+    expr: COUNT(*)
+    from: 'SELECT {{dims}}, study_id FROM {{model}} GROUP BY {{dims}}, study_id'
+    emits: [event_date]
 """)
 
 
@@ -753,24 +796,24 @@ def test_framed_measure_respects_filters(framed_model):
     assert r["rows"][0]["median_days_to_75"] == 60.0
 
 
-def test_model_frame_that_drops_dimensions_rejected(framed_model):
+def test_from_block_that_drops_dimensions_rejected(framed_model):
     with pytest.raises(engine.QueryError, match="lost dimension"):
-        engine.run_query(framed_model, {"dimensions": ["cohort"], "measures": ["bad_frame_drops_dims"]})
+        engine.run_query(framed_model, {"dimensions": ["cohort"], "measures": ["bad_from_drops_dims"]})
 
 
 def test_model_emitted_dimension_missing_from_frame_rejected(framed_model):
-    with pytest.raises(engine.QueryError, match="frame_emits"):
+    with pytest.raises(engine.QueryError, match="emits:"):
         engine.run_query(framed_model, {
             "dimensions": [{"name": "event_date", "grain": "1mo"}],
-            "measures": ["bad_frame_emits_declared_not_output"],
+            "measures": ["bad_emits_declared_not_output"],
         })
 
 
 def test_inline_frame_measure_rejected(framed_model):
     # frame-based measures are a model-measure-only, authenticated-path
-    # construct (see specs/008-safe-measure-compilation) — inline/query-time
-    # measures must never be able to run one, regardless of shape.
-    with pytest.raises(engine.QueryError, match="authenticated model-measure save"):
+    # construct it replaced was python behind an eval, and a query body
+    # carrying one has to be told so rather than quietly ignored.
+    with pytest.raises(engine.QueryError, match="'frame:'"):
         engine.run_query(framed_model, {
             "dimensions": ["cohort"], "measures": ["n_studies"],
             "inline_measures": [{
@@ -782,15 +825,30 @@ def test_inline_frame_measure_rejected(framed_model):
 
 
 def test_inline_frame_emits_rejected_even_without_frame(framed_model):
-    with pytest.raises(engine.QueryError, match="authenticated model-measure save"):
+    with pytest.raises(engine.QueryError, match="'frame:'"):
         engine.run_query(framed_model, {
             "dimensions": ["cohort"], "measures": ["bad"],
             "inline_measures": [{
                 "name": "bad",
                 "frame_emits": ["event_date"],
-                "expr": "pl.len()",
+                "expr": "COUNT(*)",
             }],
         })
+
+
+def test_an_inline_measure_may_declare_its_own_from_relation(framed_model):
+    """The construct is allowlisted SQL that cannot name a table function, so
+    it no longer needs a privilege of its own — the measure lab can prototype
+    a complex metric without a model save."""
+    r = engine.run_query(framed_model, {
+        "dimensions": ["cohort"], "measures": ["studies"],
+        "inline_measures": [{
+            "name": "studies",
+            "expr": "COUNT(*)",
+            "from": "SELECT {dims}, study_id FROM {model} GROUP BY {dims}, study_id",
+        }],
+    })
+    assert {row["cohort"]: row["studies"] for row in r["rows"]} == {"X": 2, "Y": 1}
 
 
 def test_framed_measure_timeline_buckets_derived_rows(framed_model):
@@ -860,7 +918,7 @@ def _quarterly(models, extra_measures=(), extra_inline=None):
 
 
 def test_running_total_inline_matches_cumulative_sum(models):
-    inline = [{"name": "revenue_running_total", "expr": "running_total(revenue)"}]
+    inline = [{"name": "revenue_running_total", "expr": "SUM(revenue) OVER w"}]
     r = _quarterly(models, extra_measures=["revenue_running_total"], extra_inline=inline)
     rows = sorted(r["rows"], key=lambda row: row["order_date"])
     running = 0.0
@@ -870,7 +928,7 @@ def test_running_total_inline_matches_cumulative_sum(models):
 
 
 def test_running_total_partitions_by_other_query_dimensions(models):
-    inline = [{"name": "revenue_running_total", "expr": "running_total(revenue)"}]
+    inline = [{"name": "revenue_running_total", "expr": "SUM(revenue) OVER w"}]
     r = run(
         models, "sales",
         dimensions=["channel", {"name": "order_date", "grain": "1q"}],
@@ -886,7 +944,7 @@ def test_running_total_partitions_by_other_query_dimensions(models):
 
 
 def test_pct_change_from_previous_quarter(models):
-    text = "(revenue - lag(revenue, 1)) / lag(revenue, 1)"
+    text = "(revenue - LAG(revenue) OVER w) / LAG(revenue) OVER w"
     inline = [{"name": "revenue_qoq", "expr": text}]
     r = _quarterly(models, extra_measures=["revenue_qoq"], extra_inline=inline)
     rows = sorted(r["rows"], key=lambda row: row["order_date"])
@@ -900,7 +958,7 @@ def test_window_measure_dependency_dropped_when_not_requested(models):
     # requesting only the running total shouldn't force `revenue` into the
     # result — it's still computed internally (the running total needs it)
     # but trimmed from the response unless also explicitly requested
-    inline = [{"name": "revenue_running_total", "expr": "running_total(revenue)"}]
+    inline = [{"name": "revenue_running_total", "expr": "SUM(revenue) OVER w"}]
     r = run(
         models, "sales",
         dimensions=[{"name": "order_date", "grain": "1q"}],
@@ -913,14 +971,14 @@ def test_window_measure_dependency_dropped_when_not_requested(models):
 
 
 def test_window_measure_requires_a_time_dimension(models):
-    inline = [{"name": "revenue_running_total", "expr": "running_total(revenue)"}]
+    inline = [{"name": "revenue_running_total", "expr": "SUM(revenue) OVER w"}]
     with pytest.raises(engine.QueryError, match="time dimension"):
         run(models, "sales", dimensions=["channel"],
             measures=["revenue", "revenue_running_total"], inline_measures=inline)
 
 
 def test_window_measure_rejects_ambiguous_multiple_time_dimensions(models):
-    inline = [{"name": "mrr_running_total", "expr": "running_total(mrr)"}]
+    inline = [{"name": "mrr_running_total", "expr": "SUM(mrr) OVER w"}]
     with pytest.raises(engine.QueryError, match="one time dimension"):
         run(models, "subscriptions",
             dimensions=[{"name": "active_at", "grain": "1mo"}, {"name": "start_month", "grain": "1mo"}],
@@ -929,8 +987,8 @@ def test_window_measure_rejects_ambiguous_multiple_time_dimensions(models):
 
 def test_window_measure_cannot_depend_on_another_window_measure(models):
     inline = [
-        {"name": "revenue_running_total", "expr": "running_total(revenue)"},
-        {"name": "double_running_total", "expr": "running_total(revenue_running_total)"},
+        {"name": "revenue_running_total", "expr": "SUM(revenue) OVER w"},
+        {"name": "double_running_total", "expr": "SUM(revenue_running_total) OVER w"},
     ]
     with pytest.raises(engine.QueryError, match="window measure"):
         run(models, "sales", dimensions=[{"name": "order_date", "grain": "1q"}],
@@ -938,7 +996,7 @@ def test_window_measure_cannot_depend_on_another_window_measure(models):
 
 
 def test_window_measure_unknown_dependency_rejected(models):
-    inline = [{"name": "bogus_running_total", "expr": "running_total(does_not_exist)"}]
+    inline = [{"name": "bogus_running_total", "expr": "SUM(does_not_exist) OVER w"}]
     with pytest.raises(engine.QueryError):
         run(models, "sales", dimensions=[{"name": "order_date", "grain": "1q"}],
             measures=["bogus_running_total"], inline_measures=inline)
@@ -963,7 +1021,7 @@ def test_shipped_model_window_measures_end_to_end(models):
 # --- Visual parameters: param() reference in lag(), resolved per query -----
 
 def _period_list_query(models, parameter_values=None):
-    inline = [{"name": "revenue_lag", "expr": "lag(revenue, param('period_list'))"}]
+    inline = [{"name": "revenue_lag", "expr": "LAG(revenue, param('period_list')) OVER w"}]
     return run(
         models, "sales",
         dimensions=[{"name": "order_date", "grain": "1q"}],
@@ -976,7 +1034,7 @@ def _period_list_query(models, parameter_values=None):
 
 def test_parameter_uses_declared_default_when_no_override(models):
     default_r = _period_list_query(models)
-    literal = [{"name": "revenue_lag", "expr": "lag(revenue, 1)"}]
+    literal = [{"name": "revenue_lag", "expr": "LAG(revenue, 1) OVER w"}]
     literal_r = run(
         models, "sales", dimensions=[{"name": "order_date", "grain": "1q"}],
         measures=["revenue", "revenue_lag"], inline_measures=literal,
@@ -1015,7 +1073,7 @@ def test_parameter_undeclared_name_rejected(models):
 
 
 def test_parameter_default_not_in_values_rejected(models):
-    inline = [{"name": "revenue_lag", "expr": "lag(revenue, param('period_list'))"}]
+    inline = [{"name": "revenue_lag", "expr": "LAG(revenue, param('period_list')) OVER w"}]
     with pytest.raises(engine.QueryError, match="not one of its declared values"):
         run(
             models, "sales", dimensions=[{"name": "order_date", "grain": "1q"}],
@@ -1118,7 +1176,7 @@ def test_query_with_float_param_in_comparison(models):
     # aggregate-mode measure: bare identifiers are raw source columns, so
     # this exercises param() inside where()'s predicate against a real
     # column comparison, not a sibling-measure (window-mode) reference
-    inline = [{"name": "flagged_units", "expr": "sum(where(quantity, unit_price > param('threshold')))"}]
+    inline = [{"name": "flagged_units", "expr": "SUM(quantity) FILTER (WHERE unit_price > param('threshold'))"}]
     r = run(
         models, "sales", dimensions=[], measures=["flagged_units"], inline_measures=inline,
         parameters=[{"name": "threshold", "type": "float", "values": [10, 50.5, 100], "default": 50.5}],
@@ -1128,7 +1186,7 @@ def test_query_with_float_param_in_comparison(models):
 
 
 def test_query_with_string_param_in_comparison(models):
-    inline = [{"name": "flagged_units", "expr": "sum(where(quantity, channel == param('target_channel')))"}]
+    inline = [{"name": "flagged_units", "expr": "SUM(quantity) FILTER (WHERE channel == param('target_channel'))"}]
     r = run(
         models, "sales", dimensions=[], measures=["flagged_units"], inline_measures=inline,
         parameters=[{"name": "target_channel", "type": "string", "values": ["online", "retail"], "default": "online"}],
@@ -1138,26 +1196,26 @@ def test_query_with_string_param_in_comparison(models):
 
 
 # --- Schema/bounds caching (app/cache.py) ----------------------------------
-# engine.source_schema/scan_schema and _run_single's spine-bounds lookup all
-# sit on app/cache.py's TTL cache instead of re-resolving straight from S3
-# every time. These count real _scan_source calls through a thin monkeypatch
-# rather than asserting on wall-clock speed, so they're deterministic.
+# engine.source_schema/scan_schema and the spine-bounds lookup all sit on
+# app/cache.py's TTL cache instead of re-resolving straight from S3 every
+# time. These count real duck.relation calls through a thin monkeypatch rather
+# than asserting on wall-clock speed, so they're deterministic.
 
 def _count_scan_source_calls(monkeypatch):
     calls = []
-    real = engine._scan_source
+    real = duck.relation
 
-    def counting(source):
+    def counting(path, fmt):
         calls.append(1)
-        return real(source)
+        return real(path, fmt)
 
-    monkeypatch.setattr(engine, "_scan_source", counting)
+    monkeypatch.setattr(duck, "relation", counting)
     return calls
 
 
 def test_source_schema_reuses_cached_result_for_same_source(seeded, monkeypatch):
     cache.clear()
-    calls = _count_scan_source_calls(monkeypatch)
+    calls = _count_object_store_reads(monkeypatch)
     source = semantic.Source(path="s3://cash-intel/ref/products.csv", format="csv")
 
     first = engine.source_schema(source)
@@ -1169,7 +1227,7 @@ def test_source_schema_reuses_cached_result_for_same_source(seeded, monkeypatch)
 
 def test_source_schema_cache_keyed_on_path_and_format(seeded, monkeypatch):
     cache.clear()
-    calls = _count_scan_source_calls(monkeypatch)
+    calls = _count_object_store_reads(monkeypatch)
     engine.source_schema(semantic.Source(path="s3://cash-intel/ref/products.csv", format="csv"))
     engine.source_schema(semantic.Source(path="s3://cash-intel/ref/regions.csv", format="csv"))
     assert len(calls) == 2  # a different path is a genuine cache miss
@@ -1187,7 +1245,7 @@ def test_scan_schema_reuses_cached_result_for_same_model(models, monkeypatch):
     engine.scan_schema(model)
     assert len(calls) == after_first  # identical call added nothing
 
-    uncached = engine.scan(model).collect_schema()
+    uncached = duck.relation_schema(engine.scan(model))
     assert first == uncached  # the cache never changes the actual answer
 
 
@@ -1242,21 +1300,20 @@ def test_unbounded_spine_query_reuses_cached_bounds_on_repeat(models, monkeypatc
     assert 0 < warm < cold
 
 
-# --- Source read cache (engine._scan_source) -------------------------------
-# The caches above memoize *derived* values — a schema, a bounds pair — and
-# never touched the I/O inside collect(), so every query still re-listed every
-# glob and re-read every joined lookup file from the object store. These cover
-# the layer that does: small sources are read once and held as whole frames,
-# large ones keep streaming, and neither may change an answer.
+# --- Source read cache (app/duck.py) ---------------------------------------
+# The caches above memoize *derived* values — a schema, a bounds pair. These
+# cover the layer that decides where a query's bytes come from: a small source
+# is pinned as a local DuckDB table and read from memory afterwards, a large
+# one keeps streaming with pushdown intact, and neither may change an answer.
 #
-# Real object-store reads are counted through _lazy_source (the uncached path)
-# rather than _scan_source, which is still called every time and is exactly
-# what's expected to stop reaching S3.
+# Real object-store reads are counted through duck._scan_sql (the uncached
+# path) rather than duck.relation, which is still called every time and is
+# exactly what is expected to stop reaching S3.
 
 def _assert_same_rows(first: dict, second: dict, label: str = "") -> None:
     """Row-by-row equality with a tolerance on floats.
 
-    polars aggregates in parallel, and a float sum is not associative, so two
+    Aggregation is parallel and a float sum is not associative, so two
     identical runs of the same query can differ in a value's last bits purely
     from how the reduction happened to be scheduled — under 1e-14 relative.
     That is a property of the engine, not of anything these tests
@@ -1275,14 +1332,21 @@ def _assert_same_rows(first: dict, second: dict, label: str = "") -> None:
 
 def _count_object_store_reads(monkeypatch):
     reads = []
-    real = engine._lazy_source
+    real = duck._scan_sql
 
-    def counting(source):
-        reads.append(source.path)
-        return real(source)
+    def counting(fmt, path):
+        reads.append(path)
+        return real(fmt, path)
 
-    monkeypatch.setattr(engine, "_lazy_source", counting)
+    monkeypatch.setattr(duck, "_scan_sql", counting)
     return reads
+
+
+def _read(source) -> int:
+    """Read a source the way a query does — through duck.relation, which is
+    either a pinned local table or the table function that fetches it."""
+    return duck.cursor().execute(
+        f"SELECT count(*) FROM {duck.relation(source.path, source.format)}").fetchone()[0]
 
 
 def _sources_of(model):
@@ -1294,12 +1358,12 @@ def test_small_source_is_read_from_the_object_store_once(models, monkeypatch):
     reads = _count_object_store_reads(monkeypatch)
     source = semantic.Source(path="s3://cash-intel/ref/products.csv", format="csv")
 
-    first = engine._scan_source(source).collect()
-    engine._scan_source(source).collect()
-    engine._scan_source(source).collect()
+    first = _read(source)
+    _read(source)
+    _read(source)
 
     assert reads == ["s3://cash-intel/ref/products.csv"]  # read once, then served from memory
-    assert first.height == 15
+    assert first == 15
 
 
 def test_repeat_query_stops_touching_the_object_store(models, monkeypatch):
@@ -1377,7 +1441,7 @@ def test_frame_is_dropped_when_it_expands_past_the_resident_cap(models, monkeypa
     cache.clear()
     source = semantic.Source(path="s3://cash-intel/ref/products.csv", format="csv")
 
-    assert engine._materialize(source) is None
+    assert duck._pin_source(source.path, source.format) is None
 
 
 def test_ttl_of_zero_restores_the_uncached_behaviour(models, monkeypatch):
@@ -1386,8 +1450,8 @@ def test_ttl_of_zero_restores_the_uncached_behaviour(models, monkeypatch):
     reads = _count_object_store_reads(monkeypatch)
     source = semantic.Source(path="s3://cash-intel/ref/products.csv", format="csv")
 
-    engine._scan_source(source).collect()
-    engine._scan_source(source).collect()
+    _read(source)
+    _read(source)
 
     assert len(reads) == 2  # no caching at all
 
@@ -1397,28 +1461,28 @@ def test_model_reload_drops_held_frames(models, monkeypatch):
     change what a path resolves to, and stale rows must not outlive it."""
     cache.clear()
     source = semantic.Source(path="s3://cash-intel/ref/products.csv", format="csv")
-    engine._scan_source(source).collect()
+    _read(source)
 
     reads = _count_object_store_reads(monkeypatch)
     cache.clear()                      # what reload_all() does
-    engine._scan_source(source).collect()
+    _read(source)
 
     assert reads == ["s3://cash-intel/ref/products.csv"]
 
 
 def test_glob_is_listed_once_and_reused(models, monkeypatch):
     """A parquet glob is resolved to a file list once per TTL and handed to
-    polars already resolved, instead of being re-listed on every collect."""
+    the listing cache already resolved, instead of being re-globbed per query."""
     cache.clear()
     lists = []
-    real = engine._list_objects
-    monkeypatch.setattr(engine, "_list_objects",
+    real = duck._list_objects
+    monkeypatch.setattr(duck, "_list_objects",
                         lambda path: lists.append(path) or real(path))
     source = semantic.Source(path="s3://cash-intel/sales/*.parquet", format="parquet")
 
-    paths, total = engine._source_objects(source)
-    engine._source_objects(source)
-    engine._source_objects(source)
+    paths, total = duck.objects(source.path)
+    duck.objects(source.path)
+    duck.objects(source.path)
 
     assert lists == ["s3://cash-intel/sales/*.parquet"]
     assert [p.rsplit("/", 1)[1] for p in paths] == ["2024.parquet", "2025.parquet", "2026.parquet"]
@@ -1426,12 +1490,12 @@ def test_glob_is_listed_once_and_reused(models, monkeypatch):
 
 
 def test_listing_matches_the_glob_and_not_its_neighbours(seeded):
-    csvs, _ = engine._list_objects("s3://cash-intel/ref/*.csv")
+    csvs, _ = duck._list_objects("s3://cash-intel/ref/*.csv")
     assert all(p.endswith(".csv") for p in csvs)
     assert "s3://cash-intel/ref/products.csv" in csvs
     assert not any("sales/" in p for p in csvs)
 
-    exact, size = engine._list_objects("s3://cash-intel/ref/products.csv")
+    exact, size = duck._list_objects("s3://cash-intel/ref/products.csv")
     assert exact == ["s3://cash-intel/ref/products.csv"] and size > 0
 
 
@@ -1443,48 +1507,52 @@ def test_a_non_s3_path_is_left_alone(tmp_path, monkeypatch):
     cache.clear()
     source = semantic.Source(path=str(local), format="csv")
 
-    assert engine._list_objects(str(local)) is None
-    assert engine._materialize(source) is None
-    assert engine._scan_source(source).collect().height == 2
+    assert duck._list_objects(str(local)) is None
+    assert duck._pin_source(source.path, source.format) is None
+    assert _read(source) == 2
 
 
 def test_glob_does_not_reach_into_a_nested_prefix(seeded):
     """A `*` must not cross a `/`. The listing decides which files a query
-    reads, so a pattern that swallowed a nested archive directory would put
-    its rows in someone's totals. Asserted against polars' own glob rather
-    than against the expectation, so the two can't drift apart."""
+    reads, so a pattern that swallowed a nested archive directory would put its
+    rows in someone's totals. Asserted against DuckDB's own glob rather than
+    against the expectation, so the two can't drift apart."""
     client = s3.client()
-    frame = pl.DataFrame({"order_id": [1], "region": ["Nested"], "unit_price": [1.0],
-                          "quantity": [1], "unit_cost": [0.5]})
     buf = io.BytesIO()
-    frame.write_parquet(buf)
+    pq.write_table(pa.table({
+        "order_id": pa.array([1]), "region": pa.array(["Nested"]),
+        "unit_price": pa.array([1.0]), "quantity": pa.array([1]),
+        "unit_cost": pa.array([0.5]),
+    }), buf)
     client.put_object(Bucket=config.BUCKET, Key="sales/archive/old.parquet",
                       Body=buf.getvalue())
     try:
         cache.clear()
-        listed, _ = engine._list_objects("s3://cash-intel/sales/*.parquet")
+        listed, _ = duck._list_objects("s3://cash-intel/sales/*.parquet")
         assert "s3://cash-intel/sales/archive/old.parquet" not in listed
 
-        # and the file list we hand polars must select exactly what polars'
-        # own glob would have selected
-        source = semantic.Source(path="s3://cash-intel/sales/*.parquet", format="parquet")
-        via_glob = pl.scan_parquet("s3://cash-intel/sales/*.parquet",
-                                   storage_options=config.storage_options()).collect()
-        assert engine._lazy_source(source).collect().height == via_glob.height
-        assert "Nested" not in via_glob["region"].unique().to_list()
+        # and the file list handed to read_parquet must select exactly what
+        # DuckDB's own glob would have selected
+        cursor = duck.cursor()
+        via_glob = cursor.execute(
+            "SELECT count(*) AS n, count(*) FILTER (WHERE region = 'Nested') AS nested "
+            "FROM read_parquet('s3://cash-intel/sales/*.parquet')").fetchone()
+        via_listing = cursor.execute(
+            f"SELECT count(*) FROM {duck._scan_sql('parquet', 's3://cash-intel/sales/*.parquet')}"
+        ).fetchone()[0]
+        assert via_listing == via_glob[0]
+        assert via_glob[1] == 0
     finally:
         client.delete_object(Bucket=config.BUCKET, Key="sales/archive/old.parquet")
-        cache.clear()
-
 
 def test_glob_match_segment_semantics():
-    assert engine._glob_match("sales/*.parquet", "sales/2024.parquet")
-    assert not engine._glob_match("sales/*.parquet", "sales/archive/old.parquet")
-    assert not engine._glob_match("sales/*.parquet", "sales/2024.csv")
-    assert not engine._glob_match("sales/*.parquet", "other/2024.parquet")
-    assert engine._glob_match("sales/**/*.parquet", "sales/archive/old.parquet")
-    assert engine._glob_match("ref/products.csv", "ref/products.csv")
-    assert not engine._glob_match("ref/Products.csv", "ref/products.csv")  # S3 is case-sensitive
+    assert duck.glob_match("sales/*.parquet", "sales/2024.parquet")
+    assert not duck.glob_match("sales/*.parquet", "sales/archive/old.parquet")
+    assert not duck.glob_match("sales/*.parquet", "sales/2024.csv")
+    assert not duck.glob_match("sales/*.parquet", "other/2024.parquet")
+    assert duck.glob_match("sales/**/*.parquet", "sales/archive/old.parquet")
+    assert duck.glob_match("ref/products.csv", "ref/products.csv")
+    assert not duck.glob_match("ref/Products.csv", "ref/products.csv")  # S3 is case-sensitive
 
 
 def test_denied_listing_falls_back_to_streaming(models, monkeypatch):
@@ -1507,8 +1575,8 @@ def test_denied_listing_falls_back_to_streaming(models, monkeypatch):
     cache.clear()
 
     source = semantic.Source(path="s3://cash-intel/sales/*.parquet", format="parquet")
-    assert engine._list_objects(source.path) is None
-    assert engine._materialize(source) is None
+    assert duck._list_objects(source.path) is None
+    assert duck._pin_source(source.path, source.format) is None
 
     # and a real query still answers, straight from the object store
     result = run(models, "sales", dimensions=["region"], measures=["revenue"])

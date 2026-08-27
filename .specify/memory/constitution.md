@@ -6,18 +6,36 @@
 The query builder, dashboards, and any future client NEVER touch raw source
 columns directly — every dimension and measure the UI can use must be
 declared in a model YAML file first. Models are the editable, hot-reloadable
-contract between raw S3 data (parquet/csv/Delta) and everything downstream.
+contract between raw S3 data (parquet/csv/Delta/Iceberg) and everything
+downstream.
 New data sources are onboarded by writing or editing a model, not by adding
 special cases to the query engine.
 
-### II. Lazy Evaluation, Pushdown by Default (NON-NEGOTIABLE)
-Every query path scans data lazily (Polars `LazyFrame`) so only the columns
-and row-groups a query actually needs leave the bucket — this is the product's
-reason for existing. Any change to the engine, joins, or spine logic must
-preserve predicate/projection pushdown; a feature that forces a full-table
-materialization needs a documented reason and a benchmark showing the cost.
-Performance claims are validated against a large real dataset (the 13M-row
-NYC taxi benchmark), not synthetic toy data.
+### II. Pushdown by Default, Round Trips Counted (NON-NEGOTIABLE)
+Only the columns and row groups a query actually needs leave the bucket —
+this is the product's reason for existing. Any change to the engine, joins,
+or spine logic must preserve predicate/projection pushdown; a feature that
+forces a full-table materialization needs a documented reason and a benchmark
+showing the cost. Performance claims are validated against a large real
+dataset (the 13M-row NYC taxi benchmark), not synthetic toy data.
+
+**Amended by the duckdb-sql-engine feature** (see
+`specs/018-duckdb-sql-engine/`) — the lazy-`LazyFrame` spelling of this
+principle is gone with polars; DuckDB reads the sources directly and the
+engine emits one statement per query. Two things the amendment adds rather
+than removes:
+
+- **Bytes were never the whole cost.** A real object store charges for
+  *round trips*, and pushdown alone does nothing about re-LISTing a glob or
+  re-reading a footer per query. Latency claims are therefore validated
+  against an endpoint with injected per-request latency, counting requests,
+  not only against the emulator (README: "Against a real object store").
+- **One connection is part of the principle now.** DuckDB's object cache,
+  external file cache and keep-alive connections live on the *instance*, so
+  a second connection starts cold and a connection per query makes all three
+  useless. Anything that opens its own connection on the query path, or that
+  runs a query outside `app/duck.py`'s cursor, is a regression of this
+  principle even when its own numbers look fine in isolation.
 
 ### III. Every Feature Ships With Tests
 No feature is done without pytest coverage added alongside it (semantic
@@ -44,6 +62,52 @@ interaction state leak into saved payloads, and do not silently persist
 something meant to be a throwaway view.
 
 ### VI. Trusted-Config Security Boundary Is Explicit, Never Silently Widened
+
+> **Amended by the duckdb-sql-engine feature** (see
+> `specs/018-duckdb-sql-engine/`), which *narrows* this principle and retires
+> two of the three carve-outs below. Read this note first; the history it
+> supersedes is kept underneath because the reasoning still explains why the
+> boundary sits where it does.
+>
+> Every authored construct in the platform — a measure's `expr:`, a complex
+> measure's `from:` block, a pipeline's `sql:`, a sandbox cell — is now SQL,
+> and **nothing anywhere `eval`s, `exec`s or `compile`s authored text**. The
+> `frame:` construct and the pipeline `script:` construct are both deleted;
+> a YAML still carrying either is a load-time error.
+>
+> That collapses the trust question from *"can this run code?"* to *"how far
+> can this reach?"*, and the answer is decided structurally, by which SQL
+> profile the text is validated under:
+>
+> - **Expressions** (any measure, model or inline, no distinction) are parsed
+>   by DuckDB, checked against a fail-closed node allowlist, and
+>   **re-serialized from the validated AST** — the author's text never reaches
+>   a connection. The function allowlist is derived from `duckdb_functions()`
+>   filtered to scalar/aggregate/macro, which excludes *every* table function
+>   structurally rather than by name, so no expression can name a file, a URL
+>   or a catalog. A `from:` block adds a relation profile on top: one SELECT,
+>   no base table but `{model}` and its own CTEs, and no table function at
+>   all. Because reach is what the gate measures, `from:` needs **no
+>   admin gate at all** — it is available inline, on an unauthenticated
+>   `/api/query`, exactly like any other measure. This is the amendment
+>   *narrowing* the boundary: the eval-capable construct that needed the gate
+>   no longer exists.
+> - **Pipelines and sandbox notebooks** keep the admin gate, and it now
+>   measures something real and specific: their SQL may use table functions,
+>   so it can read and write arbitrary bucket paths (`read_parquet`,
+>   `delta_scan`, `COPY … TO`, `ATTACH`). That is I/O reach at
+>   application-code level, and authoring *and* running both stay
+>   admin-only for exactly that reason — not because SQL might execute
+>   something, which it cannot.
+> - **Model YAML itself** stays trusted, developer-authored configuration
+>   with the admin gate spec 011 put on the raw YAML routes. Nothing widens:
+>   the gate that used to stop a `frame:` block being smuggled through now
+>   stops a source `path:` being pointed somewhere it shouldn't be.
+>
+> The original rule stands unchanged: any future change that widens who may
+> reach a table function, or that introduces a construct evaluating authored
+> text in any language, must re-open this principle explicitly.
+
 **Amended by the safe-measure-compilation feature** (see
 `specs/008-safe-measure-compilation/`) — this principle's own rule ("any
 change that lets a less-trusted actor influence measure expressions must
@@ -113,9 +177,26 @@ not committed directly to `main`.
 
 ## Technology Constraints
 
-- **Backend**: FastAPI + Polars, one router per resource under `app/api/`,
+- **Backend**: FastAPI + DuckDB, one router per resource under `app/api/`,
   runtime state centralized in `app/registry.py`. SQLite is the persistence
   store for visuals/dashboards/publications — not a data source.
+
+  **Amended by the duckdb-sql-engine feature** (see
+  `specs/018-duckdb-sql-engine/`) — polars is removed outright; DuckDB is the
+  single execution engine, reached through `app/duck.py`'s one process-wide
+  connection (Principle II). Two bounds come with it:
+
+  - **Extensions are pinned wheels, never an `INSTALL`.** `httpfs`, `delta`,
+    `iceberg` and `avro` arrive as ordinary `requirements.txt` entries and are
+    `LOAD`ed by absolute path. An `INSTALL` would reach
+    extensions.duckdb.org from the request path, at a version free to drift
+    from the pinned engine, and fail outright in any deployment without
+    egress. The Docker build asserts each one loads, because a wheel that
+    won't load is silent at runtime.
+  - **DuckDB is an engine, not a database.** The catalog holds only what
+    `app/duck.py` pins and what a run creates; the bucket stays the source of
+    truth and SQLite stays the persistence store. `CI_DUCKDB_PATH` defaults to
+    `:memory:` for exactly this reason.
 - **Frontend**: hand-rolled SVG charts and vanilla ES modules loaded natively
   by the browser. No bundler, no framework, no build step — this is a
   deliberate simplicity choice, not an oversight. New chart types follow the
@@ -151,7 +232,7 @@ not committed directly to `main`.
   outside the image (SQLite volume, host-mounted `models/`), one uvicorn
   worker by design (in-process emulator + SQLite both want a single writer).
   Scaling out is only supported against an external S3 endpoint.
-- **Data formats**: parquet, csv, and Delta Lake sources must all be
+- **Data formats**: parquet, csv, Delta Lake and Iceberg sources must all be
   first-class in the engine, not parquet-with-afterthoughts.
 
 ## Development Workflow
@@ -176,4 +257,4 @@ consistent with these principles; where a feature genuinely needs to violate
 one (e.g. Principle II for a use case that cannot be pushed down), say so
 explicitly in that feature's spec rather than quietly drifting.
 
-**Version**: 1.4.0 | **Ratified**: 2026-07-10 | **Last Amended**: 2026-07-31
+**Version**: 1.5.0 | **Ratified**: 2026-07-10 | **Last Amended**: 2026-08-25

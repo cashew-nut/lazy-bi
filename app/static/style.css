@@ -2472,7 +2472,7 @@ textarea.mm-expr { min-height: 76px; font-size: var(--text-lg); }
 .mk-row.on .nm { color: var(--neon); }
 
 /* ── sandbox notebooks (app/static/js/sandbox.js) ──────────────────────
-   Multi-cell polars/python scratch notebooks. Cell layout mirrors the yaml
+   Multi-cell SQL scratch notebooks. Cell layout mirrors the yaml
    editor's textarea-over-highlighted-backdrop trick (see .yaml-highlight
    above), just per-cell and auto-growing with content instead of filling a
    fixed panel. */
@@ -2495,18 +2495,18 @@ textarea.mm-expr { min-height: 76px; font-size: var(--text-lg); }
 .sbx-cell-head .btn { padding: 2px 8px; font-size: var(--text-xs); }
 
 .sbx-cell-editor { position: relative; }
-.sbx-cell-editor textarea, .sbx-cell-editor pre.py-highlight {
+.sbx-cell-editor textarea, .sbx-cell-editor pre.sql-highlight {
   position: absolute; inset: 0; margin: 0; border: none; width: 100%; height: 100%;
   font-family: var(--mono); font-size: var(--text-code); line-height: 1.55; padding: 10px 14px;
   white-space: pre-wrap; word-wrap: break-word; overflow-wrap: anywhere; tab-size: 4;
 }
-.py-highlight { z-index: var(--z-base); color: var(--ink); background: var(--bg); overflow: hidden; pointer-events: none; }
-.py-highlight code { font: inherit; white-space: inherit; }
-.py-highlight .tok-key { color: var(--neon); }
-.py-highlight .tok-string { color: var(--pink); }
-.py-highlight .tok-number { color: var(--warn); }
-.py-highlight .tok-bool { color: var(--ok); }
-.py-highlight .tok-comment { color: var(--ink-3); font-style: italic; }
+.sql-highlight { z-index: var(--z-base); color: var(--ink); background: var(--bg); overflow: hidden; pointer-events: none; }
+.sql-highlight code { font: inherit; white-space: inherit; }
+.sql-highlight .tok-key { color: var(--neon); }
+.sql-highlight .tok-string { color: var(--pink); }
+.sql-highlight .tok-number { color: var(--warn); }
+.sql-highlight .tok-bool { color: var(--ok); }
+.sql-highlight .tok-comment { color: var(--ink-3); font-style: italic; }
 .sbx-cell-editor textarea {
   z-index: var(--z-raised); resize: none; outline: none; overflow: hidden;
   background: transparent; color: transparent; caret-color: var(--ink);

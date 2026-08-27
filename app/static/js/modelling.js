@@ -27,6 +27,24 @@ function renderUploadRow() {
   host.append(uploadRow(() => loadModelling(), { compact: true, label: "UPLOAD A DATASET" }));
 }
 
+/* One line naming every bucket this app reads, because with a real store
+   configured there are two of them, at two endpoints — and which bucket a
+   dataset came from is the difference between "my data" and "the demo".
+   `truncated` says a bucket held more objects than the app pages through;
+   the datasets shown are real either way, there are just more of them (set
+   CI_BUCKET_PREFIX to narrow the walk). */
+function bucketSummary(d) {
+  const stores = d.stores && d.stores.length
+    ? d.stores
+    : [{ bucket: d.bucket, endpoint: d.endpoint, object_count: d.object_count, bytes: d.bytes }];
+  const parts = stores.map((s) =>
+    `s3://${s.bucket} @ ${String(s.endpoint).replace(/^https?:\/\//, "")} · ` +
+    `${s.object_count}${s.truncated ? "+" : ""} objects · ${fmtBytes(s.bytes)}`);
+  for (const u of d.unreachable || []) parts.push(`s3://${u.bucket} unreachable`);
+  if (d.truncated) parts.push("listing capped — set CI_BUCKET_PREFIX to narrow it");
+  return parts.join("   |   ");
+}
+
 export async function loadModelling() {
   $("#modelling-bucket").textContent = "scanning bucket…";
   renderUploadRow();
@@ -35,8 +53,7 @@ export async function loadModelling() {
   ]);
   state.models = models;
   state.bundles = bundles;
-  $("#modelling-bucket").textContent =
-    `s3://${datasets.bucket} @ ${datasets.endpoint.replace(/^https?:\/\//, "")} · ${datasets.object_count} objects · ${fmtBytes(datasets.bytes)}`;
+  $("#modelling-bucket").textContent = bucketSummary(datasets);
   renderDatasetTree(datasets.datasets);
   lastModels = models;
   lastBundles = bundles;
@@ -81,10 +98,16 @@ function pruneTree(node, q) {
 
 function datasetTree(datasets) {
   const root = { name: "", children: new Map(), dataset: null };
+  // With more than one bucket in the list, the bucket becomes the top folder.
+  // Not decoration: two buckets can hold the same prefix (`ref/` in both is
+  // the likely case), and keying the tree on the key alone would have one
+  // quietly replace the other.
+  const multi = new Set(datasets.map((ds) => ds.bucket).filter(Boolean)).size > 1;
   for (const ds of datasets) {
-    if (!ds.key) { root.dataset = ds; continue; }
+    const segs = (multi && ds.bucket ? [ds.bucket] : []).concat(ds.key ? ds.key.split("/") : []);
+    if (!segs.length) { root.dataset = ds; continue; }
     let node = root;
-    for (const seg of ds.key.split("/")) {
+    for (const seg of segs) {
       if (!node.children.has(seg)) node.children.set(seg, { name: seg, children: new Map(), dataset: null });
       node = node.children.get(seg);
     }
@@ -248,7 +271,7 @@ function renderPipelinesList() {
   $("#mk-pipelines-count").textContent = String(lastPipelines.length);
   const box = $("#mk-pipelines-list");
   box.innerHTML = "";
-  if (!lastPipelines.length) { box.append(el("div", { class: "empty-note" }, "none yet — hosted polars transformation scripts")); return; }
+  if (!lastPipelines.length) { box.append(el("div", { class: "empty-note" }, "none yet — hosted SQL transformations")); return; }
   const pipelines = lastPipelines.filter((p) => matchesQuery(pipelinesFilter, p.label, p.name));
   if (!pipelines.length) { box.append(el("div", { class: "empty-note" }, "no matches")); return; }
   for (const p of pipelines) {

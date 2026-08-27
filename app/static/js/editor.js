@@ -88,8 +88,9 @@ datasets:
 `;
 
 const NEW_PIPELINE_TEMPLATE = `# new pipeline — SAVE writes pipelines/<name>.yaml
-# A pipeline is a real polars script the platform hosts, runs, and
-# materializes for you — the script only produces \`output\`; the platform
+# A pipeline is SQL the platform hosts, runs, and materializes for you.
+# Each source below is a view of that name, so the sql just reads it; end on
+# the SELECT you want written (or name it \`output\`) and the platform
 # performs the write (replace or upsert).
 name: my_pipeline
 sources:
@@ -106,8 +107,8 @@ materialization:
   # soft_delete_column: is_deleted        # soft_delete: required
   # delete_predicate: "region = 'EU'"     # predicate: required
 timeout_seconds: 600
-script: |
-  output = sources["raw"]
+sql: |
+  SELECT * FROM raw
 # lineage:                               # optional — documents transformation logic on the target model
 #   - field: id
 #     from: [raw.id]
@@ -125,7 +126,7 @@ const KINDS = {
     create: (yaml) => api("/api/models", { method: "POST", body: { yaml } }),
     put: (name, yaml) => api(`/api/models/${name}/yaml`, { method: "PUT", body: { yaml } }),
     del: (name) => api(`/api/models/${name}`, { method: "DELETE" }),
-    insert: (col) => col,   // bare names are valid everywhere: dims, joins, and DSL measure exprs
+    insert: (col) => col,   // bare names are valid everywhere: dims, joins, and measure exprs
   },
   bundle: {
     template: NEW_BUNDLE_TEMPLATE,
@@ -154,8 +155,8 @@ const KINDS = {
 // editor.dirty and editor.columns (& friends below) are ephemeral session
 // state (never persisted; a reload discards them — see specs/007-modelling-
 // workspace/data-model.md). sources/layers/datasetNames feed the structural
-// intellisense (schemaItems/scriptSourceItems) the same way columns feeds
-// the DSL/column completion.
+// intellisense (schemaItems/sqlSourceItems) the same way columns feeds
+// the expression/column completion.
 export const editor = {
   kind: "model", name: null, file: null, original: "", dirty: false,
   columns: [], sources: [], layers: [], datasetNames: [],
@@ -186,7 +187,7 @@ const SCHEMAS = {
     joins: ["name", "to", "on", "left_on", "right_on", "how"],
     dimension_imports: ["bundle", "from_dataset", "anchor_dataset", "on", "left_on", "right_on", "how", "match", "datasets"],
     dimensions: ["name", "column", "label", "type", "grain", "description", "spine", "geo", "synonyms"],
-    measures: ["name", "label", "expr", "format", "description", "frame", "frame_emits", "synonyms"],
+    measures: ["name", "label", "expr", "format", "description", "from", "emits", "synonyms"],
     spine: ["start", "end", "match"],
     geo: ["lat", "lon"],
   },
@@ -200,7 +201,7 @@ const SCHEMAS = {
     geo: ["lat", "lon"],
   },
   pipeline: {
-    top: ["name", "label", "description", "sources", "target", "materialization", "timeout_seconds", "script", "lineage"],
+    top: ["name", "label", "description", "sources", "target", "materialization", "timeout_seconds", "sql", "lineage"],
     sources: ["name", "format", "path", "layer"],
     target: ["path", "format", "layer"],
     materialization: ["mode", "keys", "on_delete", "soft_delete_column", "delete_predicate", "allow_empty_sync"],
@@ -276,13 +277,13 @@ function blockContext(lines, lineIdx) {
 }
 
 // yaml key-name / enum-value completion for the current line, schema-driven
-// by SCHEMAS/ENUMS above. Returns null inside a pipeline's `script:` block
-// (real python, not yaml) — see scriptSourceItems for that case instead.
+// by SCHEMAS/ENUMS above. Returns null inside a pipeline's `sql:` block
+// (SQL, not yaml) — see sqlSourceItems for that case instead.
 function schemaItems(kind, lines, lineIdx, line, caret) {
   const schema = SCHEMAS[kind];
   if (!schema) return null;
   const block = blockContext(lines, lineIdx) || "top";
-  if (block === "script") return null;
+  if (block === "sql") return null;
   let m = line.match(/^(\s*(?:-\s*)?)([A-Za-z_]+):[ \t]*(\S*)$/);
   if (m) {
     const key = m[2], prefix = m[3];
@@ -304,17 +305,18 @@ function schemaItems(kind, lines, lineIdx, line, caret) {
   return null;
 }
 
-// `sources["...` completion inside a pipeline's `script:` block — the
-// python-side counterpart of the yaml `source:`/`target:` completion above.
-function scriptSourceItems(upto, after, caret) {
-  const m = upto.match(/sources\[\s*["']([A-Za-z0-9_]*)$/);
+// source-name completion inside a pipeline's `sql:` block — the SQL-side
+// counterpart of the yaml `source:`/`target:` completion above. The runner
+// gives every declared source a view of its own name (app/pipeline_runner.py),
+// so what a FROM wants here is just that name.
+function sqlSourceItems(upto, after, caret) {
+  const line = upto.slice(upto.lastIndexOf("\n") + 1);
+  const m = line.match(/(?:^|[-+*/%()<>=,!&|;[\s])([A-Za-z_][A-Za-z0-9_]*)$/);
   if (!m) return null;
   const prefix = m[1];
-  const closer = after.startsWith('"') || after.startsWith("'") ? "" : '"]';
-  const skip = closer ? 0 : 2;
   const items = (editor.sources || [])
-    .filter((s) => s.toLowerCase().startsWith(prefix.toLowerCase()))
-    .map((s) => ({ text: s, hint: "source", insert: s + closer, caretOffset: skip }));
+    .filter((s) => s.toLowerCase().startsWith(prefix.toLowerCase()) && s !== prefix)
+    .map((s) => ({ text: s, hint: "source view", insert: s, caretOffset: 0 }));
   return items.length ? { items, start: caret - prefix.length } : null;
 }
 
@@ -353,7 +355,7 @@ export async function openEditor(kind, name, opts = {}) {
   const isPipeline = editor.kind === "pipeline";
   $("#editor-imports").hidden = !isModel;
   $("#editor-pick-dataset").hidden = !isModel;    // dataset source applies to fact models only
-  $("#editor-cols-panel").hidden = isPipeline;    // no column palette for a real-python script
+  $("#editor-cols-panel").hidden = isPipeline;    // no column palette for a pipeline's sql
   $("#editor-pipeline-panel").hidden = !isPipeline;
   // a brand-new (unsaved) pipeline has nothing to run/suggest yet; both are
   // admin-only actions like SAVE/DELETE — applyRoleGates() only runs once
@@ -456,7 +458,7 @@ async function validatePipeline(yaml) {
   if (!res.ok) return { ok: false, error: res.error };
   const p = res.pipeline;
   const m = p.materialization;
-  editor.sources = p.sources.map((s) => s.name);   // feeds sources["..."] completion in the script block
+  editor.sources = p.sources.map((s) => s.name);   // feeds FROM-name completion in the sql block
   editorStatus(`<span class="ok">✓ valid</span> · ${p.name} · ${m.mode}${m.mode === "upsert" ? ` (${m.on_delete})` : ""}`);
   $("#editor-report").innerHTML = `<b>${p.label}</b> (${p.name})<br>`
     + `target: <code>${p.target.path}</code> (${p.target.format})<br>`
@@ -572,20 +574,25 @@ async function toggleDatasetPicker() {
 
 // ── expression + structural intellisense in the yaml editor (US4) ──
 
-// Context-aware completion, tried in order: measure-DSL completion inside
-// a model's `expr:` value, bare column-name completion in dimension/join
-// key contexts, a pipeline script's `sources["..."]` dict lookup, and
-// finally schema-driven yaml key-name/enum-value completion (see
-// specs/007-modelling-workspace/contracts/completion.md and
-// specs/008-safe-measure-compilation/contracts/compile_measure.md for the
-// first two; SCHEMAS/ENUMS above for the last).
+// Context-aware completion, tried in order: SQL expression completion
+// inside a model's `expr:` value or a complex measure's `from:` block, bare
+// column-name completion in dimension/join key contexts, source-name
+// completion inside a pipeline's `sql:` block, and finally schema-driven
+// yaml key-name/enum-value completion (see specs/007-modelling-workspace/
+// contracts/completion.md and specs/018-duckdb-sql-engine/contracts/
+// measure-sql.md for the first two; SCHEMAS/ENUMS above for the last).
 function yamlResolve(upto, after, caret) {
   const line = upto.slice(upto.lastIndexOf("\n") + 1);
 
-  // measure-DSL completion — only inside a measure's `expr:` value (models
-  // are the only kind with measures; gating by line avoids offering DSL
-  // functions after every unrelated "key: value" colon in the document)
-  if (editor.kind === "model" && /^\s*expr:[ \t]?/.test(line)) {
+  const lines0 = upto.split("\n");
+
+  // SQL expression completion — inside a measure's `expr:` value, and inside
+  // a complex measure's `from:` block, which is a SQL SELECT over the same
+  // columns. Models are the only kind with measures; gating by line/block
+  // avoids offering aggregates after every unrelated "key: value" colon.
+  if (editor.kind === "model"
+      && (/^\s*expr:[ \t]?/.test(line)
+          || blockContext(lines0, lines0.length - 1) === "from")) {
     const pctx = dslContext(upto, caret);
     if (pctx) return { items: dslItems(pctx, editor.columns, after), start: pctx.start };
   }
@@ -605,15 +612,14 @@ function yamlResolve(upto, after, caret) {
     }
   }
 
-  // pipeline script: sources["..."] dict-key completion
-  if (editor.kind === "pipeline") {
-    const si = scriptSourceItems(upto, after, caret);
+  // pipeline sql: the declared sources, each a view of its own name
+  if (editor.kind === "pipeline" && blockContext(lines0, lines0.length - 1) === "sql") {
+    const si = sqlSourceItems(upto, after, caret);
     if (si) return si;
   }
 
   // schema-driven yaml key-name / enum-value completion
-  const lines = upto.split("\n");
-  return schemaItems(editor.kind, lines, lines.length - 1, line, caret);
+  return schemaItems(editor.kind, lines0, lines0.length - 1, line, caret);
 }
 
 export async function saveEditor() {

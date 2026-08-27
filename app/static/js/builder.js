@@ -263,7 +263,10 @@ function groupDimsByDataset(dims) {
   return groups;
 }
 
-const isWindowMeasure = (m) => /running_total\(|lag\(/.test(m.expr || "");
+// a window function is what makes a measure read across already-aggregated
+// rows — the same distinction app/sqlgrammar.py's is_window_expr draws, close
+// enough here for deciding which measures need the query's time axis
+const isWindowMeasure = (m) => /\bOVER\s*(\(|[A-Za-z_"])/i.test(m.expr || "");
 
 function toggleDim(dim) {
   const active = state.dims.find((d) => d.name === dim.name);

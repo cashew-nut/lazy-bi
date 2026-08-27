@@ -4,32 +4,43 @@
    share ONE completion implementation and ONE vocabulary (no drift). A caller
    supplies a `resolve(upto, after, caret)` that returns `{items, start}` (or
    null) for the current caret position; this module owns the popup, keyboard
-   navigation, and insertion. */
+   navigation, and insertion.
+
+   The vocabulary is SQL: a measure is an aggregate, a window measure is a
+   window function over the engine-supplied `w`, and a column is written as
+   its own name rather than wrapped in a call. */
 "use strict";
 
 import { el } from "./lib.js";
 
-// completion vocabulary for the safe measure DSL (see
-// specs/008-safe-measure-compilation/contracts/compile_measure.md) — a small
-// set of allowlisted functions called directly, no `pl.` prefix and no
-// `.method()` chaining: [insert, hint, caretOffset]
+// completion vocabulary for the SQL measure grammar (see
+// specs/018-duckdb-sql-engine/contracts/measure-sql.md). A measure is a SQL
+// aggregate, so these are the aggregates worth offering plus the few scalar
+// shapes that show up inside one: [insert, hint, caretOffset]
 export const DSL_FUNCTIONS = [
-  ['col("")', "reference a column", -2],
-  ["sum()", "total", -1], ["mean()", "average", -1], ["median()", "median", -1],
-  ["min()", "minimum", -1], ["max()", "maximum", -1],
-  ["count()", "row count (no arg) or non-null count of a column", -1],
-  ["count_distinct()", "distinct count", -1],
-  ["std()", "standard deviation", -1], ["var()", "variance", -1],
-  ["first()", "first value", -1], ["last()", "last value", -1],
-  ["where()", 'filter before aggregating: where(value, predicate)', -1],
-  ["if_()", "conditional: if_(predicate, then, else)", -1],
-  ["coalesce()", "first non-null of the arguments", -1],
-  ["cast()", 'change type: cast(value, "int"|"float"|"str"|"bool")', -1],
+  ["SUM()", "total", -1],
+  ["COUNT(*)", "row count", 0],
+  ["COUNT()", "non-null count of a column", -1],
+  ["COUNT(DISTINCT )", "distinct count", -1],
+  ["AVG()", "average", -1], ["MEDIAN()", "median", -1],
+  ["MIN()", "minimum", -1], ["MAX()", "maximum", -1],
+  ["STDDEV()", "standard deviation", -1], ["VARIANCE()", "variance", -1],
+  ["FIRST()", "first value", -1], ["LAST()", "last value", -1],
+  ["QUANTILE_CONT(, 0.95)", "a percentile — 0.95 is the 95th", -7],
+  ["ARG_MAX(, )", "the value of one column where another is highest", -4],
+  ["FILTER (WHERE )", "aggregate only the rows matching a predicate", -1],
+  ["CASE WHEN  THEN  ELSE  END", "conditional", -21],
+  ["COALESCE(, )", "first non-null of the arguments", -4],
+  ["CAST( AS BIGINT)", "change type", -12],
   // window functions: reference sibling *measures* (not raw columns), and
-  // need a time dimension in the query to order by — e.g.
-  // running_total(revenue), (revenue - lag(revenue, 1)) / lag(revenue, 1)
-  ["running_total()", "cumulative sum over the query's date axis: running_total(measure)", -1],
-  ["lag()", "value from n periods back: lag(measure[, periods=1])", -1],
+  // need a time dimension in the query to order by. `w` is the window the
+  // engine supplies — PARTITION BY the query's other dimensions, ORDER BY
+  // its time dimension — so you never write its contents yourself.
+  ["SUM() OVER w", "running total over the query's date axis", -8],
+  ["LAG() OVER w", "value from the previous period: LAG(measure[, n]) OVER w", -8],
+  ["LEAD() OVER w", "value from the next period", -8],
+  ["RANK() OVER w", "rank within the partition", 0],
+  ["ROW_NUMBER() OVER w", "position within the partition", 0],
 ];
 
 // param('') as a bare-name suggestion (offered alongside DSL_FUNCTIONS) —
@@ -39,25 +50,24 @@ export const DSL_FUNCTIONS = [
 // parameters (model measures can't reference one — FR-007), so they never
 // see this suggested, rather than offering something that would be
 // rejected on save.
-const PARAM_FN = ["param('')", "reference a declared parameter — only legal as lag()'s periods argument", -2];
+const PARAM_FN = ["param('')", "reference a declared parameter — legal anywhere a literal is", -2];
 
-// Classify a measure-DSL trigger in the text before the caret.
+// Classify a measure-grammar trigger in the text before the caret.
 // Returns { kind: "col"|"param"|"name", prefix, start } or null.
 export function dslContext(upto, caret) {
   let m;
-  if ((m = upto.match(/col\(\s*["']([A-Za-z0-9_ ]*)$/)))
-    return { kind: "col", prefix: m[1], start: caret - m[1].length };
   if ((m = upto.match(/param\(\s*["']([A-Za-z0-9_]*)$/)))
     return { kind: "param", prefix: m[1], start: caret - m[1].length };
   // a bare identifier right after a natural expression boundary (start of
-  // value, an operator, a comma/paren, or `and`/`or`/`not`/`where(`) — either
-  // a function name or a column reference are valid there
-  if ((m = upto.match(/(?:^|[-+*/%()<>=,!&|:]|\b(?:and|or|not|where)\()\s*([A-Za-z_][A-Za-z0-9_]*)$/)))
+  // value, an operator, a comma/paren, or a SQL keyword that introduces one)
+  // — either a function name or a column reference is valid there
+  if ((m = upto.match(
+    /(?:^|[-+*/%()<>=,!&|:]|\b(?:AND|OR|NOT|WHERE|THEN|ELSE|WHEN|DISTINCT|BY|AS|FILTER)\s)\s*([A-Za-z_][A-Za-z0-9_]*)$/i)))
     return { kind: "name", prefix: m[1], start: caret - m[1].length };
   return null;
 }
 
-// Build completion items for a DSL context from a schema column list
+// Build completion items for a grammar context from a schema column list
 // (columns and/or sibling measure names — the caller decides the mix, see
 // e.g. measurelab.js's exprPool()/modelform.js's exprColumns()) and,
 // separately, a list of declared parameters ({name, values, default}) for
@@ -77,15 +87,10 @@ export function dslItems(ctx, columns, after, parameters) {
   }
   const cols = (columns || [])
     .filter((c) => c.name.toLowerCase().startsWith(ctx.prefix.toLowerCase()));
-  if (ctx.kind === "col") {
-    // don't double the closer if a quote already follows the caret
-    const closer = after.startsWith('"') ? "" : '")';
-    const skip = closer ? 0 : 2;  // hop over the existing `")` instead
-    return cols.map((c) => ({ text: c.name, hint: c.dtype, insert: c.name + closer, caretOffset: skip }));
-  }
   const fnList = parameters && parameters.length ? [...DSL_FUNCTIONS, PARAM_FN] : DSL_FUNCTIONS;
+  // case-insensitively, since SQL is: typing `sum` should still offer SUM()
   const fns = fnList
-    .filter(([t]) => t.startsWith(ctx.prefix))
+    .filter(([t]) => t.toLowerCase().startsWith(ctx.prefix.toLowerCase()))
     .map(([t, hint, off]) => ({ text: t, hint, insert: t, caretOffset: off }));
   return [...fns, ...cols.map((c) => ({ text: c.name, hint: c.dtype + " (column)", insert: c.name, caretOffset: 0 }))];
 }
@@ -129,7 +134,7 @@ export function makeCompleter(textarea, box, resolve, onApply) {
     // callers rely on one (e.g. to mirror the field into their own state) —
     // dispatch it ourselves so an applied suggestion looks like a keystroke
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
-    update();          // e.g. col("") immediately offers columns
+    update();          // e.g. SUM( immediately offers columns
     if (onApply) onApply();
   }
   function onKeydown(e) {

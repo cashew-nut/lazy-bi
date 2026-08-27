@@ -56,10 +56,10 @@ datasets:
         label: Revenue
         format: currency
         synonyms: [sales, turnover]
-        expr: sum(unit_price * quantity)
+        expr: SUM(unit_price * quantity)
       - name: orders
         label: Orders
-        expr: count_distinct(order_id)
+        expr: COUNT(DISTINCT order_id)
 
   - name: spend
     source:
@@ -77,10 +77,10 @@ datasets:
       - name: ad_spend
         label: Spend
         format: currency
-        expr: sum(spend)
+        expr: SUM(spend)
       - name: impressions
         label: Impressions
-        expr: sum(impressions)
+        expr: SUM(impressions)
 
   - name: subs
     source:
@@ -95,11 +95,11 @@ datasets:
       - name: active_customers
         label: Active Customers
         description: Distinct customers active in each period.
-        expr: count_distinct(customer_id)
+        expr: COUNT(DISTINCT customer_id)
       - name: mrr
         label: MRR
         format: currency
-        expr: sum(monthly_fee)
+        expr: SUM(monthly_fee)
 
 dimension_imports:
   - bundle: calendar

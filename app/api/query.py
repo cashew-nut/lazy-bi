@@ -1,4 +1,4 @@
-"""The query endpoint: semantic query -> polars lazy scan -> aggregated rows."""
+"""The query endpoint: semantic query -> one DuckDB statement -> aggregated rows."""
 from __future__ import annotations
 
 import base64
@@ -58,7 +58,7 @@ def run_query(req: QueryRequest):
         return engine.run_query(model, req.model_dump())
     except (semantic.ModelError, engine.QueryError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    except Exception as exc:  # polars errors from bad config surface as 400s
+    except Exception as exc:  # duckdb errors from bad config surface as 400s
         raise HTTPException(status_code=400, detail=f"query failed: {exc}")
 
 
@@ -88,7 +88,7 @@ def run_extract(req: ExtractRequest):
                              "rows": exc.rows, "bytes": exc.byte_size}}
     except (semantic.ModelError, engine.QueryError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    except Exception as exc:  # polars errors from bad config surface as 400s
+    except Exception as exc:  # duckdb errors from bad config surface as 400s
         raise HTTPException(status_code=400, detail=f"query failed: {exc}")
     return Response(
         content=payload,

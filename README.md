@@ -1,14 +1,20 @@
 # CASH_INTELLIGENCE
 
-Lightweight BI over data files in S3. Polars scans the files **lazily** — only
-the columns and row-groups a query needs leave the bucket — aggregates them, and
-returns results to a cyberpunk query-builder UI. A YAML **semantic layer**
-defines the sources (**parquet / csv / Delta Lake / Iceberg**), **joins**, dimensions and
-measures the builder works with; saved visuals and **dashboards** persist in
-SQLite. **Pipelines** (see [below](#pipelines)) host real polars scripts that
-materialize new sources into the bucket — replace or upsert, with delete
-handling — and document their field-level lineage on the models they feed,
-visualized as a graph.
+Lightweight BI over data files in S3. DuckDB reads the files **in place** —
+only the columns and row groups a query needs leave the bucket — aggregates
+them, and returns results to a cyberpunk query-builder UI. A YAML **semantic
+layer** defines the sources (**parquet / csv / Delta Lake / Iceberg**),
+**joins**, dimensions and measures the builder works with; saved visuals and
+**dashboards** persist in SQLite. **Pipelines** (see [below](#pipelines)) host
+SQL that materializes new sources into the bucket — replace or upsert, with
+delete handling — and document their field-level lineage on the models they
+feed, visualized as a graph.
+
+Everything a person authors is SQL: a measure is a SQL aggregate, a complex
+measure adds a SQL `SELECT` saying which rows it aggregates, a pipeline is a
+SQL script, and a sandbox notebook is SQL cells. Every one of them is parsed
+and allowlisted before it reaches a connection — see [The SQL measure
+grammar](#the-sql-measure-grammar).
 
 ```
 browser (login + query builder + dashboards + SVG charts)
@@ -16,11 +22,12 @@ browser (login + query builder + dashboards + SVG charts)
    │  session cookie or bearer token on every request
    ▼
 FastAPI (auth middleware: viewer/author/admin roles)
-   └──► semantic layer (models/*.yaml) ──► polars LazyFrame scan (+ lazy joins)
+   └──► semantic layer (models/*.yaml) ──► one DuckDB statement (CTEs + joins)
    │                                          │ predicate/projection pushdown
    ▼                                          ▼
-SQLite (visuals + dashboards +            S3 (moto emulator in demo mode)
-        users/sessions/audit)
+SQLite (visuals + dashboards +            S3 (your bucket, and the demo one
+        users/sessions/audit)              on an embedded emulator) via httpfs,
+                                           per-bucket, on one cached connection
 ```
 
 ## Run the demo
@@ -28,12 +35,20 @@ SQLite (visuals + dashboards +            S3 (moto emulator in demo mode)
 **Docker (recommended):**
 
 ```bash
-docker compose up              # demo mode on http://127.0.0.1:8080
-docker compose --profile minio up   # + MinIO-backed instance on :8081
+docker compose up                        # demo mode on http://127.0.0.1:8080
+CI_BUCKET=my-lake docker compose up      # + your own bucket, demo still on
+docker compose --profile minio up        # + MinIO-backed instance on :8081
 ```
 
 The default service runs the embedded S3 emulator in-process and seeds it on
-start. SQLite state lives in the `app-data` volume; `./models` is mounted so
+start. Every S3 setting (`CI_BUCKET`, `CI_BUCKET_PREFIX`, `CI_DEMO`,
+`AWS_PROFILE`, `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN`,
+`AWS_REGION`, `CI_S3_ENDPOINT`) is forwarded from your shell or `.env`, and
+`~/.aws` is mounted read-only so `AWS_PROFILE` — SSO included — resolves
+against the host's own config and cached token. Set `CI_DUCKDB_THREADS` and
+`CI_DUCKDB_MEMORY_LIMIT` if you cap the container: DuckDB otherwise sizes
+both from the *host*, which turns a container memory limit into an OOM kill
+instead of a spill to disk. SQLite state lives in the `app-data` volume; `./models` is mounted so
 semantic models are editable from the host (or the in-app editor); mount
 `./data_cache` after `python -m app.load_taxi` for the big-data model. The
 image runs a single uvicorn worker by design — the emulator is in-process and
@@ -70,12 +85,14 @@ a real key in your `.env` can't change what a test run sees.
 
 ```bash
 .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest tests/    # ~6s: semantic, engine, store, API suites
+.venv/bin/python -m pytest tests/    # ~90s: sql grammar, semantic, engine, store, API
 ```
 
 Open http://127.0.0.1:8080. On startup the app launches an **embedded moto S3
 server** on `127.0.0.1:9600`, creates the `cash-intel` bucket, and seeds it with
-demo data — only if the bucket is empty. One dataset per source format:
+demo data — only if the bucket is empty. That emulator stays up even when a
+real bucket is configured (see below), so the demo catalog never depends on
+someone else's account. One dataset per source format:
 
 | S3 key | format | model |
 |---|---|---|
@@ -85,9 +102,43 @@ demo data — only if the bucket is empty. One dataset per source format:
 | `marketing/spend.parquet` | parquet | `marketing` |
 | `support/tickets` | Iceberg | `support` (15k support tickets) |
 
-To point at a real bucket or an external emulator (MinIO, LocalStack), set
-`CI_S3_ENDPOINT` (this also disables the embedded moto server) plus
-`CI_BUCKET` and credentials. Two ways to supply those:
+### Your own bucket, next to the demo
+
+Set **`CI_BUCKET`** to a real bucket and that is the whole configuration:
+
+```sh
+CI_BUCKET=my-data-lake AWS_REGION=eu-west-2 ./run.sh
+```
+
+The demo bucket keeps its own emulator. Both are readable at once — the
+built-in catalog goes on answering while your own models read your own data,
+and one browser tab shows datasets from both, each labelled with the bucket
+it came from. A bucket, not a global endpoint, decides where a path is read
+from: `s3://cash-intel/...` goes to the emulator and everything else to your
+store, each with its own credential (DuckDB picks between them by scope, so
+a single query can read both). Nothing demo-shaped is ever written into your
+account, and `CI_DEMO=0` drops the demo entirely — no emulator, no seeding,
+and `models/`+`dimensions/` unloaded, so the catalog lists only what you
+built.
+
+**Leave `CI_S3_ENDPOINT` unset for real AWS.** Both boto3 and DuckDB then
+address the bucket by region, and each bucket's *actual* region is resolved
+rather than assumed. Pinning `s3.amazonaws.com` instead sends every request
+to the us-east-1 frontend, which answers for a bucket living anywhere else
+with a redirect nobody follows — that failure surfaces as a bare `HTTP 404`
+or `403` on a bucket you can list from the CLI in the same shell. Set the
+endpoint only for MinIO, LocalStack or an S3-compatible vendor; setting it
+*without* `CI_BUCKET` puts the demo bucket itself there, which is what the
+compose file's `minio` profile and the test suite both do.
+
+On a shared bucket, point discovery at the part that's yours with
+**`CI_BUCKET_PREFIX=warehouse/`**. Every bucket walk is capped at
+`CI_LIST_MAX_KEYS` (20k) and reports itself as truncated past that: S3
+returns 1000 keys per round trip, so an unbounded walk of a real bucket is
+not a slow Modelling page, it is one that never finishes.
+
+Credentials are for your bucket only — the demo emulator has its own dummy
+pair and never sees them. Three ways to supply them:
 
 - **`AWS_PROFILE`** (recommended for a human's own access, especially AWS
   SSO): set it to a profile name from `~/.aws/config` and every S3 call asks
@@ -105,10 +156,20 @@ To point at a real bucket or an external emulator (MinIO, LocalStack), set
   you. A temporary access key (`ASIA...`) used without its paired token
   fails as `InvalidAccessKeyId`, which reads like a wrong key rather than a
   missing token.
+- **Nothing at all**: boto3's default chain answers instead, which is how an
+  instance or task role (EC2, ECS, EKS, Lambda) works with no credential
+  configuration. The emulator's dummy `testing`/`testing` pair is only the
+  default while the app is pointed at the emulator — it is never what gets
+  sent to a real endpoint.
+
+In Docker, pass these through with `docker-compose.yml`'s `environment:`
+block (already wired for every variable above) — and `~/.aws` is mounted
+read-only into the container, so `AWS_PROFILE` resolves against the host's
+own config and its cached SSO token.
 
 **Your own raw data**: drop a folder of `.csv`/`.parquet` files under
 `raw_data/<dataset-name>/` (committed to the repo, unlike the gitignored
-`data_cache/`) and it's uploaded unmodeled on startup into the same
+`data_cache/`) and it's uploaded unmodeled on startup into the demo
 `cash-intel` bucket, flat under `<dataset-name>/<filename>` — pick it up from
 the Modelling workspace's source picker and build a model on it from
 scratch. The repo doesn't ship a `raw_data/` dataset by default; the demo
@@ -137,19 +198,23 @@ app/
   authstore.py         sqlite persistence: users, sessions, api tokens, audit
   semantic.py          semantic layer: yaml -> Model/Dimension/Measure/Join/Spine/Geo/
                        DimensionBundle/Import/pipeline_lineage section
-  engine.py            query engine: semantic query -> polars lazy scan
+  engine.py            query engine: semantic query -> one DuckDB statement
+  duck.py              the DuckDB runtime: one connection, its extensions, S3 tuning,
+                       the listing cache and the pinned-source cache
+  sqlgrammar.py        the SQL grammar: parse -> allowlist -> re-serialize, for every
+                       expression and relation a non-admin can author
   extract.py           instant-mode extracts: what a tile must fetch to re-aggregate
                        client-side, as Arrow IPC, under a per-tile size cap
   store.py             sqlite persistence: visuals, dashboards, publications
   pipelines.py         pipeline layer: yaml -> Pipeline/Materialization/LineageEntry/Layer,
                        lineage validation + model-lineage-section building
-  pipeline_runner.py   subprocess entry point: execs a pipeline's script, materializes its output
+  pipeline_runner.py   subprocess entry point: runs a pipeline's sql, materializes its output
   pipeline_jobs.py     FIFO run worker (one subprocess at a time) + post-run lineage sync
   pipelinestore.py     sqlite persistence: pipeline_runs (append-only run history)
   materialize.py       replace/upsert writers: delta merge + delete policies, pre-write guards
-  sandbox.py           sandbox notebooks: cell-combining, read()-call detection, convert-to-pipeline yaml
-  sandbox_runner.py    subprocess entry point: execs a notebook's cells, reports per-cell output
-  sandbox_agent.py     the sandbox coding agent's LLM seam: notebook context, polars prompt, lineage tool
+  sandbox.py           sandbox notebooks: cell-combining, reader-call detection, convert-to-pipeline yaml
+  sandbox_runner.py    subprocess entry point: runs a notebook's cells, reports per-cell output
+  sandbox_agent.py     the sandbox coding agent's LLM seam: notebook context, SQL prompt, lineage tool
   sandboxstore.py      sqlite persistence: saved sandbox notebooks
   iceberg_util.py      catalog-free iceberg reads: resolve + scan a table's current snapshot
   skills.py            Skill abstraction + registry + invoke_skill() dispatch (role check,
@@ -166,12 +231,12 @@ app/
   static/js/           ES modules: lib, state, auth, admin, filters, builder,
                        dashboard, instant, portal, modelling, editor, completion,
                        measurelab, lineagegraph, sandbox, sandboxagent,
-                       pyhighlight, main
+                       sqlhighlight, main
   static/js/charts/    one renderer per chart + shared frame/pivot/dispatch
   static/vendor/       third-party assets, committed not CDN-loaded (Perspective)
 models/*.yaml          semantic models (the editable contract)
 dimensions/*.yaml      dimension bundles shared across models (see below)
-pipelines/*.yaml       hosted polars transformation scripts (see below); layers.yaml
+pipelines/*.yaml       hosted SQL transformations (see below); layers.yaml
 agents/*.yaml          declared Agents — name + description + which skills they expose (see below)
 tests/                 pytest: semantic, engine, store, API, pipelines
 Dockerfile, docker-compose.yml
@@ -187,10 +252,10 @@ name: sales
 label: Sales Orders
 source:
   format: parquet                      # parquet | csv | delta | iceberg
-  path: s3://cash-intel/sales/*.parquet  # any glob polars can scan (delta/iceberg: table root)
+  path: s3://cash-intel/sales/*.parquet  # any glob DuckDB can scan (delta/iceberg: table root)
 
-joins:                    # lookup tables joined lazily into the base scan;
-  - name: products        # joined columns are then usable in dimensions/measures
+joins:                    # lookup tables joined into the base scan; joined
+  - name: products        # columns are then usable in dimensions/measures
     source: { format: csv, path: s3://cash-intel/ref/products.csv }
     on: product           # or left_on/right_on; how: left (default) | inner
 
@@ -202,19 +267,19 @@ dimensions:
     column: cat_code      # column can differ from the semantic name
     label: Category
 
-measures:                 # the safe measure DSL — see below
+measures:                 # SQL aggregates — see below
   - name: revenue
     label: Revenue
     format: currency      # number | currency | percent (display hint)
-    expr: sum(unit_price * quantity)
+    expr: SUM(unit_price * quantity)
   - name: margin_pct
     format: percent
-    expr: sum((unit_price - unit_cost) * quantity) / sum(unit_price * quantity)
+    expr: SUM((unit_price - unit_cost) * quantity) / SUM(unit_price * quantity)
 ```
 
 A measure reduces to one value per group — ratios of aggregates,
-`count_distinct`, filtered sums like `sum(where(x, flag))`, all fine.
-Expressions are validated at load time; edit a YAML and hit
+`COUNT(DISTINCT x)`, filtered sums like `SUM(x) FILTER (WHERE flag)`, all
+fine. Expressions are validated at load time; edit a YAML and hit
 `POST /api/models/reload` (or restart) to pick it up.
 
 `source:` + `joins:` above is the terse spelling of the single-table case. The
@@ -222,72 +287,108 @@ general shape is [`datasets:`](#several-fact-tables-in-one-model) — every tabl
 the model reads, plus the relations between them — and the two parse into the
 same thing, so a model written either way behaves identically.
 
-### The safe measure DSL
+### The SQL measure grammar
 
-A measure is **not** arbitrary Python. It's a small, allowlisted expression
-language, parsed to an AST and compiled straight to a `polars.Expr` — the
-compiler (`app/measure_dsl.py`) never calls `eval`, `exec`, or `compile` on
-measure text, so there is nothing dangerous to execute regardless of who
-supplies it. Both model measures (above) and inline/visual-scoped measures
-(the measure lab, `inline_measures` on `/api/query`) compile through the
-exact same allowlist — saving a model measure grants governance (see below),
-not extra language power.
+A measure is SQL, and every measure has the same shape:
 
-Grammar: column references (bare names, or `col("name")`), literals, the
-arithmetic/comparison/boolean operators you'd expect (`+ - * / % **`,
-`== != < <= > >= in not in`, `and or not`), and calls to a fixed set of
-functions:
+```
+SELECT <expr>   FROM <the fact scan, or a from: block>   GROUP BY <the query's dimensions>
+```
 
-| Function | Meaning |
+`expr:` is a SQL aggregate. Whether a measure is "simple" or "complex" is
+decided by one optional key — `from:` — and nothing about the aggregate
+itself changes. That is the whole grammar; the rest of this section is what
+is and isn't allowed inside it.
+
+**It is not a SQL passthrough.** Measure text is parsed by DuckDB's own
+parser into an AST (`json_serialize_sql`), checked node class by node class
+against a fail-closed allowlist, and then **re-serialized from the validated
+AST** — the author's text is never embedded in the statement that runs. A
+construct the validator doesn't recognise is refused rather than passed
+through, and there is no `eval`, `exec` or `compile` anywhere in the path,
+so there is nothing dangerous to execute regardless of who supplies it.
+Model measures (above) and inline/visual-scoped measures (the measure lab,
+`inline_measures` on `/api/query`) go through the identical allowlist —
+saving a model measure grants governance (see below), not extra language
+power.
+
+What you can write: column references (bare names, or `"quoted name"`),
+literals, the operators you'd expect (`+ - * / %`, `= <> < <= > >=`,
+`IN`, `AND OR NOT`, `IS [NOT] NULL`, `BETWEEN`, `LIKE`/`ILIKE`), `CASE
+WHEN`, `CAST`, `COALESCE`, aggregate `FILTER (WHERE …)`, `DISTINCT`
+aggregates, and calls to any scalar, aggregate or macro function DuckDB
+ships, minus a deny set.
+
+| | |
 |---|---|
-| `sum(x) mean(x) min(x) max(x) median(x) std(x) var(x) first(x) last(x)` | aggregations |
-| `count()` / `count(x)` | row count / non-null count of `x` |
-| `count_distinct(x)` | distinct count |
-| `col("name")` | explicit column reference (bare `name` works too) |
-| `where(value, predicate)` | filter before aggregating — `sum(where(revenue, region == "EU"))` |
-| `if_(predicate, then, else)` | conditional — `pl.when(...).then(...).otherwise(...)` |
-| `coalesce(a, b, ...)` | first non-null of the arguments |
-| `cast(x, "int"\|"float"\|"str"\|"bool")` | change type |
+| `SUM(x)` `AVG(x)` `MIN(x)` `MAX(x)` `MEDIAN(x)` `STDDEV(x)` `VARIANCE(x)` | aggregations |
+| `COUNT(*)` / `COUNT(x)` | row count / non-null count of `x` |
+| `COUNT(DISTINCT x)` | distinct count |
+| `SUM(x) FILTER (WHERE region = 'EU')` | aggregate only the matching rows |
+| `QUANTILE_CONT(x, 0.95)` `ARG_MAX(a, b)` `STRING_AGG(x, ',')` | the rest of DuckDB's aggregate library |
+| `CASE WHEN p THEN a ELSE b END` | conditional |
+| `CAST(x AS BIGINT)` `COALESCE(a, b)` `date_diff('day', a, b)` | scalar functions |
 
-Anything outside this — attribute access (`x.__class__`), subscripts,
-lambdas, comprehensions, f-strings, I/O calls, calling anything that isn't a
-bare allowlisted name — is rejected at compile time (`MeasureCompileError`),
-along with unknown columns/functions and oversized or deeply-nested input.
-See `specs/008-safe-measure-compilation/contracts/compile_measure.md` for the
-full grammar and the node-by-node allowlist.
+The function allowlist is *derived*, not hand-written: it is
+`duckdb_functions()` filtered to `function_type IN ('scalar','aggregate',
+'macro')`, minus a small deny set. Filtering by type is what excludes every
+one of DuckDB's ~150 table functions structurally rather than by name — so
+`read_parquet`, `read_csv`, `delta_scan`, `glob`, `duckdb_settings` and
+anything a future version adds are all unreachable from a measure, without
+anyone having to remember to add them to a list. The deny set on top covers
+the handful of *scalar* functions with reach of their own or the ability to
+leak the environment (`getenv`, `current_setting`, `read_blob`, `nextval`,
+`gen_random_uuid`, …).
+
+Anything else — a subquery, a table reference, a star, a lambda, a window
+frame with a bare `?`, a prepared-statement parameter, a `;` and a second
+statement, an unknown column, oversized or deeply-nested input — is refused
+at compile time (`SqlCompileError`, carrying a `kind` so the API can say
+*why*). See `specs/018-duckdb-sql-engine/contracts/sql-validator.md` for the
+node-by-node allowlist and `contracts/measure-sql.md` for the grammar.
 
 #### Window measures: running totals and period-over-period change
 
-`running_total(x)` and `lag(x[, periods=1])` are a second kind of measure.
-Every function above reduces *raw source rows* down to one value per query
-group (that's what "aggregation" means); these two instead read a **sibling
-measure's already-aggregated value** and look sideways/backwards across the
-query's date axis — there's no such thing as "the previous quarter" until
-quarters have been grouped. Using either anywhere in an expression makes the
-whole measure a window measure: bare names inside it refer to other
-measures in the same query, not raw columns, and the aggregate functions
-(`sum`, `count`, ...) and `col()` aren't available inside it — there are no
-raw rows left to reduce. `if_`/`coalesce`/`cast` still are, since they're
-plain scalar transforms.
+A measure containing a **window function** is a second kind of measure.
+Every aggregate above reduces *raw source rows* to one value per query group
+(that's what aggregation means); a window function instead reads a **sibling
+measure's already-aggregated value** and looks sideways or backwards across
+the query's date axis — there's no such thing as "the previous quarter"
+until quarters have been grouped.
+
+The engine supplies the window, named `w`:
+
+```sql
+WINDOW w AS (PARTITION BY <the query's other dimensions>
+             ORDER BY <the query's single time dimension>)
+```
+
+so you write `OVER w` and never spell out its contents:
 
 ```yaml
 measures:
   - name: revenue
-    expr: sum(unit_price * quantity)
+    expr: SUM(unit_price * quantity)
   - name: revenue_running_total
-    expr: running_total(revenue)
+    expr: SUM(revenue) OVER w
   - name: revenue_pct_change   # % change vs. the previous point on the date axis
-    expr: (revenue - lag(revenue, 1)) / lag(revenue, 1)
+    expr: (revenue - LAG(revenue) OVER w) / LAG(revenue) OVER w
 ```
 
+Using a window function anywhere in an expression makes the whole measure a
+window measure: bare names inside it refer to other measures in the same
+query, not raw columns, and the aggregate functions aren't available inside
+it — there are no raw rows left to reduce. Scalar functions, `CASE` and
+`CAST` still are. An explicit window (`RANK() OVER (ORDER BY revenue DESC)`)
+is legal too, for the cases where the supplied one isn't what you want.
+
 Querying `revenue_pct_change` grouped by `order_date` at quarter grain gives
-quarter-over-quarter change; at month grain, month-over-month — the DSL text
-doesn't hardcode a period, the query's own grain does. The engine applies
-these `.over(partition_by=the query's other dimensions, order_by=its time
-dimension)` right after the group-by, so add a breakout dimension (e.g.
-`channel`) and each gets its own independent running total / prior-period
-comparison. A window measure's referenced sibling is computed even if the
-query didn't ask for it directly (dropped from the response unless also
+quarter-over-quarter change; at month grain, month-over-month — the
+expression doesn't hardcode a period, the query's own grain does. Add a
+breakout dimension (e.g. `channel`) and each member gets its own independent
+running total / prior-period comparison, because it enters the window's
+`PARTITION BY`. A window measure's referenced sibling is computed even if
+the query didn't ask for it directly (dropped from the response unless also
 requested), but a query needs **exactly one time dimension** to order by —
 zero or more than one is rejected with a clear error. Window measures follow
 the same trust model as everything else here: inline/query-time and saved
@@ -299,36 +400,32 @@ A visual can declare a named parameter — a fixed list of allowed values
 plus a default, typed as `int`, `float`, or `string` (omit `type` for
 `int`, matching every parameter declared before this existed) — and
 reference it from `param('name')` anywhere a literal constant is already
-legal in a measure: comparisons, `if_()`'s predicate and branches,
-`coalesce()`'s arguments, `where()`'s predicate, `cast()`'s value
-argument, and `lag()`'s periods argument.
+legal in a measure: comparisons, `CASE WHEN`'s predicate and branches,
+`COALESCE()`'s arguments, a `FILTER (WHERE …)` predicate, `CAST`'s value
+operand, and `LAG`/`LEAD`'s offset argument.
 
 ```
 period_list = [1, 2, 3, 4]  (int, default 1)
-revenue_lag = lag(revenue, param('period_list'))
+revenue_lag = LAG(revenue, param('period_list')) OVER w
 
 threshold = [10, 50.5, 100]  (float, default 50.5)
-flagged_revenue = if_(revenue > param('threshold'), revenue, 0)
+flagged_revenue = SUM(CASE WHEN unit_price > param('threshold') THEN unit_price * quantity ELSE 0 END)
 
 target_channel = ["online", "retail"]  (string, default "online")
-channel_orders = count(where(channel, channel == param('target_channel')))
+channel_orders = COUNT(*) FILTER (WHERE channel = param('target_channel'))
 ```
 
 Whoever is viewing the visual gets a control listing the parameter's
 declared values (a text picker for `string`, numeric for `int`/`float`);
 picking one re-runs the query with that value, no expression editing
-involved. `lag()`'s periods argument keeps one extra rule on top of the
-general case: whatever resolves there must be a genuine `int` — a
-`float`-typed parameter is rejected there even when its value is
-numerically whole (e.g. `2.0`), and `cast()`'s *type-name* argument (its
-`"int"`/`"float"`/`"str"`/`"bool"` string) never accepts `param()` at all,
-only its value argument does. This all stays fully inside the same
-allowlisting compiler as every other measure (see "The safe measure DSL"
-above): the server only ever substitutes one of the parameter's own
-declared, correctly-typed values, never an arbitrary one, the same way
-`partition_by`/`order_by` are threaded in from query context today.
-Because a parameter is visual-scoped context a shared model measure never
-has, a measure referencing one — in any position — can only be
+involved. `param()` is a call in the grammar, not a string splice: it is
+replaced with a **literal node in the validated AST**, whose value is one of
+the parameter's own declared, correctly-typed values — never an arbitrary
+one. `LAG`'s offset argument keeps one extra rule on top of the general
+case: whatever resolves there must be a genuine `int`, so a `float`-typed
+parameter is rejected there even when its value is numerically whole (e.g.
+`2.0`). Because a parameter is visual-scoped context a shared model measure
+never has, a measure referencing one — in any position — can only be
 **SAVE TO VISUAL**'d, never promoted to the model — see "The measure lab"
 below.
 
@@ -345,84 +442,131 @@ together (add-tile and every dashboard save both enforce this — see
 `specs/009-visual-parameters/` and `specs/010-parameter-type-
 generalization/`). Wiring a parameter into a dashboard/visual *filter*
 (as opposed to a measure expression) isn't built — a distinct, larger
-feature touching the filter subsystem instead of the measure DSL.
+feature touching the filter subsystem instead of the measure grammar.
 
-### Measures over an intermediary frame (authenticated model measures only)
+### Complex measures: `from:`
 
-Some metrics can't be written in the safe DSL above — they need business
-logic *between* the scan and the final reduce ("per entity, derive X; then
-take the median of X across entities"), which means real multi-step Python,
-not a small expression. Give a measure a `frame:` block — a python snippet
-that builds a derived LazyFrame, still `eval`/`exec`-based like model YAML
-always has been — and its `expr:` then aggregates over that frame (using the
-same pre-DSL polars-expression syntax, since it's reading columns the frame
-itself produces, not the base schema):
-
-This is a deliberate, narrow carve-out: it is **only ever available through
-the authenticated model-measure save endpoint, and only to the admin role**
-(see "Authoring model measures" below) — never as an inline/visual-scoped
-measure, regardless of credentials. A `frame` submitted inline on
-`/api/query` is rejected outright.
+Some metrics need a step *between* the scan and the final reduce ("per
+entity, derive X; then take the median of X across entities"). Give the
+measure a `from:` block — a SQL `SELECT` — and its `expr:` aggregates that
+instead of the fact scan:
 
 ```yaml
 measures:
-  - name: median_days_to_75pct
-    description: Median days for a study to log 75% of its events.
-    frame: |                       # `lf`, `dims`, `pl` in scope
-      keys = list(dict.fromkeys(["study_id", *dims]))
-      ordered = lf.sort("event_date").with_columns(
-          (pl.int_range(1, pl.len() + 1).over(keys) / pl.len().over(keys)).alias("cume"),
-          pl.col("event_date").min().over(keys).alias("first_event"),
-      )
-      frame = (
-          ordered.filter(pl.col("cume") >= 0.75)
-          .group_by(keys)
-          .agg(pl.col("first_event").first(), pl.col("event_date").min().alias("date_75"))
-          .with_columns((pl.col("date_75") - pl.col("first_event")).dt.total_days().alias("days_to_75"))
-      )
-    expr: pl.col("days_to_75").median()
+  - name: median_tenure_days
+    label: Median Tenure (Days)
+    expr: MEDIAN(tenure_days)
+    from: |
+      SELECT {dims},
+             date_diff('day', start_date, end_date) AS tenure_days,
+             date_trunc('month', end_date)          AS churn_month
+      FROM {model}
+      WHERE end_date IS NOT NULL
+    emits: [churn_month]
 ```
 
-The snippet sees `lf` — the model's scan with the query's filters applied and
-its dimension columns already materialized (grains included) — plus `dims`, the
-list of those dimension names, and `pl`. It is either a single expression or
-statements assigning the result to a variable named `frame`. Carry `dims`
-through every `group_by` (as above) and the measure re-aggregates correctly at
-whatever grouping the query asks for; the engine groups the derived frame by
-`dims`, applies `expr`, and left-joins the result onto the other measures, so
-framed and plain measures mix freely in one query. Groups the derived frame
-has no rows for come back null. Everything stays lazy end to end.
+`expr:` is a SQL aggregate — the same thing it is on every measure above.
+The only difference is which relation it reads. This is what the "complex +
+normal metrics use the same syntax" property buys: there is no second
+expression language to learn, and no privileged construct sitting behind an
+admin gate.
 
-**Timelines and `frame_emits`.** Grouping a framed measure by a time dimension
+Two placeholders are expanded before the block is parsed:
+
+| Placeholder | Expands to |
+|---|---|
+| `{model}` | the fact scan with the query's filters applied and its dimension columns materialized under their semantic names |
+| `{dims}` | the query's grouping columns, comma-separated |
+
+`{dims}` **always expands to at least one column** — when the query groups
+by nothing, the engine carries a constant grouping column — so
+`SELECT {dims}, x` and `GROUP BY {dims}, y` are safe to write
+unconditionally. That is the one thing the placeholders do that plain
+substitution wouldn't.
+
+A `from:` block is validated under a stricter profile than an `expr:`: it
+must be exactly one `SELECT`, it may name no base table other than `{model}`
+and CTEs it declares itself, and it may use **no table function at all** —
+which is what denies it file, HTTP and catalog access. Inside those bounds
+it is ordinary SQL: CTEs, window functions, joins between its own CTEs,
+`QUALIFY`, whatever the question needs.
+
+**Timelines and `emits:`.** Grouping a complex measure by a time dimension
 raises a question the model author has to answer: should the time bucket
 partition the *raw events* before the intermediary step (splitting each
-entity's history per bucket), or should it bucket the *derived rows* after it?
-For per-entity milestone metrics like the example above, it's the latter — so
-declare the dimension in `frame_emits` and output a column of that name from
-the frame:
+entity's history per bucket), or should it bucket the *derived rows* after
+it? For per-entity milestone metrics it's the latter — so name the dimension
+in `emits:` and output a column of that name from the block. An emitted
+dimension is withheld from `{dims}` during the step (the intermediary
+partitions stay whole) and applied to the block's output afterwards: the
+engine truncates it at the query's grain and groups the derived rows by it.
+On a timeline each entity lands in the bucket of its own milestone date, and
+buckets only exist where some entity crossed. Dimensions *not* listed in
+`emits:` behave normally, carried through the step via `{dims}`.
+
+Here is the harder shape — "median days for a study to log 75% of its
+events", which needs a running distribution per entity before it can reduce
+anything:
 
 ```yaml
-    frame: |
-      ...
-          .with_columns(pl.col("date_75").alias("event_date"))   # the frame's own date
-    frame_emits: [event_date]
-    expr: pl.col("days_to_75").median()
+  - name: median_days_to_75pct
+    description: Median days for a study to log 75% of its events.
+    expr: MEDIAN(days_to_75)
+    from: |
+      WITH ranked AS (
+        SELECT {dims}, study_id, event_date,
+               ROW_NUMBER() OVER (PARTITION BY study_id, {dims} ORDER BY event_date)
+                 / COUNT(*) OVER (PARTITION BY study_id, {dims}) AS cume,
+               MIN(event_date) OVER (PARTITION BY study_id, {dims}) AS first_event
+        FROM {model}
+      )
+      SELECT {dims}, study_id,
+             date_diff('day', MIN(first_event), MIN(event_date)) AS days_to_75,
+             MIN(event_date) AS event_date
+      FROM ranked
+      WHERE cume >= 0.75
+      GROUP BY {dims}, study_id
+    emits: [event_date]
 ```
 
-An emitted dimension is withheld from `dims` during the step (the intermediary
-partitions stay whole) and applied to the frame's output afterwards — the
-engine truncates it at the query's grain and groups the derived rows by it. On
-a timeline each entity then lands in the bucket of its own milestone date, and
-buckets only exist where some entity crossed. Dimensions *not* listed in
-`frame_emits` behave as before: carried through the step via `dims`.
+The engine groups the derived relation by `{dims}`, applies `expr`, and
+merges the result onto the other measures with a null-safe full outer join —
+so complex and plain measures mix freely in one query, groups the derived
+relation has no rows for come back null, and an `emits:`ted dimension can
+surface groups the raw rows never form. A model holding several unrelated
+fact tables scopes each measure to its own dataset, so `{model}` is always
+unambiguous. `median_tenure_days` in `models/subscriptions.yaml` is the
+shipped example (median tenure of ended subscriptions, bucketed on timelines
+by each one's churn month); the 75% one above is exercised end to end in
+`tests/test_engine.py`.
 
-See `median_tenure_days` in `models/subscriptions.yaml` for a live example
-(median tenure of ended subscriptions, bucketed on timelines by each one's
-churn month — date arithmetic like `end_date - start_date` is outside the
-safe measure DSL, so it has to be derived in the frame step instead of a
-plain `expr`). Inline/visual-scoped measures on the query API cannot use
-`frame`/`frame_emits` — that construct is authenticated-model-measure-only
-(see above).
+Unlike the `frame:` construct it replaces, `from:` is **not** admin-gated
+and **not** model-only: it is the same allowlisted SQL as any other measure,
+so an inline/visual-scoped measure on `/api/query` may use it too. That is
+the security win of the rewrite, not a relaxation — the old construct needed
+the gate because it was `exec`'d Python.
+
+#### Migrating from the old DSL
+
+The pre-DuckDB expression language is gone, and its syntax is a **load-time
+error** naming the SQL equivalent rather than a silent reinterpretation.
+`sum(x)` in particular is valid SQL, so the check is explicit: lowercase
+aggregate calls are accepted (SQL is case-insensitive), but the DSL-only
+constructs are reported with their replacement.
+
+| Old DSL | SQL |
+|---|---|
+| `sum(x)` `mean(x)` `median(x)` `std(x)` `var(x)` | `SUM(x)` `AVG(x)` `MEDIAN(x)` `STDDEV(x)` `VARIANCE(x)` |
+| `count()` / `count(x)` | `COUNT(*)` / `COUNT(x)` |
+| `count_distinct(x)` | `COUNT(DISTINCT x)` |
+| `col("name")` | `"name"` |
+| `where(value, pred)` | `SUM(value) FILTER (WHERE pred)` — the aggregate moves outside |
+| `if_(pred, a, b)` | `CASE WHEN pred THEN a ELSE b END` |
+| `cast(x, "int")` | `CAST(x AS BIGINT)` |
+| `x in [1, 2]` | `x IN (1, 2)` |
+| `running_total(m)` | `SUM(m) OVER w` |
+| `lag(m, n)` | `LAG(m, n) OVER w` |
+| `frame:` + `expr: pl.col("x").median()` | `from:` + `expr: MEDIAN(x)` |
 
 ### Time-spine (point-in-time) measures
 
@@ -439,11 +583,11 @@ dimensions:
       end: end_date        # null end = still active
 measures:
   - name: active_customers
-    expr: count_distinct(customer_id)
+    expr: COUNT(DISTINCT customer_id)
 ```
 
-Grouping by `active_at` generates a timeline at the requested grain and
-interval-joins it against `[start_date, end_date]` (polars `join_where`), so
+Grouping by `active_at` generates a timeline at the requested grain (a
+`range()` CTE) and interval-joins it against `[start_date, end_date]`, so
 each row counts in every period it was active for. Range filters on the spine
 (`>=`, `<=`, `=`) bound the timeline window; `=` gives a single-date snapshot
 even with no grouping. Buckets with zero active rows are omitted. One spine
@@ -516,7 +660,7 @@ mechanisms side by side.
 **Grain is dynamic.** The table stores days, but the join is not a per-day
 join: before joining, the engine narrows the date table to **one row per bucket
 at the grain the query is asking for**. So a model row is counted once per
-bucket, and an additive measure (`sum`, not just `count_distinct`) is correct at
+bucket, and an additive measure (`SUM`, not just `COUNT(DISTINCT …)`) is correct at
 every grain — change the builder's grain picker from Day to Quarter and the
 numbers stay right. It matches a spine dimension bucket for bucket at `1d`,
 `1w`, `1mo`, `1q` and `1y`; `tests/test_engine.py` asserts that for both an
@@ -659,12 +803,12 @@ datasets:
   - name: orders
     source: { format: parquet, path: s3://cash-intel/sales/*.parquet }
     dimensions: [{ name: region }, { name: channel }]
-    measures:   [{ name: revenue, expr: sum(unit_price * quantity) }]
+    measures:   [{ name: revenue, expr: SUM(unit_price * quantity) }]
 
   - name: spend                       # related to nothing above it
     source: { format: parquet, path: s3://cash-intel/marketing/*.parquet }
     dimensions: [{ name: region }, { name: channel }]
-    measures:   [{ name: ad_spend, expr: sum(spend) }]
+    measures:   [{ name: ad_spend, expr: SUM(spend) }]
 
 dimension_imports:                    # ...but both related to one calendar
   - bundle: calendar
@@ -791,112 +935,218 @@ cross-filtering, Chat.
 ### Performance (13M-row fact table)
 
 `python -m app.load_taxi` downloads 4 months of the public NYC TLC yellow-taxi
-data (~13.1M rows, 209MB parquet) into `data_cache/`; on restart it is seeded
-into the emulator and queryable as the `taxi` model. Measured through the full
-stack (HTTP → semantic layer → polars lazy scan over emulated S3, x86 MacBook):
+data (~13.1M rows) into `data_cache/`; on restart it is seeded into the
+emulator and queryable as the `taxi` model. Measured through the full stack
+(HTTP → semantic layer → one DuckDB statement over emulated S3 → Arrow → JSON
+rows), on 13,069,067 rows across 4 snappy parquet files, 336MB, on a Linux
+container:
 
 | query | rows out | cold | warm |
 |---|---|---|---|
-| grand totals (trips, revenue, tip %) | 1 | 679ms | 471ms |
-| monthly trend (trips, revenue) | 9 | 2.5s | 2.1s |
-| avg fare by payment type | 6 | 591ms | 464ms |
-| daily trend, filtered to 2 weeks | 17 | 932ms | 933ms |
+| grand totals (trips, revenue, tip %) | 1 | 1.8s | 59ms |
+| monthly trend (trips, revenue) | 4 | 1.6s | 240ms |
+| avg fare by payment type | 6 | 810ms | 34ms |
+| daily trend, filtered to 2 weeks | 14 | 810ms | 45ms |
 
-Predicate/projection pushdown does the heavy lifting: only referenced columns'
-row groups leave the bucket.
+*cold* is a fresh connection with nothing cached — what the first query after
+a restart costs; *warm* is the same query again on that connection, which is
+what every interaction after the first actually costs. Predicate/projection
+pushdown does the heavy lifting on the cold read (only referenced columns'
+row groups leave the bucket); the parquet-metadata and external-file caches
+do it on the warm one.
+
+> The figures above were measured against a generated fact table of the same
+> row count, column count and file layout as the TLC data, because the TLC
+> host is not reachable from the build environment. `app/load_taxi.py` still
+> downloads the real thing wherever it is reachable; re-run the numbers there
+> if you want them against the genuine article.
 
 #### Against a real object store: round trips, not bytes
 
-Laziness is about bytes, and a real endpoint charges for *round trips*. Left to
-itself polars re-lists every glob, re-reads every parquet footer and re-reads
-every joined lookup file on every `collect()` — so one visual costs tens of
-sequential S3 requests, and at a real endpoint's 30–80ms RTT that is seconds,
-however little data comes back. The schema/bounds caches never helped there:
-they memoize derived Python objects, not the I/O inside `collect()`.
+Pushdown is about bytes, and a real endpoint charges for *round trips*. Left
+to itself an engine re-lists every glob, re-reads every parquet footer and
+re-reads every joined lookup file on every query — so one visual costs tens
+of sequential S3 requests, and at a real endpoint's 30–80ms RTT that is
+seconds, however little data comes back.
 
-So `engine._scan_source` — the single function every query byte enters through
-— caches two things:
+Most of the fix is DuckDB's own, and it is why the whole platform shares
+**one connection**: the parquet-metadata cache, the external file cache and
+the keep-alive HTTP connections all live on the *instance*, so a second
+connection starts cold and a connection per query makes every one of them
+useless. `app/duck.py` opens exactly one and hands out cursors off it
+(cursors share the instance's caches while keeping per-query state separate),
+with these set on it:
 
-- **The object listing.** One LIST per source per TTL resolves a glob to a file
-  list, which is then handed to `scan_parquet` already resolved instead of
-  being re-listed per query. The same listing yields the source's byte total.
-- **The source itself, when it's small.** Under `CI_SOURCE_CACHE_MAX_BYTES`
-  measured *in the object store*, a source is read once and held as a whole
-  frame. The gate is checked before reading, so a big table is never downloaded
-  just to discover it was too big; a second check after decoding drops anything
-  that expanded past `CI_SOURCE_CACHE_MAX_RESIDENT_BYTES`.
+| setting | what it stops |
+|---|---|
+| `enable_object_cache` | re-reading a parquet footer — a round trip that returns no data |
+| `enable_external_file_cache` | re-reading file *bytes*, cached block-level with an LRU |
+| `http_keep_alive` | a TCP+TLS handshake per range read |
 
-This is aimed squarely at the sources that hurt most: the lookup tables in
-`joins:` and the datasets behind a dimension bundle are read by every query
-that touches them and are usually kilobytes. Large fact tables stay streamed
-with pushdown intact — the `taxi` model above never gets held.
+One DuckDB setting is deliberately **off**: `enable_http_metadata_cache`. It
+caches HEAD responses (size, etag) per path with no TTL and no invalidation,
+and both caches above validate against it — so once it holds an entry, an
+object overwritten in the bucket keeps answering with its old rows for the
+life of the process, and a partially evicted byte cache can even pair stale
+metadata with fresh bytes into a corrupt read. Left off, DuckDB validates
+cached footers and bytes against the object's *real* version on each open:
+repeat reads still come from memory, and an overwritten object is picked up
+on the very next query with only the changed file re-fetched.
 
-Measured through the engine against an S3 endpoint with 40ms of injected
-per-request latency, on the `sales` model (parquet glob + a CSV join + two
-dimension bundles):
+Two things DuckDB can't know are cached on top, in `app/duck.py`:
 
-| | S3 requests | before | after |
+- **Which objects a glob resolves to.** One LIST per source per
+  `CI_SOURCE_CACHE_TTL` resolves a glob to a file list, which is then handed
+  to `read_parquet([...])` already resolved instead of being re-globbed per
+  query. The same listing yields the source's byte total. (An iceberg source
+  gets the same treatment via its resolved `metadata.json`, which also keeps
+  the read on the catalog-free convention rather than needing
+  `unsafe_enable_version_guessing`.)
+- **Which sources are worth holding locally.** Under
+  `CI_SOURCE_CACHE_MAX_BYTES` measured *in the object store*, a source is
+  read once into a real DuckDB table and queried from there. The gate is
+  checked before reading, so a big table is never downloaded just to discover
+  it was too big; a second check after loading drops anything that expanded
+  past `CI_SOURCE_CACHE_MAX_RESIDENT_BYTES`. This is aimed squarely at the
+  sources that hurt most — the lookup tables in `joins:` and the datasets
+  behind a dimension bundle are read by every query that touches them and are
+  usually kilobytes. Large fact tables stay streamed with pushdown intact:
+  the `taxi` model above never gets held.
+
+Measured against an S3 endpoint with **40ms of injected per-request latency**,
+on the `sales` model (parquet glob + a CSV join + two dimension bundles).
+*naive* is every cache off — DuckDB's own and `CI_SOURCE_CACHE_TTL=0` —
+which is what pointing an untuned engine at `s3://` costs; *tuned* is the
+shipped defaults:
+
+| | S3 requests | naive | tuned |
 |---|---|---|---|
-| first query in a session | 40 → 31 | 1932ms | 1927ms |
-| the same visual re-run | 28 → 0 | 1114ms | **13ms** |
-| edit it: different dimensions/measures | 22 → 0 | 1010ms | **7ms** |
-| 6-tile dashboard | 168 → 0 | 6683ms | **72ms** |
+| first query in a session | 29 → 22 | 1881ms | 1397ms |
+| the same visual re-run | 14 → 0 | 725ms | **22ms** |
+| edit it: different dimensions/measures | 16 → 0 | 851ms | **18ms** |
+| 6-tile dashboard | 74 → 0 | 3878ms | **78ms** |
 
 The first query is deliberately barely changed: nothing is prefetched, and a
-cold cache still pays for the data it has never read. What goes away is paying
-for it *again* on every interaction after.
+cold cache still pays for the data it has never read (what it does save is
+the re-LISTing and the per-read handshakes). What goes away is paying for it
+*again* on every interaction after — the number that decides whether clicking
+around a dashboard feels alive.
+
+The same harness on the **model-authoring loop** — a 130MB, 4-file parquet
+fact table on the latency-injected endpoint, with the demo catalog loaded
+alongside and credentials supplied by an `AWS_PROFILE` whose resolution
+costs 150ms (an SSO/corporate stand-in) — before and after the three fixes
+above (one held credential resolver, no cache-clearing on save, no HTTP
+metadata cache):
+
+| | before | after |
+|---|---|---|
+| open the model form (cold validate) | 2019ms | 253ms |
+| per-keystroke re-validation | ~990ms | **11ms** |
+| save the model | **20,668ms** | **149ms** |
+| first query (cold read of the data) | 2558ms | 1312ms |
+| re-run / after-save query | 2144–3001ms, re-reading everything | **185–214ms**, 4 requests |
+
+The save was the headline failure: with a slow credential chain, every
+DuckDB cursor re-resolved it under the connection lock, a save re-validates
+every measure in the catalog through a cursor each, and the editor's
+debounced re-validations queued behind the lot — so "saving…" sat for tens
+of seconds while the browser looked hung.
 
 **The TTL is a staleness contract.** Until an entry expires, a query may answer
 from bytes read up to `CI_SOURCE_CACHE_TTL` seconds ago. The 60s default keeps
 that inside "clicking around gives consistent answers"; raise it to 600+ when
 data lands hourly or nightly, which is where the largest wins are. Set it to
-`0` to disable source caching entirely and get the old
-read-everything-every-time behaviour back exactly.
+`0` to disable the listing and pinning caches entirely and read every source
+from the object store on every query.
 
 The TTL is only the backstop for changes the app can't see. Everything the
-platform does to the bucket itself invalidates immediately, because this cache
-holds source *contents* and not just derived schemas: a model or bundle edit
-(`registry.reload_all()`, since a path can resolve somewhere new), a successful
-pipeline run (which writes from a subprocess this one can't see into), and a
-dataset upload or delete. So "run a pipeline, look at the dashboard" and
-"upload a file, see its columns" stay immediate — the TTL is what covers data
-that lands in the bucket from outside the app.
+platform *writes to the bucket* invalidates immediately, because this cache
+holds source contents and not just derived schemas: a successful pipeline run
+(which writes from a subprocess this one can't see into), and a dataset
+upload or delete. So "run a pipeline, look at the dashboard" and "upload a
+file, see its columns" stay immediate — the TTL is what covers data that
+lands in the bucket from outside the app (and DuckDB's own per-open version
+validation covers the streamed bytes even there). Invalidation drops the
+pinned tables *and* clears DuckDB's external file cache, since that holds
+bytes read from paths that now hold different data.
+
+A model or bundle **edit invalidates nothing**, deliberately: it changes
+YAML, not a byte in the object store, and every cached answer is keyed on
+what actually determines it (a source path, a rendered scan's SQL). The
+authoring loop — edit, save, re-run the visual — therefore stays warm: a
+save costs milliseconds, and the query after it reads from the same caches
+the query before it filled. Clearing on save is what used to make authoring
+against a real bucket feel broken, with every keystroke's validation and
+every post-save query paying a full cold walk of the endpoint.
+
+**Credentials are resolved once, not per query.** An `AWS_PROFILE` (SSO,
+assume-role, `credential_process`) resolution walks boto3's provider chain —
+config parsing, token cache reads, sometimes an STS round trip — which
+measures 150ms+ per call on a corporate setup. The app holds one resolver
+per process and lets botocore refresh it near expiry, the same way the AWS
+CLI stays signed in; a static credential is re-checked on a slow cadence in
+case the file behind it rotates. Before this, every DuckDB cursor re-ran the
+full chain under the connection lock, which compounded into 20-second model
+saves (a save re-validates every measure, and every validation takes a
+cursor).
 
 **It needs `s3:ListBucket`.** The listing is what supplies both the file list
 and the byte total, so a bucket that grants `GetObject` and denies
-`ListBucket` gets no caching — each such source quietly falls back to
-streaming per query rather than failing, exactly as it behaved before. Grant
-`s3:ListBucket` on the prefixes your models read to get the speedup.
+`ListBucket` gets neither the resolved file list nor pinning — each such
+source quietly falls back to letting DuckDB glob it per query rather than
+failing. Grant `s3:ListBucket` on the prefixes your models read to get the
+speedup.
+
+**If every query takes as long as the first** — the same visual re-run costs
+the same tens of seconds, forever — the likely culprit is between you and
+the bucket, not in it: DuckDB probes range-request support when it opens a
+file, and an intermediary that mangles that probe (corporate TLS-inspection
+proxies and some VPN gateways rewrite HEAD responses, dropping or zeroing
+`Content-Length`) makes it fall back to downloading **entire objects** into
+memory, every query, bypassing the byte cache — column pruning and all. The
+tell is DuckDB's own warning (`Falling back to full file download … the
+server does not support HTTP range requests`) and cold-sized timings on
+warm repeats. Verify with
+`curl -sI -H "Range: bytes=0-99" https://<bucket>.s3.<region>.amazonaws.com/<key>`
+from the same network: anything other than `206` with a `Content-Range` is
+the proxy talking, not S3. Fixes are network-side: exempt
+`*.s3.<region>.amazonaws.com` from inspection, or run the app inside the
+network boundary (same VPC/region as the bucket — which also turns the
+cold read's bandwidth from home-broadband into backbone).
+
+**It is also bounded.** A source resolving to more than `CI_LIST_MAX_KEYS`
+objects takes the same fallback: past that many, turning a glob into an
+explicit file list stops being the cheaper option — it is a listing to walk
+on a cache miss and tens of thousands of string literals in the SQL. The
+same cap covers dataset discovery and the explorer, which is what keeps a
+real bucket from making the Modelling workspace a page that never loads;
+`CI_BUCKET_PREFIX` narrows the walk to the part of a shared bucket that is
+actually yours.
+
+**Each bucket is signed for its own region.** Resolved once per process via
+`GetBucketLocation` (and from the `x-amz-bucket-region` header on the error
+when that call is denied), because SigV4 puts the region in the credential
+scope: a bucket in `eu-west-2` signed for `us-east-1` is refused outright,
+and the request that goes to the wrong regional endpoint comes back as a
+redirect DuckDB reports as a bare HTTP error. A bucket whose region isn't
+`AWS_REGION` gets a DuckDB secret of its own, scoped to it.
 
 **Memory ceiling** is the two caps multiplied by how many sources a
-deployment has: nothing is held above `CI_SOURCE_CACHE_MAX_RESIDENT_BYTES`
+deployment has: nothing is pinned above `CI_SOURCE_CACHE_MAX_RESIDENT_BYTES`
 each, and the set of sources is whatever `models/` and `dimensions/` declare,
-not something a query can grow. A 16MB parquet source typically decodes to
-50–160MB, so the 256MB resident cap is a safety net for pathological expansion
-rather than a number to expect.
+not something a query can grow. DuckDB's own file cache lives inside
+`CI_DUCKDB_MEMORY_LIMIT` (unset = DuckDB's default of 80% of RAM; set it on a
+shared box).
 
-One caveat worth stating: holding a source changes how the data is chunked, and
-a parallel `sum()` reorders its additions when chunking changes. Float
-aggregates can therefore differ in their last bits — under 1e-14 relative
-(tens of ULP of a float64) across every model and query shape in the suite,
-varying from run to run rather than settling on one figure. Row *counts*, row
-*sets* and every non-float value are identical.
-
-This is not something the cache introduced: two identical runs of one query
-already differ the same way, because the reduction order depends on how the
-parallel aggregation happened to be scheduled. It is worth knowing about
-mainly so it isn't mistaken for a caching bug later — the engine has never
-been bit-reproducible on float aggregates.
-
-**Data layout still matters for anything past the gate.** A CSV costs three
-round trips (HEAD, a probe read, then the file) and supports neither predicate
-nor projection pushdown, so a *large* CSV source is re-read whole on every
-query and is the worst thing to put behind a model. The demo's `ref/*.csv`
-lookups stay CSV deliberately — they exercise that code path, and at a
-kilobyte each the cache serves them from memory anyway — but a reference table
-big enough to miss the gate should be written as parquet. Same for fact
-tables: fewer, larger parquet files beat many small ones, since each file
-costs a HEAD plus a footer read before any data moves.
+**Data layout still matters for anything past the gate.** A CSV supports
+neither predicate nor projection pushdown, so a *large* CSV source is re-read
+whole on every query and is the worst thing to put behind a model. The demo's
+`ref/*.csv` lookups stay CSV deliberately — they exercise that code path, and
+at a kilobyte each they get pinned anyway — but a reference table big enough
+to miss the gate should be written as parquet. Same for fact tables: fewer,
+larger parquet files beat many small ones, since each file costs a footer read
+before any data moves.
 
 **Or author it in the app**: the **Modelling** workspace (see below) is the
 home for model authoring — *edit yaml* on any model card, or *+ MODEL* — opening
@@ -908,9 +1158,11 @@ authoring less of a memory test:
 - **◇ DATASET** browses the bucket as prefix-grouped datasets (drillable to a
   single object) and fills in the `source:` block for you — no hand-typed
   `s3://…` paths. Once a source is picked, its real columns light up the palette.
-- **Intellisense anywhere in the YAML**: inside a measure `expr:` you get polars
-  completion (`pl.`, `.`, `pl.col("` → real columns); in a dimension/join/key
-  context you get bare column-name completion. Same engine as the measure lab.
+- **Intellisense anywhere in the YAML**: inside a measure `expr:` — and inside
+  a complex measure's `from:` block — you get SQL completion (aggregates,
+  window shapes, and the source's real columns); in a dimension/join/key
+  context you get bare column-name completion; inside a pipeline's `sql:` you
+  get its declared source names. Same engine as the measure lab.
 - **Unsaved edits are guarded** — navigating away warns before discarding, and
   nothing is written to `models/` until you save.
 
@@ -921,15 +1173,14 @@ the affordances only insert/patch the one document.
 ### The measure lab
 
 *+ new measure* under the builder's measure list opens an inline editor on the
-visual itself. Type in the safe DSL — a bare identifier offers function names,
-source columns, *and* sibling measures (model measures plus this visual's
-other inline measures, since a bare name inside `running_total()`/`lag()`
-means a measure, not a column, and the client can't know which mode an
-expression is in until it parses); `col("` offers the source's columns
-(post-join, with dtypes); `param('` offers this visual's declared
-parameters, each hinting its type, values, and default (legal anywhere a
-literal is legal in the DSL — comparisons, `if_()`, `coalesce()`,
-`where()`, `cast()`'s value argument, `lag()`'s periods argument). Every
+visual itself. Type a SQL aggregate — a bare identifier offers function names,
+source columns (post-join, with dtypes), *and* sibling measures (model
+measures plus this visual's other inline measures, since a bare name inside
+a window function means a measure, not a column, and the client can't know
+which mode an expression is in until it parses); `param('` offers this
+visual's declared parameters, each hinting its type, values, and default
+(legal anywhere a literal is legal — comparisons, `CASE WHEN`, `COALESCE()`,
+a `FILTER (WHERE …)` predicate, `CAST`'s value operand, `LAG`'s offset). Every
 keystroke re-runs the current query with the
 draft measure so it renders live in the chart (with the value shown
 directly when there are no dimensions). Two save paths:
@@ -937,7 +1188,7 @@ directly when there are no dimensions). Two save paths:
 - **SAVE TO VISUAL** — the measure travels inside the visual's spec
   (`inline_measures` on the query), works on dashboards and in focus mode, and
   shows as a dashed *visual* chip with edit/remove. No credentials needed —
-  it's compiled through the same safe DSL as everything else, so there's
+  it's compiled through the same allowlist as everything else, so there's
   nothing dangerous for an unauthenticated visual author to run.
 - **SAVE TO MODEL** — appends the measure to the model's yaml
   (comment-preserving) and hot-reloads, promoting it to a shared model
@@ -951,18 +1202,18 @@ The **+ param** picker next to the format selector inserts `param('name')`
 for any parameter declared on the current visual (see the Parameters
 section in the sidebar) at the cursor.
 
-> Inline measures are compiled through an allowlisting AST compiler
-> (`app/measure_dsl.py`) that never calls `eval`/`exec`/`compile` — see "The
-> safe measure DSL" above. Saved model measures compile through the same
-> allowlist; the one exception is the `frame:` construct, which stays
-> `eval`/`exec`-based (like model YAML always has been) but is reachable only
-> through the authenticated save path below, never inline.
+> Inline measures are parsed by DuckDB, checked against a fail-closed
+> allowlist and re-serialized from the validated AST (`app/sqlgrammar.py`) —
+> see "The SQL measure grammar" above. Saved model measures go through the
+> identical path, `from:` blocks included: there is no eval-based carve-out
+> any more, and no measure construct that needs a higher role than another.
 
 ### Authoring model measures (auth + provenance)
 
 Creating, updating, or deleting a saved model measure requires a signed-in
-account with the **author** role (a `frame:` measure escalates to **admin**
-— see the carve-out above). Identity comes from the session; in the app you
+account with the **author** role — complex (`from:`) measures included, since
+they are the same allowlisted SQL as any other. Identity comes from the
+session; in the app you
 just click SAVE TO MODEL. From a script, create a **personal access token**
 under ACCOUNT and send it as `Authorization: Bearer cipat_…` — it acts as
 you, with your role, and can be revoked individually. The spec-008
@@ -974,7 +1225,6 @@ get 401.
 | `POST /api/models/{m}/measures` | author | create a measure (validated, then appended to the yaml) |
 | `PUT /api/models/{m}/measures/{name}` | author | update a measure in place |
 | `DELETE /api/models/{m}/measures/{name}` | author | remove a measure |
-| same, with a `frame:`/`frame_emits` payload | **admin** | the eval-based carve-out stays behind the highest trust level |
 | `GET /api/models/{m}/measures/{name}/history` | viewer | append-only provenance: author, version, expression snapshot per save |
 
 Provenance now records the **verified account** (display name + user id) —
@@ -982,9 +1232,9 @@ rows written before the auth feature keep their self-declared label and are
 flagged `verified: false` ("legacy") in history responses and the measure
 lab's history strip.
 
-Every create/update is validated (the safe DSL, or `validate_frame` for a
-`frame:` measure) before anything is written — an invalid measure is refused,
-never partially saved. Provenance is recorded in a separate SQLite table
+Every create/update is validated — the aggregate under the expression
+profile, a `from:` block under the stricter relation profile — before
+anything is written, so an invalid measure is refused, never partially saved. Provenance is recorded in a separate SQLite table
 (`measure_provenance`, in `cash_intel.db`) alongside the yaml write; the yaml
 file remains the sole executable source of truth, the table is the audit log.
 
@@ -992,10 +1242,10 @@ file remains the sole executable source of truth, the table is the audit log.
 
 The 7 models under `models/` and both bundles under `dimensions/`
 (`geography.yaml`, `calendar.yaml`) are the built-in demo catalog — curated to
-be the minimal set that exercises every core-engine capability (a lazy read of
+be the minimal set that exercises every core-engine capability (a read of
 each supported format, a shared dimension bundle, models with one and with
-several fact tables, a `frame:` expression, point-in-time range joins) plus one large fact
-table for a performance benchmark. `GET /api/models` and `GET /api/dimensions`
+several fact tables, a `from:` block, point-in-time range joins) plus one
+large fact table for a performance benchmark. `GET /api/models` and `GET /api/dimensions`
 report each one `"locked": true`. Structural changes — `POST /api/models`/
 `POST /api/dimensions` under an existing name, `PUT /api/models/{m}/yaml`/`PUT
 /api/dimensions/{b}/yaml`, `DELETE /api/models/{m}`/`DELETE
@@ -1041,12 +1291,14 @@ gitignored, override with `CI_LOCAL_DATA_DIR`). This matters because the
 default embedded S3 emulator is in-memory — its bucket is entirely rebuilt
 from scratch (`app/seed.py`) on every process start, so anything written only
 to the bucket (an upload included) would otherwise vanish the moment the app
-restarts. `app/seed.py`'s `_upload_local_data` re-uploads everything under
-`local_data/` alongside the generated demo data and `raw_data/`, so an upload
-survives a restart the same way `app/load_taxi.py`'s `data_cache/` does.
-Point `CI_S3_ENDPOINT` at a real bucket (MinIO, real S3 — see `docker-compose
---profile minio`) and this becomes moot: the bucket itself persists, so the
-disk cache is just a backup copy.
+restarts. `app/seed.py`'s `restore_local_uploads` puts everything under
+`local_data/` back on start, so an upload survives a restart the same way
+`app/load_taxi.py`'s `data_cache/` does — but *only* into a store that
+forgets. Against a real bucket it does nothing: the bucket remembers by
+itself, and re-uploading every start would resurrect anything deleted from
+outside the app and re-pay for bytes already sitting there. The disk copy is
+still kept either way, so moving a deployment back to the emulator doesn't
+lose uploads.
 
 ## API
 
@@ -1182,18 +1434,20 @@ your role — viewers see no authoring controls at all):
 - **ACCOUNT** — self-service for every signed-in role: personal access
   tokens, password change, and (see [Themes](#themes)) picking one of the 4
   visual themes. Admins additionally get user management here.
-- **SANDBOX** — scratch polars/python notebooks over the bucket, with a
-  path into a saved pipeline once a script is worth keeping — see
+- **SANDBOX** — scratch SQL notebooks over the bucket, with a
+  path into a saved pipeline once a query is worth keeping — see
   [Sandbox notebooks](#sandbox-notebooks) below.
 
 ## Pipelines
 
-A **pipeline** (specs/014-polars-pipeline-module/) hosts a real polars
-transformation script — not a low-code builder, an actual `.py`-shaped
-snippet the platform runs, materializes, and documents. A script's whole
-contract is to produce a variable named `output`; the platform performs
-every write, which is what makes the materialization modes below
-enforceable and a failed run non-corrupting.
+A **pipeline** (specs/014-polars-pipeline-module/, ported to SQL by
+specs/018-duckdb-sql-engine/) hosts a SQL transformation — not a low-code
+builder, an actual script the platform runs, materializes, and documents.
+Each declared source is a view of its own name, so the sql just reads it by
+name; the script's whole contract is to **end on a `SELECT`, or create a
+relation called `output`**. The platform performs every write, which is what
+makes the materialization modes below enforceable and a failed run
+non-corrupting.
 
 ```yaml
 # pipelines/silver_orders.yaml
@@ -1213,12 +1467,10 @@ materialization:
   on_delete: soft_delete           # ignore (default) | sync | soft_delete | predicate
   soft_delete_column: is_deleted   # soft_delete: required
 timeout_seconds: 120               # default 600, max 3600
-script: |                          # sees `sources` (dict of source name -> LazyFrame) and `pl`
-  output = (
-      sources["sales"]
-      .with_columns(((pl.col("unit_price") - pl.col("unit_cost")) * pl.col("quantity")).alias("net_revenue"))
-      .select(["order_id", "order_date", "region", "channel", "category", "net_revenue"])
-  )
+sql: |                             # each source above is a view of its own name
+  SELECT order_id, order_date, region, channel, category,
+         (unit_price - unit_cost) * quantity AS net_revenue
+  FROM sales
 lineage:                           # optional — documents transformation logic on the target model
   - field: order_id
     from: [sales.order_id]
@@ -1239,14 +1491,16 @@ table's root directory — the current snapshot is found by listing its
 same self-describing-directory convention Delta's `_delta_log` already
 gets.
 
-**Trust model**: a pipeline script is real, unsandboxed Python at
-application-code trust — the same posture as a model measure's `frame:`
-carve-out (see "Measures over an intermediary frame" above), just with a
-whole script instead of one derived frame. Creating, editing, deleting, and
-**running** a pipeline all require the **admin** role (Principle VI
-re-opened for this feature — see `.specify/memory/constitution.md`); every
-mutation and every run is written to the audit log. Every role can read
-pipeline definitions, run history, and the lineage graph.
+**Trust model**: a pipeline's SQL keeps the table functions a measure may
+never name — `read_parquet`, `delta_scan`, `COPY … TO`, `ATTACH` — so it can
+read and write arbitrary bucket paths. That *reach* is what the admin gate
+measures, not code execution: SQL offers none, and there is no `eval`
+anywhere in the path (this is the one real change from the polars era, where
+a pipeline was unsandboxed Python at application-code trust). Creating,
+editing, deleting, and **running** a pipeline all require the **admin** role
+(Principle VI — see `.specify/memory/constitution.md`); every mutation and
+every run is written to the audit log. Every role can read pipeline
+definitions, run history, and the lineage graph.
 
 **Execution**: manual trigger only (no scheduler) — `▶ RUN` in the pipeline
 editor, or `POST /api/pipelines/{name}/run`. Each run executes in its own
@@ -1254,8 +1508,8 @@ subprocess, supervised by a single FIFO worker thread: runs are strictly
 serialized platform-wide (triggering a second pipeline while one is running
 queues it; triggering the *same* pipeline again while it has a pending run
 is refused with 409), and the parent enforces `timeout_seconds` by killing
-the process outright — a runaway or crashed script can never take the app
-down. An app restart mid-run marks that run `interrupted`, never stuck.
+the process outright — a runaway query can never take the app down, and a
+cross join is exactly as unkillable inside a thread as an infinite loop was. An app restart mid-run marks that run `interrupted`, never stuck.
 
 ### Materialization
 
@@ -1339,26 +1593,28 @@ pipeline goes through.)
 
 ## Sandbox notebooks
 
-The **SANDBOX** surface is a multi-cell polars/python scratch notebook over
-the same bucket pipelines read from — the place to explore a dataset or
-prototype a transformation *before* it's worth saving as a pipeline. Cells
-run top-to-bottom in one shared namespace (`pl`, `bucket`, and a `read(path[,
-format])` helper that infers parquet/csv/delta from the extension — iceberg
-needs an explicit `format="iceberg"`, since its table root looks the same as
-delta's on disk) — later cells see earlier cells' variables, and a cell's last bare expression
-auto-displays, Jupyter-style: a polars `DataFrame`/`LazyFrame` renders as a
-table (capped preview, lazily collected), anything else as its `repr()`.
-**RUN** on a cell replays every cell from the top through that one; there is
-no persistent kernel between separate runs — each run recomputes its whole
-prefix from scratch, trading a little redundant work for never having
-stale/drifted state to reason about.
+The **SANDBOX** surface is a multi-cell SQL scratch notebook over the same
+bucket pipelines read from — the place to explore a dataset or prototype a
+transformation *before* it's worth saving as a pipeline. Cells run
+top-to-bottom in **one DuckDB session**, so a `CREATE OR REPLACE TEMP VIEW`
+in an early cell is visible to every later one, and a cell may hold several
+statements separated by semicolons. Reach the bucket with DuckDB's own
+readers — `read_parquet('s3://…')`, `read_csv`, `delta_scan`,
+`iceberg_scan` — credentials are already configured, so a cell never writes
+a `CREATE SECRET` or a `SET`. A statement that returns rows displays them
+automatically as a capped table; one that doesn't (a `CREATE`, a `SET`)
+shows as a bare ok. **RUN** on a cell replays every cell from the top through
+that one; there is no persistent session between separate runs — each run
+recomputes its whole prefix from scratch, trading a little redundant work
+for never having stale/drifted state to reason about.
 
 The editor gets the same delight affordances as the model/pipeline yaml
-editor: syntax highlighting (`static/js/pyhighlight.js`, the python sibling
-of `yamlhighlight.js`) and intellisense — `read("` offers real bucket paths
-(clicking a file under **Bucket Files** in the side panel inserts one at the
-cursor too), `pl.` offers common polars constructors/scan functions, and a
-bare name offers every variable assigned in any cell. Notebooks persist as
+editor: syntax highlighting (`static/js/sqlhighlight.js`, the SQL sibling
+of `yamlhighlight.js`) and intellisense — a reader's quoted argument offers
+real bucket paths (clicking a file under **Bucket Files** in the side panel
+inserts the right reader call for that file's format at the cursor too),
+and a bare name offers SQL keywords plus every relation an earlier cell
+declared. Notebooks persist as
 `{name, cells}` in SQLite (`sandbox_notebooks` — no execution state is ever
 saved, only the code); **+ CELL**, the per-cell ▶/↑/↓/+/✕ controls, and
 **SAVE**/**SAVE AS NEW**/**DELETE** round out authoring.
@@ -1366,11 +1622,11 @@ saved, only the code); **+ CELL**, the per-cell ▶/↑/↓/+/✕ controls, and
 ### The coding agent
 
 **◈ AGENT** (admin-only, and only when `CI_LLM_API_KEY` is configured —
-the same key conversational analytics uses) opens a panel that writes polars
+the same key conversational analytics uses) opens a panel that writes SQL
 *for the notebook that's open*. It sees the live, unsaved notebook: every
-cell's source, the last run's stdout/traceback tails, each result's **schema**
-(column names + dtypes — result rows are never sent), and the bucket's paths
-collapsed to things a `read(...)` call can name. A reply is a set of proposed
+cell's source, the last run's error tails, each result's **schema** (column
+names + dtypes — result rows are never sent), and the bucket's paths
+collapsed to things a reader call can name. A reply is a set of proposed
 cells you **APPLY** or **APPLY + RUN**, never something applied, run or saved
 on your own behalf — and a cell that failed gets a **◈ FIX WITH AGENT**
 button that hands the error straight back.
@@ -1382,36 +1638,41 @@ sandbox already has the fastest feedback channel there is — run the cell:
 - **no tests, benchmarks, try/except scaffolding or logging** — a hard rule in
   the system prompt, since that's where a coding agent's tokens and latency
   usually go. A failing cell's error is simply context for the next request;
-- **no extended thinking**, a **cached system prompt** (the polars performance
+- **no extended thinking**, a **cached system prompt** (the SQL performance
   doctrine is long, static and resent every turn), and a **bounded context**
   (per-cell source, output tails and the file listing are all capped —
   `app/config.py`'s `SANDBOX_AGENT_*`);
 - **model per request**: the panel's dropdown picks from the same
   `LLM_MODEL_CHOICES` chat uses; `CI_SANDBOX_AGENT_MODEL` sets the default.
 
-The prompt is a polars performance brief, not a generic coding one: stay lazy
-end to end, filter/project on the scan so pushdown drops row groups before
-they leave the bucket, expressions never Python (`map_elements`, `iter_rows`
-and friends are out), batch expressions into one `with_columns`, semi/anti
-joins for filtering, `pl.len()`, streaming collect for larger-than-memory
-work. Whatever comes back is re-validated before you can apply it
+The prompt is a SQL performance brief, not a generic coding one: project and
+filter *in the scan* so pushdown drops row groups before they leave the
+bucket, read each path once (a repeated `read_parquet` of the same glob
+re-lists the prefix — put it in a `TEMP VIEW`), one pass and many aggregates
+with `FILTER (WHERE …)` rather than a query per condition, a window function
+instead of a self-join, semi/anti joins (`WHERE EXISTS`) when you only need
+filtering, `USING SAMPLE` rather than `LIMIT` for a real sample, and
+`EXPLAIN ANALYZE` when the question is whether pushdown is actually
+happening. Whatever comes back is re-validated before you can apply it
 (`app/sandbox.py`): a target naming a cell that isn't in the notebook is
-downgraded to a new cell, duplicates are dropped, and a syntax error is
-*reported on the proposal* rather than silently discarded.
+downgraded to a new cell, duplicates are dropped, and a syntax error —
+DuckDB's own, since the parser is right there — is *reported on the
+proposal* rather than silently discarded.
 
-**Convert to pipeline**: once a script is worth keeping, **→ CONVERT TO
-PIPELINE** combines the notebook's cells, detects every `read("path"[,
-format=...])` call as a would-be pipeline source (name derived from the
-path — a glob like `sales/*.parquet` names itself `sales`, not a generic
-placeholder), rewrites those call sites to the pipeline script convention
-(`sources["name"]`), and opens the result as an unsaved draft in the
-Modelling pipeline editor with a starter `target:`/`materialization:` the
-admin fills in and reviews before saving — this is a text-transform assist,
-never a silent one-click pipeline; a script with no `output = ...`
-assignment (the pipeline contract) surfaces a warning rather than guessing
-one. `app/sandbox.py`'s detection ignores anything mentioned only in a
-comment, so an explanatory `# e.g. read("s3://...")` note is never mistaken
-for a real source.
+**Convert to pipeline**: once a query is worth keeping, **→ CONVERT TO
+PIPELINE** combines the notebook's cells, detects every bucket-reading table
+function call (`read_parquet('…')`, `delta_scan('…')`, …) as a would-be
+pipeline source (name derived from the path — a glob like `sales/*.parquet`
+names itself `sales`, not a generic placeholder), rewrites those call sites
+to the source's bare name (which is what a pipeline registers each source as
+a view under), and opens the result as an unsaved draft in the Modelling
+pipeline editor with a starter `target:`/`materialization:` the admin fills
+in and reviews before saving — this is a text-transform assist, never a
+silent one-click pipeline; sql that neither ends on a `SELECT` nor creates a
+relation named `output` (the pipeline contract) surfaces a warning rather
+than guessing one. `app/sandbox.py`'s detection ignores anything mentioned
+only in a comment, so an explanatory `-- e.g. read_parquet('s3://…')` note
+is never mistaken for a real source.
 
 **→ CONVERT + LINEAGE** (shown only when the agent is configured) does the
 same conversion and additionally asks the agent for the one part a text
@@ -1472,9 +1733,10 @@ only the **viewer** role, the same tier as the query builder.
 needs a calculation nobody declared as a measure — a running total, a
 period-over-period change or growth rate — doesn't have to decline or wait
 for a model author. The assistant can define it itself, scoped to that one
-query, using the same safe measure DSL model authors use: `running_total
-(revenue)`, `lag(revenue)`, `lag(revenue, 4)`, or plain arithmetic around
-them (e.g. `(revenue - lag(revenue)) / lag(revenue)` for a % change). Every
+query, using the same SQL grammar model authors use: `SUM(revenue) OVER w`,
+`LAG(revenue) OVER w`, `LAG(revenue, 4) OVER w`, or plain arithmetic around
+them (e.g. `(revenue - LAG(revenue) OVER w) / LAG(revenue) OVER w` for a %
+change). Every
 inline measure is re-validated exactly like everything else: it must be a
 window expression over one of the model's own already-declared measures —
 never a raw column, and never another inline measure — or the whole
@@ -1606,6 +1868,24 @@ export CI_LLM_MODEL=qwen2.5-coder:32b
 | `CI_LLM_MAX_TOKENS_PARAM` | `auto` (default) / `max_tokens` / `max_completion_tokens` — see below |
 | `CI_LLM_REASONING_TOKENS` | headroom added for reasoning on the OpenAI wire (default `8192`) |
 | `CI_ENV_FILE` | read settings from a different file than `./.env`; empty = read none |
+
+Object stores (all optional — unset means the fully-local demo):
+
+| variable | meaning |
+|---|---|
+| `CI_BUCKET` | your bucket. Naming one is the whole configuration for real AWS |
+| `CI_S3_ENDPOINT` | MinIO / LocalStack / an S3-compatible vendor. Leave **unset** for AWS, which is addressed by region |
+| `CI_BUCKET_PREFIX` | where in `CI_BUCKET` this deployment's data lives — narrows dataset discovery on a shared bucket |
+| `CI_LIST_MAX_KEYS` | cap on any single bucket walk (default `20000`); past it a listing reports itself truncated |
+| `CI_DEMO` | `0` drops the built-in demo entirely: no emulator, no seeding, `models/`+`dimensions/` unloaded |
+| `CI_DEMO_BUCKET` / `CI_DEMO_S3_ENDPOINT` | move the demo bucket somewhere other than the embedded emulator |
+| `AWS_PROFILE` | a `~/.aws/config` profile, SSO included — re-resolved per call so it refreshes |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` | static keys; unset falls through to boto3's default chain (instance/task role) |
+| `AWS_REGION` | the default region. Each bucket's *own* region is resolved on top of it |
+
+Every setting the app reads treats an **empty** value as unset, so a
+`${VAR:-}` in `docker-compose.yml` or a bare `KEY=` in `.env` means "leave
+this one alone" rather than "set it to nothing".
 
 All of these can live in `.env` instead of your shell. A *blank* value there
 means "use the default", not "empty" — blank is what an unset variable looks
@@ -1922,8 +2202,8 @@ in exchange for no round trips afterwards. Time dimensions are the exception —
 no renderer emits a cross-filter from a time mark, so another tile's dates are
 never carried, which is what keeps the union cheap. It also carries precomputed
 coarser time buckets for the tile's *own* dates, so a GRAIN change to a coarser
-bucket is answered locally from values polars truncated — the browser never
-does date arithmetic of its own. Weeks don't nest inside months, so a
+bucket is answered locally from values `date_trunc` already produced — the
+browser never does date arithmetic of its own. Weeks don't nest inside months, so a
 week-grained extract offers nothing coarser; a *finer* grain than was fetched
 re-queries for that interaction.
 
@@ -1949,20 +2229,22 @@ as a parameter change does.
 **Measures are decomposed, not re-averaged.** Re-aggregating an already
 aggregated extract is only sound for measures that decompose, so each one is
 split server-side into additive components and recomputed from them after the
-roll-up (`measure_dsl.rollup_plan`):
+roll-up (`sqlgrammar.rollup_plan`, which walks the measure's own validated
+AST — so a component carries no more language power than the measure it came
+from):
 
 | measure | components fetched | recomputed as |
 |---|---|---|
-| `sum(revenue)` | `sum(revenue)` | itself |
-| `count()` | `count()` | itself |
-| `mean(fare_amount)` | `sum(fare)`, `count(fare)` | sum ÷ count |
-| `sum(tip) / sum(fare)` | `sum(tip)`, `sum(fare)` | the ratio, after totalling |
+| `SUM(revenue)` | `SUM(revenue)` | itself |
+| `COUNT(*)` | `COUNT(*)` | itself |
+| `AVG(fare_amount)` | `SUM(fare_amount)`, `COUNT(fare_amount)` | sum ÷ count |
+| `SUM(tip) / SUM(fare)` | `SUM(tip)`, `SUM(fare)` | the ratio, after totalling |
 
 Dividing *once, at the end* is what makes means and ratios exact rather than
-approximate. A measure with no such decomposition — `count_distinct`, `median`,
-`std`/`var`, `first`/`last`, a window measure (`running_total`/`lag`), or one
-over an intermediary frame — cannot be re-aggregated without changing its
-value, so that tile silently stays on the live path instead.
+approximate. A measure with no such decomposition — `COUNT(DISTINCT …)`,
+`MEDIAN`, `STDDEV`/`VARIANCE`, `FIRST`/`LAST`, a window measure, or one with
+a `from:` block — cannot be re-aggregated without changing its value, so that
+tile silently stays on the live path instead.
 
 **Per-tile fallback.** Instant vs. live is decided per tile, never per
 dashboard, and a dashboard routinely ends up with a mix. A tile falls back

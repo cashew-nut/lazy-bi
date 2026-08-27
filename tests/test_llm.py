@@ -161,11 +161,11 @@ def test_catalog_text_includes_measure_formula_when_present():
         llm.ModelCatalogEntry(
             name="sales", label="Sales Orders", description="", dimensions=[],
             measures=[{"name": "revenue", "label": "Revenue", "description": "",
-                       "expr": "sum(unit_price * quantity)"}],
+                       "expr": "SUM(unit_price * quantity)"}],
         ),
     ]
     text = llm._catalog_text(catalog)
-    assert "computed as: sum(unit_price * quantity)" in text
+    assert "computed as: SUM(unit_price * quantity)" in text
 
 
 def test_catalog_text_omits_formula_marker_when_absent():
@@ -228,8 +228,8 @@ def test_propose_query_tool_declares_inline_measures():
 
 
 def test_system_prompt_explains_inline_measures():
-    assert "running_total" in llm._SYSTEM_PROMPT
-    assert "lag(measure" in llm._SYSTEM_PROMPT
+    assert "SUM(revenue) OVER w" in llm._SYSTEM_PROMPT
+    assert "LAG(revenue) OVER w" in llm._SYSTEM_PROMPT
     assert "inline_measures" in llm._SYSTEM_PROMPT
 
 

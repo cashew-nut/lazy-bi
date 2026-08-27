@@ -9,12 +9,15 @@ Five datasets, one per supported source format:
 """
 from __future__ import annotations
 
+import calendar as calendar_mod
 import io
 import random
 import secrets
 from datetime import date, timedelta
 
-import polars as pl
+import pyarrow as pa
+import pyarrow.csv as pa_csv
+import pyarrow.parquet as pq
 from botocore.exceptions import ClientError
 from deltalake import write_deltalake
 
@@ -45,7 +48,7 @@ PRICE = {
 }
 
 
-def _sales_frame(rng: random.Random) -> pl.DataFrame:
+def _sales_frame(rng: random.Random) -> pa.Table:
     start = DEMO_START
     days = (DEMO_END - start).days
     rows = []
@@ -73,7 +76,7 @@ def _sales_frame(rng: random.Random) -> pl.DataFrame:
             "unit_price": unit_price,
             "unit_cost": unit_cost,
         })
-    return pl.DataFrame(rows)
+    return pa.Table.from_pylist(rows)
 
 
 # real-world anchor coordinates so the regions can sit on a map
@@ -84,7 +87,7 @@ REGION_COORDS = {
 }
 
 
-def _marketing_frame(rng: random.Random) -> pl.DataFrame:
+def _marketing_frame(rng: random.Random) -> pa.Table:
     rows = []
     month = date(2024, 1, 1)
     while month <= date(2026, 6, 1):
@@ -101,7 +104,7 @@ def _marketing_frame(rng: random.Random) -> pl.DataFrame:
                     "impressions": rng.randint(50_000, 900_000),
                 })
         month = (month.replace(day=28) + timedelta(days=5)).replace(day=1)
-    return pl.DataFrame(rows)
+    return pa.Table.from_pylist(rows)
 
 
 SUPPLIERS = {
@@ -121,19 +124,20 @@ TERRITORIES = {
 TERRITORY_NAMES = {"pacific-rim": "Pacific Rim", "north-america": "North America", "emea": "EMEA"}
 
 
-def _regions_frame() -> pl.DataFrame:
+def _regions_frame() -> pa.Table:
     rows = []
     for region in REGIONS:
         lat, lon = REGION_COORDS[region]
         rows.append({"region": region, "region_lat": lat, "region_lon": lon, "territory": TERRITORIES[region]})
-    return pl.DataFrame(rows)
+    return pa.Table.from_pylist(rows)
 
 
-def _territories_frame() -> pl.DataFrame:
-    return pl.DataFrame([{"territory": code, "name": name} for code, name in TERRITORY_NAMES.items()])
+def _territories_frame() -> pa.Table:
+    return pa.Table.from_pylist(
+        [{"territory": code, "name": name} for code, name in TERRITORY_NAMES.items()])
 
 
-def _products_frame() -> pl.DataFrame:
+def _products_frame() -> pa.Table:
     rows = []
     for category, products in CATEGORIES.items():
         for product in products:
@@ -143,13 +147,13 @@ def _products_frame() -> pl.DataFrame:
                 "supplier": SUPPLIERS[category],
                 "tier": "military-grade" if base >= 3000 else "corpo-grade" if base >= 500 else "street-grade",
             })
-    return pl.DataFrame(rows)
+    return pa.Table.from_pylist(rows)
 
 
 PLANS = {"street": 20.0, "corpo": 95.0, "netrunner": 240.0}
 
 
-def _subscriptions_frame(rng: random.Random) -> pl.DataFrame:
+def _subscriptions_frame(rng: random.Random) -> pa.Table:
     """Subscription intervals for the spine demo: start/end dates, null end =
     still active. Growth over time with plan-dependent churn."""
     start_lo = DEMO_START
@@ -171,33 +175,39 @@ def _subscriptions_frame(rng: random.Random) -> pl.DataFrame:
             "start_date": started,
             "end_date": ended if ended <= horizon else None,
         })
-    return pl.DataFrame(rows)
+    return pa.Table.from_pylist(rows)
 
 
-def _calendar_frame() -> pl.DataFrame:
+def _calendar_frame() -> pa.Table:
     """A standalone date table — one row per day across the demo window, with
     the usual calendar attributes hung off it. Nothing relates it to any fact
     table: models reach it with a `how: between` dimension import, which is
     what turns "rows with a start and an end" into point-in-time reporting.
     """
-    days = pl.date_range(DEMO_START, DEMO_END, interval="1d", eager=True).alias("date")
-    return pl.DataFrame(days).with_columns(
-        pl.col("date").dt.year().alias("year"),
-        pl.format("{}-Q{}", pl.col("date").dt.year(), pl.col("date").dt.quarter()).alias("quarter"),
-        pl.col("date").dt.truncate("1mo").alias("month_start"),
-        pl.col("date").dt.strftime("%Y-%m %b").alias("month"),
-        pl.col("date").dt.truncate("1w").alias("week_start"),
-        pl.col("date").dt.strftime("%A").alias("day_of_week"),
-        (pl.col("date").dt.day() == 1).alias("is_month_start"),
-        (pl.col("date").dt.month_end() == pl.col("date")).alias("is_month_end"),
-        (pl.col("date").dt.weekday() > 5).alias("is_weekend"),
-    )
+    rows = []
+    day = DEMO_START
+    while day <= DEMO_END:
+        last_of_month = day.replace(day=calendar_mod.monthrange(day.year, day.month)[1])
+        rows.append({
+            "date": day,
+            "year": day.year,
+            "quarter": f"{day.year}-Q{(day.month - 1) // 3 + 1}",
+            "month_start": day.replace(day=1),
+            "month": day.strftime("%Y-%m %b"),
+            "week_start": day - timedelta(days=day.weekday()),
+            "day_of_week": day.strftime("%A"),
+            "is_month_start": day.day == 1,
+            "is_month_end": day == last_of_month,
+            "is_weekend": day.weekday() >= 5,
+        })
+        day += timedelta(days=1)
+    return pa.Table.from_pylist(rows)
 
 
 COURIERS = ["Trauma Freight", "Arasaka Logistics", "Militech Express", "Night Couriers"]
 
 
-def _shipments_frame(rng: random.Random) -> pl.DataFrame:
+def _shipments_frame(rng: random.Random) -> pa.Table:
     start = DEMO_START
     days = (DEMO_END - start).days
     rows = []
@@ -214,7 +224,7 @@ def _shipments_frame(rng: random.Random) -> pl.DataFrame:
             "delivery_hours": round(rng.gauss(speed, speed * 0.25) + 2, 1),
             "cost": round(packages * rng.uniform(8, 30) + speed * 1.5, 2),
         })
-    return pl.DataFrame(rows)
+    return pa.Table.from_pylist(rows)
 
 
 TICKET_CATEGORIES = [
@@ -226,7 +236,7 @@ TICKET_CHANNELS = ["call", "chat", "holo-call", "in-person"]
 TICKET_SLA_HOURS = {"low": 72, "medium": 48, "high": 24, "critical": 8}
 
 
-def _support_frame(rng: random.Random) -> pl.DataFrame:
+def _support_frame(rng: random.Random) -> pa.Table:
     start = DEMO_START
     days = (DEMO_END - start).days
     rows = []
@@ -243,20 +253,22 @@ def _support_frame(rng: random.Random) -> pl.DataFrame:
             "resolution_hours": resolution,
             "sla_breached": resolution > sla,
         })
-    return pl.DataFrame(rows)
+    return pa.Table.from_pylist(rows)
 
 
-def _upload(client, key: str, df: pl.DataFrame) -> None:
+def _upload(client, key: str, table: pa.Table) -> None:
     buf = io.BytesIO()
-    df.write_parquet(buf)
-    client.put_object(Bucket=config.BUCKET, Key=key, Body=buf.getvalue())
+    pq.write_table(table, buf)
+    client.put_object(Bucket=config.DEMO_BUCKET, Key=key, Body=buf.getvalue())
 
 
-def _upload_csv(client, key: str, df: pl.DataFrame) -> None:
-    client.put_object(Bucket=config.BUCKET, Key=key, Body=df.write_csv().encode())
+def _upload_csv(client, key: str, table: pa.Table) -> None:
+    buf = io.BytesIO()
+    pa_csv.write_csv(table, buf)
+    client.put_object(Bucket=config.DEMO_BUCKET, Key=key, Body=buf.getvalue())
 
 
-def _write_iceberg(table_root: str, df: pl.DataFrame) -> None:
+def _write_iceberg(table_root: str, table: pa.Table) -> None:
     """Create a fresh Iceberg table at s3://<bucket>/<table_root> and write
     `df` as its initial snapshot. Iceberg needs a catalog to allocate a
     location/schema/snapshot atomically — an in-memory SqlCatalog does that
@@ -267,27 +279,27 @@ def _write_iceberg(table_root: str, df: pl.DataFrame) -> None:
     from pyiceberg.catalog.sql import SqlCatalog
 
     catalog = SqlCatalog(
-        "seed", uri="sqlite:///:memory:", warehouse=f"s3://{config.BUCKET}",
-        **config.iceberg_storage_options(),
+        "seed", uri="sqlite:///:memory:", warehouse=f"s3://{config.DEMO_BUCKET}",
+        **config.iceberg_storage_options(config.DEMO_BUCKET),
     )
     catalog.create_namespace("seed")
-    table = catalog.create_table(
-        "seed.table", schema=df.to_arrow().schema,
-        location=f"s3://{config.BUCKET}/{table_root}",
+    iceberg_table = catalog.create_table(
+        "seed.table", schema=table.schema,
+        location=f"s3://{config.DEMO_BUCKET}/{table_root}",
     )
-    table.append(df.to_arrow())
+    iceberg_table.append(table)
 
 
-def _create_bucket(client) -> None:
+def _create_bucket(client, bucket: str, region: str) -> None:
     """us-east-1 is the one region S3's CreateBucket API treats as the
     implicit default: passing a LocationConstraint for it is *also*
     rejected, so it's the one region this must be left out for. Every other
     region needs it, or CreateBucket fails outright with
     IllegalLocationConstraintException instead of creating anything — moto
     enforces this exactly like real S3 does."""
-    kwargs = {"Bucket": config.BUCKET}
-    if config.AWS_REGION != "us-east-1":
-        kwargs["CreateBucketConfiguration"] = {"LocationConstraint": config.AWS_REGION}
+    kwargs = {"Bucket": bucket}
+    if region != "us-east-1":
+        kwargs["CreateBucketConfiguration"] = {"LocationConstraint": region}
     try:
         client.create_bucket(**kwargs)
     except client.exceptions.BucketAlreadyOwnedByYou:
@@ -302,37 +314,48 @@ def _create_bucket(client) -> None:
         # already exists (true by construction of that use case) and move
         # on; the list/read calls right after this fail loudly and
         # specifically if that assumption turns out to be wrong.
-        print(f"[cash-intel] no s3:CreateBucket permission for {config.BUCKET!r} "
+        print(f"[cash-intel] no s3:CreateBucket permission for {bucket!r} "
               f"— assuming it already exists and continuing read-only")
 
 
 def seed_bucket() -> bool:
-    """Create the bucket and upload demo parquet files. Returns True if seeded,
-    False if the bucket already had data."""
-    client = s3.client()
-    _create_bucket(client)
-    existing = client.list_objects_v2(Bucket=config.BUCKET, MaxKeys=1)
+    """Create the demo bucket and upload the demo datasets. Returns True if
+    seeded, False if it already had data (or the demo is switched off).
+
+    Everything here lands in config.DEMO_BUCKET on the demo store, never in
+    whatever bucket CI_BUCKET names. That distinction is the point: with a
+    real store configured the two are different places, and demo data has no
+    business being written into an account someone pays for — while the demo
+    models, which name the demo bucket by absolute path, keep answering
+    exactly as they do locally."""
+    if not config.DEMO_ENABLED:
+        return False
+    store = config.demo_store()
+    client = s3.client_for(store, config.DEMO_BUCKET)
+    _create_bucket(client, config.DEMO_BUCKET, store.region)
+    existing = client.list_objects_v2(Bucket=config.DEMO_BUCKET, MaxKeys=1)
     if existing.get("KeyCount", 0) > 0:
         return False
 
     rng = random.Random(2077)
     sales = _sales_frame(rng)
     # split by year so the semantic model reads a multi-file glob, like real life
-    for (year,), part in sales.group_by(pl.col("order_date").dt.year(), maintain_order=True):
-        _upload(client, f"sales/{year}.parquet", part)
+    years = sales.column("order_date").to_pylist()
+    for year in sorted({d.year for d in years}):
+        mask = pa.array([d.year == year for d in years])
+        _upload(client, f"sales/{year}.parquet", sales.filter(mask))
     _upload(client, "marketing/spend.parquet", _marketing_frame(rng))
     _upload_csv(client, "ref/products.csv", _products_frame())
     _upload_csv(client, "ref/regions.csv", _regions_frame())
     _upload_csv(client, "ref/territories.csv", _territories_frame())
-    write_deltalake(f"s3://{config.BUCKET}/logistics/shipments", _shipments_frame(rng),
-                    storage_options=config.delta_write_options())
+    write_deltalake(f"s3://{config.DEMO_BUCKET}/logistics/shipments", _shipments_frame(rng),
+                    storage_options=config.delta_write_options(config.DEMO_BUCKET))
     _write_iceberg("support/tickets", _support_frame(rng))
     _upload(client, "subscriptions/subs.parquet", _subscriptions_frame(rng))
     _upload(client, "ref/calendar.parquet", _calendar_frame())
 
     _upload_local_cache(client)
     _upload_raw_data(client)
-    _upload_local_data(client)
     return True
 
 
@@ -344,7 +367,7 @@ def _upload_local_cache(client) -> None:
         return
     for path in sorted(cache.rglob("*.parquet")):
         key = str(path.relative_to(cache))
-        client.upload_file(str(path), config.BUCKET, key)
+        client.upload_file(str(path), config.DEMO_BUCKET, key)
 
 
 def _upload_raw_data(client) -> None:
@@ -362,21 +385,32 @@ def _upload_raw_data(client) -> None:
         for path in sorted(dataset_dir.iterdir()):
             if path.suffix not in (".csv", ".parquet"):
                 continue
-            client.upload_file(str(path), config.BUCKET, f"{dataset_dir.name}/{path.name}")
+            client.upload_file(str(path), config.DEMO_BUCKET, f"{dataset_dir.name}/{path.name}")
 
 
-def _upload_local_data(client) -> None:
-    """config.LOCAL_DATA_DIR (gitignored, outside the repo's tracked
-    directories) caches every file a user has uploaded through the app
-    (POST /api/datasets/local, app/api/datasets.py) — the durable copy,
-    since the embedded emulator's bucket is in-memory and this function only
-    ever runs against a freshly-created (empty) one. Uploaded exactly like
-    _upload_raw_data above, just under local/<name>/ instead of <name>/, to
-    land on the same key each upload already used — recursively, since a
-    folder upload preserves its own subdirectory structure under <name>/."""
+def restore_local_uploads() -> int:
+    """Put every file uploaded through the app (POST /api/datasets/local,
+    app/api/datasets.py) back into the bucket it was uploaded to.
+
+    config.LOCAL_DATA_DIR (gitignored, outside the repo's tracked
+    directories) holds the durable copy, because the embedded emulator's
+    bucket is in memory and would otherwise lose an upload on every restart.
+    Uploaded exactly like _upload_raw_data above, just under local/<name>/
+    instead of <name>/, to land on the same key each upload already used —
+    recursively, since a folder upload preserves its own subdirectory
+    structure under <name>/.
+
+    Only ever runs against an *ephemeral* store. Re-uploading these to a real
+    bucket every start would resurrect anything deleted from outside the app
+    and re-pay for bytes already sitting there — and a real bucket needs no
+    help remembering what was written to it. Returns how many files it put
+    back."""
     root = config.LOCAL_DATA_DIR
-    if not root.is_dir():
-        return
+    store = config.primary_store()
+    if not root.is_dir() or not store.ephemeral:
+        return 0
+    client = s3.client(config.BUCKET)
+    restored = 0
     for dataset_dir in sorted(root.iterdir()):
         if not dataset_dir.is_dir():
             continue
@@ -385,6 +419,8 @@ def _upload_local_data(client) -> None:
                 continue
             rel = path.relative_to(dataset_dir).as_posix()
             client.upload_file(str(path), config.BUCKET, f"local/{dataset_dir.name}/{rel}")
+            restored += 1
+    return restored
 
 
 def seed_bootstrap_admin() -> bool:

@@ -840,9 +840,9 @@ def test_real_environment_wins_over_the_env_file(tmp_path, reloaded_config):
 
 
 def test_env_file_values_are_literal_not_shell_expanded(tmp_path, reloaded_config):
-    """A key is taken exactly as written — `$`, `#`, spaces and quotes inside
-    it are data, not syntax. Mangling a secret by expanding it would fail in
-    a way that looks like a bad key rather than a parsing bug."""
+    """A key is taken exactly as written — `$`, `#` and backticks inside it
+    are data, not syntax. Mangling a secret by expanding it would fail in a
+    way that looks like a bad key rather than a parsing bug."""
     env_file = tmp_path / ".env"
     env_file.write_text(
         "CI_LLM_API_KEY=sk-$HOME-a#b`c`-end\n"
@@ -851,7 +851,14 @@ def test_env_file_values_are_literal_not_shell_expanded(tmp_path, reloaded_confi
     )
     cfg = reloaded_config(env_file)
     assert cfg.LLM_API_KEY == "sk-$HOME-a#b`c`-end"
-    assert cfg.LLM_MODEL == "  spaced  "
+    # The parser's job ends at os.environ: quotes come off, and what was
+    # inside them reaches the process byte for byte.
+    assert os.environ["CI_LLM_MODEL"] == "  spaced  "
+    # What each *setting* then does with it is its own business, and every
+    # one of them trims — surrounding whitespace is never part of a model
+    # name, an endpoint or a bucket, and is exactly what a CRLF-edited .env
+    # or a `${VAR:-}` in docker-compose.yml leaves behind.
+    assert cfg.LLM_MODEL == "spaced"
 
 
 def test_a_missing_env_file_is_not_an_error(tmp_path, reloaded_config):

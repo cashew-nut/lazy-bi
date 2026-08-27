@@ -148,7 +148,7 @@ def test_form_save_flow_creates_model_with_unmatched_key_names(client):
             "joins": [],
             "dimensions": [{"name": "channel", "column": "channel", "label": "Channel",
                             "type": "categorical", "description": "", "spine": None, "geo": None}],
-            "measures": [{"name": "rows", "expr": "count()", "label": "Rows",
+            "measures": [{"name": "rows", "expr": "COUNT(*)", "label": "Rows",
                           "format": "number", "description": ""}],
         }],
     }
@@ -179,12 +179,12 @@ def test_form_save_flow_creates_two_unrelated_fact_tables(client):
             {"name": "orders",
              "source": {"path": "s3://cash-intel/sales/*.parquet", "format": "parquet"},
              "joins": [], "dimensions": [dimension("region"), dimension("channel")],
-             "measures": [{"name": "order_lines", "expr": "count()", "label": "Order Lines",
+             "measures": [{"name": "order_lines", "expr": "COUNT(*)", "label": "Order Lines",
                            "format": "number", "description": ""}]},
             {"name": "spend",
              "source": {"path": "s3://cash-intel/marketing/*.parquet", "format": "parquet"},
              "joins": [], "dimensions": [dimension("region")],
-             "measures": [{"name": "ad_spend", "expr": "sum(spend)", "label": "Ad Spend",
+             "measures": [{"name": "ad_spend", "expr": "SUM(spend)", "label": "Ad Spend",
                            "format": "currency", "description": ""}]},
         ],
         "dimension_imports": [
@@ -241,7 +241,7 @@ def test_form_save_flow_creates_model_with_interval_import(client):
             "joins": [],
             "dimensions": [{"name": "plan", "column": "plan", "label": "Plan",
                             "type": "categorical", "description": "", "spine": None, "geo": None}],
-            "measures": [{"name": "actives", "expr": "count_distinct(customer_id)",
+            "measures": [{"name": "actives", "expr": "COUNT(DISTINCT customer_id)",
                           "label": "Actives", "format": "number", "description": ""}],
         }],
         "dimension_imports": [{
@@ -304,22 +304,21 @@ def test_dataset_schema_bad_format_is_400(client):
 #    measure through the form silently stripped it and the reconstituted
 #    yaml then failed to compile — "the form says the model is invalid") ──
 
-def test_subscriptions_spec_includes_frame(client):
+def test_subscriptions_spec_includes_the_from_relation(client):
     spec = client.get("/api/models/subscriptions/spec").json()["spec"]
     framed = next(m for m in _dataset(spec, "subscriptions")["measures"]
                   if m["name"] == "median_tenure_days")
-    assert framed["frame"] and "group_by" in framed["frame"]
-    assert framed["frame_emits"] == ["churn_month"]
+    assert framed["from"] and "date_diff" in framed["from"]
+    assert framed["emits"] == ["churn_month"]
 
 
-def test_subscriptions_generate_round_trips_frame(client):
+def test_subscriptions_generate_round_trips_the_from_relation(client):
     """The exact form flow: GET .../spec -> POST /models/generate — must stay
-    ok and keep the frame block, not silently regenerate a broken measure."""
+    ok and keep the from: block, not silently regenerate a broken measure."""
     spec = client.get("/api/models/subscriptions/spec").json()["spec"]
     body = client.post("/api/models/generate", json=spec).json()
     assert body["ok"] is True, body.get("error")
-    assert "frame:" in body["yaml"]
-    assert "frame_emits:" in body["yaml"]
+    assert "from:" in body["yaml"] and "emits:" in body["yaml"]
     check = client.post("/api/models/validate", json={"yaml": body["yaml"]}).json()
     assert check["ok"] is True, check.get("error")
 
@@ -363,7 +362,7 @@ def test_generate_without_synonyms_key_still_works(client):
             "joins": [],
             "dimensions": [{"name": "channel", "column": "channel", "label": "Channel",
                             "type": "categorical", "description": "", "spine": None, "geo": None}],
-            "measures": [{"name": "rows", "expr": "count()", "label": "Rows",
+            "measures": [{"name": "rows", "expr": "COUNT(*)", "label": "Rows",
                           "format": "number", "description": ""}],
         }],
     }
@@ -375,52 +374,57 @@ def test_generate_without_synonyms_key_still_works(client):
 # ── /api/measures/check: the form's live per-row validation ─────
 
 def test_measure_check_valid_dsl(client):
-    res = client.post("/api/measures/check", json={"expr": "sum(revenue)", "columns": ["revenue"]})
+    res = client.post("/api/measures/check", json={"expr": "SUM(revenue)", "columns": ["revenue"]})
     assert res.json() == {"ok": True, "error": None, "window": False}
 
 
 def test_measure_check_unknown_column(client):
-    res = client.post("/api/measures/check", json={"expr": "sum(nope)", "columns": ["revenue"]}).json()
+    res = client.post("/api/measures/check", json={"expr": "SUM(nope)", "columns": ["revenue"]}).json()
     assert res["ok"] is False
     assert "nope" in res["error"]
 
 
 def test_measure_check_window_expr_uses_measure_names(client):
     res = client.post("/api/measures/check", json={
-        "expr": "running_total(revenue)", "columns": ["revenue"], "measure_names": ["revenue"],
+        "expr": "SUM(revenue) OVER w", "columns": ["revenue"], "measure_names": ["revenue"],
     }).json()
     assert res == {"ok": True, "error": None, "window": True}
     # a raw column that isn't also a sibling measure name is rejected in window mode
     bad = client.post("/api/measures/check", json={
-        "expr": "running_total(cost)", "columns": ["cost"], "measure_names": ["revenue"],
+        "expr": "SUM(cost) OVER w", "columns": ["cost"], "measure_names": ["revenue"],
     }).json()
     assert bad["ok"] is False
 
 
-def test_measure_check_frame_ok_and_bad_syntax(client):
+def test_measure_check_from_ok_and_bad_syntax(client):
     ok = client.post("/api/measures/check", json={
-        "expr": "pl.col(\"x\").median()",
-        "frame": "frame = lf.group_by(dims).agg(pl.col('x').sum())",
+        "expr": "MEDIAN(x)",
+        "from": "SELECT {dims}, SUM(x) AS x FROM {model} GROUP BY {dims}",
     }).json()
     assert ok == {"ok": True, "error": None, "window": False}
-    bad = client.post("/api/measures/check", json={"expr": "x", "frame": "frame = ("}).json()
+    bad = client.post("/api/measures/check", json={
+        "expr": "MEDIAN(x)", "from": "SELECT FROM WHERE"}).json()
     assert bad["ok"] is False
     assert "syntax" in bad["error"]
 
+    legacy = client.post("/api/measures/check", json={
+        "expr": "MEDIAN(x)", "frame": "frame = lf"}).json()
+    assert legacy["ok"] is False
+    assert "'frame:'" in legacy["error"]
 
-def test_measure_check_frame_emits_without_frame(client):
-    res = client.post("/api/measures/check", json={"expr": "sum(x)", "frame_emits": ["event_date"]}).json()
+
+def test_measure_check_emits_without_from(client):
+    res = client.post("/api/measures/check", json={"expr": "SUM(x)", "emits": ["event_date"]}).json()
     assert res["ok"] is False
-    assert "frame_emits" in res["error"]
+    assert "'emits' needs a 'from'" in res["error"]
 
 
-def test_measure_check_framed_requires_an_expr(client):
-    """A framed measure with valid frame syntax but a blank aggregation expr
-    must not be reported ok — the real load path (Measure.expr() ->
-    compile_expr) always requires one, even though validate_frame alone
-    (an empty snippet compiles fine as a no-op) wouldn't catch it."""
+def test_measure_check_a_from_relation_still_requires_an_expr(client):
+    """A `from:` block says what a measure reads, not what it computes, so the
+    aggregate is still required — reporting this ok would let a measure that
+    cannot load reach the yaml."""
     res = client.post("/api/measures/check", json={
-        "expr": "", "frame": "frame = lf.group_by(dims).agg(pl.col('x').sum())",
+        "expr": "", "from": "SELECT {dims}, x FROM {model}",
     }).json()
     assert res["ok"] is False
     assert "expression" in res["error"]
@@ -580,7 +584,7 @@ def test_bundle_form_save_flow_creates_importable_bundle(client):
             "dimension_imports:\n"
             "  - bundle: catalog\n    anchor_dataset: products_ref\n"
             "    left_on: channel\n    right_on: supplier\n"
-            "measures:\n  - name: rows\n    expr: count()\n"
+            "measures:\n  - name: rows\n    expr: COUNT(*)\n"
         )
         check = client.post("/api/models/validate", json={"yaml": model_yaml})
         assert check.json()["ok"] is True

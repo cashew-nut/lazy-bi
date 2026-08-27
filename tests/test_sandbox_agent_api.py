@@ -83,7 +83,7 @@ def _parse_sse(text):
 
 def _ask(client, **body):
     body.setdefault("request", "make it fast")
-    body.setdefault("cells", [_cell("c1", "df = read('x')")])
+    body.setdefault("cells", [_cell("c1", "SELECT * FROM read_parquet('x')")])
     res = client.post("/api/sandbox/agent/stream", json=body)
     assert res.status_code == 200, res.text
     return _parse_sse(res.text)
@@ -93,7 +93,7 @@ def _ask(client, **body):
 
 def test_agent_streams_progress_then_a_validated_proposal(client, fake_agent):
     fake_agent.replies.append(RawAgentCall("write_cells", {
-        "cells": [{"target": "c1", "source": "df = read('x').select('a')"}],
+        "cells": [{"target": "c1", "source": "SELECT a FROM read_parquet('x')"}],
         "notes": "projection pushdown",
     }))
     events = _ask(client)
@@ -104,7 +104,7 @@ def test_agent_streams_progress_then_a_validated_proposal(client, fake_agent):
     assert response["kind"] == "cells"
     assert response["notes"] == "projection pushdown"
     assert response["cells"] == [
-        {"target_id": "c1", "source": "df = read('x').select('a')", "syntax_error": None}]
+        {"target_id": "c1", "source": "SELECT a FROM read_parquet('x')", "syntax_error": None}]
     assert response["warnings"] == []
 
 
@@ -201,8 +201,9 @@ def test_agent_calls_are_audited(client, fake_agent):
 def _convert(client, **body):
     body.setdefault("name", "orders nb")
     body.setdefault("cells", [
-        _cell("c1", f'df = read("{SALES_SOURCE}")'),
-        _cell("c2", "output = df.head(5)"),
+        _cell("c1", f"CREATE OR REPLACE TEMP VIEW df AS "
+                    f"SELECT * FROM read_parquet('{SALES_SOURCE}')"),
+        _cell("c2", "SELECT * FROM df LIMIT 5"),
     ])
     res = client.post("/api/sandbox/convert", json=body)
     assert res.status_code == 200, res.text
@@ -234,7 +235,7 @@ def test_convert_with_lineage_renders_a_validated_section(client, fake_agent):
 
     # the lineage call is given the rewritten script and the detected sources
     context = fake_agent.lineage_calls[-1]
-    assert 'sources["sales"]' in context.script
+    assert 'FROM "sales"' in context.script
     assert [s["name"] for s in context.sources] == ["sales"]
 
     from app import pipelines
@@ -259,7 +260,7 @@ def test_convert_survives_an_agent_failure(client, fake_agent):
     fake_agent.lineage.append(AgentError("gateway timeout"))
     data = _convert(client, with_lineage=True)
     assert data["lineage"] == []
-    assert "sources[" in data["yaml"]
+    assert 'FROM "sales"' in data["yaml"]
     assert any("lineage generation failed" in w for w in data["warnings"])
 
 

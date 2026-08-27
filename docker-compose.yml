@@ -1,5 +1,9 @@
-# Two ways to run:
+# Three ways to run:
 #   docker compose up                      -> demo mode (embedded S3 emulator) on :8080
+#   CI_BUCKET=my-bucket docker compose up  -> the same, plus your real bucket:
+#                                             the demo catalog keeps its own
+#                                             in-container emulator, your data
+#                                             comes from AWS. Credentials below.
 #   docker compose --profile minio up      -> also starts MinIO + a second app
 #                                             on :8081 backed by it
 # First start prints the bootstrap admin's one-time password in the compose
@@ -20,6 +24,35 @@ services:
     ports:
       - "8080:8080"
     environment:
+      CI_S3_ENDPOINT: ${CI_S3_ENDPOINT:-}
+      # Object store. Leave every one of these unset for the fully-local demo.
+      # For a real bucket, CI_BUCKET is the only required setting: leave
+      # CI_S3_ENDPOINT unset and AWS is addressed by region, the way it wants
+      # to be. Set CI_S3_ENDPOINT only for MinIO/LocalStack/an S3-compatible
+      # vendor. The demo bucket keeps its own in-container emulator either
+      # way, so the built-in catalog goes on working next to your data —
+      # CI_DEMO=0 turns it off entirely.
+      #
+      # Credentials: AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, or AWS_PROFILE
+      # against the ~/.aws mounted read-only below (SSO included — the
+      # container reads the same cached token the CLI refreshes on the host),
+      # or neither, and boto3's own chain finds the instance/task role. Each
+      # is passed through as `${VAR:-}`, which is empty when you haven't set
+      # it — app/config.py reads empty as unset for exactly this reason.
+      CI_BUCKET: ${CI_BUCKET:-}
+      CI_BUCKET_PREFIX: ${CI_BUCKET_PREFIX:-}
+      CI_DEMO: ${CI_DEMO:-}
+      CI_LIST_MAX_KEYS: ${CI_LIST_MAX_KEYS:-}
+      AWS_PROFILE: ${AWS_PROFILE:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      AWS_REGION: ${AWS_REGION:-}
+      # A container gets the *host's* core count and RAM from DuckDB unless
+      # told otherwise, which is how a memory limit set on the container turns
+      # into an OOM kill instead of a spill to disk.
+      CI_DUCKDB_THREADS: ${CI_DUCKDB_THREADS:-}
+      CI_DUCKDB_MEMORY_LIMIT: ${CI_DUCKDB_MEMORY_LIMIT:-}
       CI_LLM_API_KEY: ${CI_LLM_API_KEY:-}
       CI_LLM_MODEL: ${CI_LLM_MODEL:-claude-sonnet-5}
       CI_LLM_BASE_URL: ${CI_LLM_BASE_URL:-}
@@ -30,6 +63,11 @@ services:
       CI_LLM_API_VERSION: ${CI_LLM_API_VERSION:-}
       CI_LLM_AWS_REGION: ${CI_LLM_AWS_REGION:-}
     volumes:
+      # So AWS_PROFILE (SSO included) resolves against the host's own config
+      # and its cached token, read-only. Docker creates ~/.aws empty on a host
+      # that hasn't got one, which is harmless — the other credential paths
+      # (static keys, instance role) don't read it at all.
+      - ~/.aws:/root/.aws:ro
       - app-data:/data              # sqlite: visuals, dashboards, users, sessions
       - ./models:/srv/models        # edit semantic models from the host, live
       - ./dimensions:/srv/dimensions  # shared dimension bundles, editable live too
@@ -60,9 +98,11 @@ services:
     ports:
       - "8081:8080"
     environment:
-      CI_S3_ENDPOINT: http://minio:9000   # disables the embedded emulator
+      CI_S3_ENDPOINT: http://minio:9000   # every bucket, demo included, lives here
       AWS_ACCESS_KEY_ID: cashintel
       AWS_SECRET_ACCESS_KEY: cashintel-secret
+      CI_DUCKDB_THREADS: ${CI_DUCKDB_THREADS:-}
+      CI_DUCKDB_MEMORY_LIMIT: ${CI_DUCKDB_MEMORY_LIMIT:-}
       CI_LLM_API_KEY: ${CI_LLM_API_KEY:-}
       CI_LLM_MODEL: ${CI_LLM_MODEL:-claude-sonnet-5}
       CI_LLM_BASE_URL: ${CI_LLM_BASE_URL:-}

@@ -1,9 +1,9 @@
-"""Tiny in-process TTL cache for read-only S3 lookups (schema introspection,
-spine-dimension bounds) — see the callers in app/engine.py for why: polars
-re-resolves a source's schema (and, for an unbounded spine query, its min/
-max) from S3 on every call, and several independent code paths (editor
-introspection, the measure editor, every query a dashboard tile runs)
-routinely ask the same question moments apart.
+"""Tiny in-process TTL cache for derived answers about the bucket (a
+relation's schema, a source's object listing, a spine dimension's bounds) —
+see the callers in app/engine.py and app/duck.py for why: several independent
+code paths (editor introspection, the measure editor, every query a dashboard
+tile runs) routinely ask the same question moments apart, and each answer
+costs at least one round trip to derive.
 
 A short TTL, not an invalidation-tracked cache: the backing data can change
 (new rows land in a parquet file) without this process finding out, so

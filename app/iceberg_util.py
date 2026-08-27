@@ -10,14 +10,18 @@ catalog to allocate a location/schema/snapshot atomically, which only
 app/seed.py's demo data uses (a throwaway in-memory pyiceberg SqlCatalog,
 discarded once the table is written) — nothing at request time depends on a
 catalog existing.
+
+Resolving the snapshot here rather than letting DuckDB find it is deliberate:
+`iceberg_scan` on a bare table root refuses to guess a version unless
+`unsafe_enable_version_guessing` is set, which globs the metadata directory
+and can pick up an uncommitted snapshot. Handing it the resolved path keeps
+the read deterministic and the setting off.
 """
 from __future__ import annotations
 
 import re
 
-import polars as pl
-
-from . import config, s3
+from . import s3
 
 _METADATA_RE = re.compile(r"^(\d+)-.*\.metadata\.json$")
 
@@ -35,7 +39,7 @@ def resolve_metadata_path(path: str) -> str:
     its current (highest-versioned) metadata.json."""
     bucket, root = _split_s3_path(path)
     prefix = f"{root}/metadata/"
-    client = s3.client()
+    client = s3.client(bucket)
     paginator = client.get_paginator("list_objects_v2")
     best_version, best_key = -1, None
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
@@ -47,9 +51,3 @@ def resolve_metadata_path(path: str) -> str:
     if best_key is None:
         raise ValueError(f"no iceberg metadata.json found under '{path}/metadata/'")
     return f"s3://{bucket}/{best_key}"
-
-
-def scan(path: str) -> pl.LazyFrame:
-    """Lazily scan an iceberg table given its root directory."""
-    metadata_path = resolve_metadata_path(path)
-    return pl.scan_iceberg(metadata_path, storage_options=config.iceberg_storage_options())

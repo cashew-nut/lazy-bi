@@ -16,7 +16,7 @@ result, and all three live here rather than in the engine:
      a wider result set, still fully pushed down, still capped.
 
   2. **It is decomposed.** Re-aggregating an already-aggregated extract is
-     only sound for measures that decompose — see measure_dsl.rollup_plan.
+     only sound for measures that decompose — see sqlgrammar.rollup_plan.
      Each measure is replaced by its additive components (requested through
      the ordinary inline-measure path, so the engine runs unchanged), and
      the browser recomputes the measure from the rolled-up components.
@@ -26,20 +26,22 @@ result, and all three live here rather than in the engine:
 
   3. **It carries its own coarser buckets.** A session grain override that
      asks for a *coarser* bucket than the extract holds is answered locally
-     (R3), from a precomputed column truncated by polars itself — so the
-     browser never does date arithmetic that could disagree with the engine.
+     (R3), from a column the engine truncated with `date_trunc` — so the
+     browser never does date arithmetic that could disagree with it.
 
 Everything else — model resolution, authorization, filter pushdown, the
 composite merge — is engine.run_query's existing path, untouched (FR-001/
-FR-002). No pyarrow: polars writes Arrow IPC natively (FR-015).
+FR-002).
 """
 from __future__ import annotations
 
 from typing import Optional
 
-import polars as pl
+import pyarrow as pa
+import pyarrow.compute as pc
+import pyarrow.ipc as pa_ipc
 
-from . import config, engine, measure_dsl, semantic
+from . import config, engine, semantic, sqlgrammar
 from .semantic import Model, ModelError
 
 # component measure columns (one per additive part of a measure) and the
@@ -132,19 +134,19 @@ def _measure_meta(model: Model, name: str, inline: dict) -> dict:
 
 
 def _measure_text(model: Model, name: str, inline: dict) -> str:
-    """The DSL text behind a measure, whichever kind it is. Raises
-    NotInstantable for the one construct that has no DSL text at all — a
-    measure computed over an intermediary frame."""
+    """The SQL text behind a measure, whichever kind it is. Raises
+    NotInstantable for the one construct whose expression means nothing on its
+    own — a measure that aggregates a `from:` relation."""
     if name in inline:
         return inline[name]["expr"]
     try:
         meas = model.measure(name)
     except ModelError as exc:
         raise NotInstantable(str(exc)) from exc
-    if meas.frame_source:
+    if meas.from_source:
         raise NotInstantable(
-            f"measure '{name}' is computed over an intermediary frame, which can't be "
-            "re-aggregated in the browser"
+            f"measure '{name}' aggregates a from: relation, which can't be re-aggregated "
+            "in the browser"
         )
     return meas.expr_source
 
@@ -244,7 +246,7 @@ def plan(model: Model, query: dict, cross_dimensions: list,
     by_expr: dict[tuple, dict] = {}
     measures: list[dict] = []
     for name in measure_names:
-        plan_ = measure_dsl.rollup_plan(_measure_text(model, name, inline))
+        plan_ = sqlgrammar.rollup_plan(_measure_text(model, name, inline))
         if plan_ is None:
             raise NotInstantable(
                 f"measure '{name}' can't be re-aggregated from an already-aggregated "
@@ -365,34 +367,34 @@ def build(model: Model, query: dict, cross_dimensions: list,
 def _build(model: Model, query: dict, cross_dimensions: list,
            interactive_filters: Optional[list], hoist: bool) -> tuple[bytes, dict]:
     planned = plan(model, query, cross_dimensions, interactive_filters, hoist=hoist)
-    df, columns, elapsed_ms = engine.run_query_frame(
+    table, columns, elapsed_ms = engine.run_query_arrow(
         model, planned["query"], row_cap=config.EXTRACT_MAX_ROWS + 1)
-    if df.height > config.EXTRACT_MAX_ROWS:
-        raise CapExceeded("rows", df.height, 0)
+    if table.num_rows > config.EXTRACT_MAX_ROWS:
+        raise CapExceeded("rows", table.num_rows, 0)
 
-    df = _add_coarser_grains(df, planned["dimensions"])
+    table = _add_coarser_grains(table, planned["dimensions"])
     for dim in planned["dimensions"]:
-        # a "time" dimension whose source column isn't actually temporal has
-        # no precomputed buckets — drop the promise rather than let the
-        # browser reach for a column that was never written
+        # a "time" dimension whose source column isn't actually temporal has no
+        # precomputed buckets — drop the promise rather than let the browser
+        # reach for a column that was never written
         if dim.get("coarser"):
-            dim["coarser"] = {g: c for g, c in dim["coarser"].items() if c in df.columns}
-    df = _normalize(df)
+            dim["coarser"] = {g: c for g, c in dim["coarser"].items()
+                              if c in table.column_names}
+    table = _normalize(table)
     # the browser has to coerce a filter value the same way engine._coerce
     # does, and after normalization every dimension column is one of three
     # things — so say which, rather than make it guess from the value
     for dim in planned["dimensions"]:
-        dtype = df.schema.get(dim["name"])
-        dim["value_type"] = ("number" if dtype is not None and dtype.is_numeric()
-                             else "boolean" if dtype == pl.Boolean else "string")
-    # compat_level=oldest: polars' current Arrow output encodes strings as
-    # `utf8_view`, which Perspective's reader rejects outright ("Could not
-    # load arrow column of type `utf8_view`"). The oldest compatibility level
-    # writes the long-established large_utf8 layout every Arrow reader
-    # understands — same values, same zero-copy handoff.
-    payload = df.write_ipc_stream(None, compat_level=pl.CompatLevel.oldest()).getvalue()
+        index = table.column_names.index(dim["name"]) if dim["name"] in table.column_names else None
+        dtype = table.schema.field(index).type if index is not None else None
+        dim["value_type"] = (
+            "number" if dtype is not None and (pa.types.is_integer(dtype)
+                                               or pa.types.is_floating(dtype))
+            else "boolean" if dtype is not None and pa.types.is_boolean(dtype)
+            else "string")
+    payload = _ipc_stream(table)
     if len(payload) > config.EXTRACT_MAX_BYTES:
-        raise CapExceeded("bytes", df.height, len(payload))
+        raise CapExceeded("bytes", table.num_rows, len(payload))
 
     by_name = {c["name"]: c for c in columns}
     display = [by_name[d["name"]] for d in planned["dimensions"]
@@ -401,13 +403,13 @@ def _build(model: Model, query: dict, cross_dimensions: list,
         for m in planned["measures"]
     ]
     meta = {
-        "row_count": df.height,
+        "row_count": table.num_rows,
         "byte_size": len(payload),
         "elapsed_ms": elapsed_ms,
         "columns": display,                      # what the chart renderers read
         "dimensions": planned["dimensions"],
         "measures": planned["measures"],
-        "passthrough": [p for p in planned["passthrough"] if p["col"] in df.columns],
+        "passthrough": [p for p in planned["passthrough"] if p["col"] in table.column_names],
         # the dashboard filters this extract can answer a *value change* on
         # without coming back; anything else stayed baked in, and changing it
         # still costs a re-fetch
@@ -416,39 +418,93 @@ def _build(model: Model, query: dict, cross_dimensions: list,
     return payload, meta
 
 
-def _add_coarser_grains(df: pl.DataFrame, dimensions: list) -> pl.DataFrame:
+def _ipc_stream(table: pa.Table) -> bytes:
+    """The extract as an Arrow IPC stream.
+
+    Written through pyarrow rather than by the query engine: DuckDB has no
+    IPC writer of its own, and the handoff is zero-copy either way since the
+    result already *is* an Arrow table."""
+    sink = pa.BufferOutputStream()
+    with pa_ipc.new_stream(sink, table.schema) as writer:
+        writer.write_table(table)
+    return sink.getvalue().to_pybytes()
+
+
+def _add_coarser_grains(table: pa.Table, dimensions: list) -> pa.Table:
     """Precompute, for each time dimension, the coarser buckets a session
     grain override could ask for. Truncating an already-truncated date to a
     coarser (nesting) grain gives the same bucket as truncating the raw date,
     so these are exactly the values a re-fetch would have returned — computed
-    by polars here rather than by date arithmetic in the browser."""
-    exprs = []
+    here rather than by date arithmetic in the browser."""
     for dim in dimensions:
-        if not dim.get("coarser") or dim["name"] not in df.columns:
+        if not dim.get("coarser") or dim["name"] not in table.column_names:
             continue
-        if not df.schema[dim["name"]].is_temporal():
+        column = table.column(dim["name"])
+        if not (pa.types.is_temporal(column.type)):
             continue
-        for grain, column in dim["coarser"].items():
-            exprs.append(pl.col(dim["name"]).dt.truncate(grain).alias(column))
-    return df.with_columns(exprs) if exprs else df
+        for grain, name in dim["coarser"].items():
+            unit = _ARROW_GRAIN_UNIT[grain]
+            multiple = 3 if grain == "1q" else 1
+            truncated = pc.floor_temporal(column, multiple=multiple, unit=unit,
+                                          week_starts_monday=True)
+            table = table.append_column(name, truncated)
+    return table
 
 
-def _normalize(df: pl.DataFrame) -> pl.DataFrame:
-    """Coerce every column to a dtype Arrow IPC round-trips into Perspective,
+# the five grains as pyarrow floor_temporal units; a quarter is three months,
+# which is how DuckDB's own date_trunc('quarter', …) lands too
+_ARROW_GRAIN_UNIT = {"1d": "day", "1w": "week", "1mo": "month",
+                     "1q": "month", "1y": "year"}
+
+
+def _normalize(table: pa.Table) -> pa.Table:
+    """Coerce every column to a type Arrow IPC round-trips into Perspective,
     keeping the *values* identical to what the JSON path produces.
 
-    Temporal columns become the same ISO strings `df.write_json()` emits, so a
+    Temporal columns become the same ISO strings engine.run_query emits, so a
     cross-filter value clicked on a live tile compares equal to one in an
     extract, and grouping by a date is grouping by the same token either way.
+    Strings are written as `large_string`: Arrow's newer `string_view` layout
+    is rejected outright by Perspective's reader, and the long-established
+    layout carries the same values.
     """
-    exprs = []
-    for name, dtype in df.schema.items():
-        if dtype.is_temporal():
-            exprs.append(pl.col(name).cast(pl.Utf8))
-        elif dtype == pl.Decimal:
-            exprs.append(pl.col(name).cast(pl.Float64))
-        elif dtype in (pl.Categorical, pl.Enum, pl.Null):
-            exprs.append(pl.col(name).cast(pl.Utf8))
-        elif dtype.is_unsigned_integer():
-            exprs.append(pl.col(name).cast(pl.Int64))
-    return df.with_columns(exprs) if exprs else df
+    fields, columns = [], []
+    for index, field in enumerate(table.schema):
+        column = table.column(index)
+        dtype = field.type
+        if pa.types.is_timestamp(dtype) or pa.types.is_date(dtype) or pa.types.is_time(dtype):
+            column = _iso_strings(column)
+        elif pa.types.is_decimal(dtype):
+            column = column.cast(pa.float64())
+        elif pa.types.is_dictionary(dtype) or pa.types.is_null(dtype):
+            column = column.cast(pa.large_string())
+        elif pa.types.is_unsigned_integer(dtype):
+            column = column.cast(pa.int64())
+        elif pa.types.is_string(dtype) or pa.types.is_large_string(dtype):
+            column = column.cast(pa.large_string())
+        fields.append(pa.field(field.name, column.type))
+        columns.append(column)
+    return pa.Table.from_arrays(
+        [c.combine_chunks() if isinstance(c, pa.ChunkedArray) else c for c in columns],
+        schema=pa.schema(fields))
+
+
+def _iso_strings(column):
+    """A temporal column as the ISO strings the JSON path produces: a date as
+    `2024-01-01`, a timestamp as `2024-01-01T00:00:00`. Written out rather than
+    left to a plain cast, which would give a date a time component it never
+    had and break equality against a live tile's value.
+
+    The trailing-zeros trim is what matches `datetime.isoformat()`, which omits
+    the fractional part only when it is zero — a truncated bucket and a raw
+    timestamp both have to render the same way here as they do in JSON, or a
+    cross-filter value clicked on a live tile won't match one in an extract."""
+    dtype = column.type
+    if pa.types.is_date(dtype):
+        return pc.strftime(column, format="%Y-%m-%d").cast(pa.large_string())
+    # %S already carries the fractional part at sub-second precision, so the
+    # only work left is dropping it when it is all zeros
+    fmt = "%H:%M:%S" if pa.types.is_time(dtype) else "%Y-%m-%dT%H:%M:%S"
+    formatted = pc.strftime(column, format=fmt)
+    trimmed = pc.replace_substring_regex(formatted, pattern=r"\.0+$", replacement="")
+    return trimmed.cast(pa.large_string())

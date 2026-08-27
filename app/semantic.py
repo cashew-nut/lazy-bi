@@ -1,10 +1,12 @@
 """Semantic layer: YAML model definitions on top of S3 files.
 
-A model maps a file source (parquet/csv/delta/iceberg on S3) to named dimensions and
-measures, optionally joining in other sources (lookup/dimension tables).
-Measures are written in polars expression syntax and evaluated in a namespace
-containing only `pl`. Models are trusted configuration, same as the
-application code — do not load YAML from untrusted users.
+A model maps a file source (parquet/csv/delta/iceberg on S3) to named
+dimensions and measures, optionally joining in other sources (lookup/dimension
+tables). Measures are SQL — a `expr:` holding an aggregate, and optionally a
+`from:` holding the SELECT that aggregate reads. Both go through
+app/sqlgrammar.py before they reach a connection, so nothing here has to
+assume the YAML came from someone trusted; the structural parts of a model
+(sources, joins, imports) still do.
 """
 from __future__ import annotations
 
@@ -14,23 +16,9 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Optional
 
-import polars as pl
 import yaml
 
-from . import measure_dsl
-
-_EVAL_GLOBALS = {"__builtins__": {}, "pl": pl}
-
-# frame snippets are multi-statement python where basics like list()/dict()/
-# len() are legitimately useful; expose a small utility subset (the empty
-# __builtins__ above is hygiene, not a sandbox — models are trusted
-# configuration either way)
-_FRAME_BUILTINS = {
-    f.__name__: f for f in (
-        abs, dict, enumerate, float, int, len, list, max, min,
-        range, round, set, sorted, str, sum, tuple, zip,
-    )
-}
+from . import sqlgrammar
 
 TIME_GRAINS = {"1d": "Day", "1w": "Week", "1mo": "Month", "1q": "Quarter", "1y": "Year"}
 SOURCE_FORMATS = ("parquet", "csv", "delta", "iceberg")
@@ -52,58 +40,41 @@ class ModelError(Exception):
     pass
 
 
-def compile_expr(source: str, owner: str = "expression") -> pl.Expr:
-    """Evaluate polars expression syntax (trusted config / single-user input)."""
+MODEL_RELATION = "__model"
+"""The name a measure's `from:` block uses for the fact scan.
+
+`{model}` in authored YAML is substituted with this before validation, so the
+validator's "which tables may this name" rule has one concrete answer, and the
+engine's own CTE carries the same name."""
+
+
+def render_from_block(source: str, dims: list[str]) -> str:
+    """A `from:` block with its placeholders filled in.
+
+    `{model}` becomes the engine's fact CTE. `{dims}` becomes the query's
+    grouping columns — always at least one, because the engine carries a
+    constant grouping column when the query groups by nothing, which is what
+    makes `SELECT {dims}, x` and `GROUP BY {dims}, y` safe to write
+    unconditionally."""
+    columns = ", ".join(f'"{d}"' for d in dims) if dims else "TRUE"
+    return source.replace("{model}", MODEL_RELATION).replace("{dims}", columns)
+
+
+def validate_from_block(source: str, owner: str, dims: Optional[list[str]] = None) -> str:
+    """Load-time and query-time check for a measure's `from:` block.
+
+    At load time `dims` is None and a single placeholder column stands in for
+    the query's grouping, which is enough to check everything structural: the
+    block is one SELECT, it names no table but the model and its own CTEs, and
+    it calls no table function. At query time the real dimensions are
+    substituted and the same check runs again over the real text."""
     try:
-        expr = eval(source, _EVAL_GLOBALS)  # noqa: S307 - see module docstring
-    except Exception as exc:
-        raise ModelError(f"{owner}: cannot evaluate expression: {exc}") from exc
-    if not isinstance(expr, pl.Expr):
-        raise ModelError(f"{owner}: expression is not a polars Expr")
-    return expr
-
-
-def validate_frame(source: str, owner: str) -> None:
-    """Load-time syntax check for a measure's intermediary-frame snippet — it
-    cannot be fully evaluated until query time, when a live scan exists."""
-    try:
-        compile(source, f"<{owner}>", "exec")
-    except SyntaxError as exc:
-        raise ModelError(f"{owner}: invalid frame syntax: {exc}") from exc
-
-
-def compile_frame(source: str, lf: pl.LazyFrame, dims: list[str], owner: str) -> pl.LazyFrame:
-    """Evaluate a measure's intermediary-frame snippet (trusted config, like
-    compile_expr). The snippet sees `lf` (the filtered scan, with the query's
-    dimension columns already materialized under their semantic names),
-    `dims` (the list of those column names) and `pl`. It is either a single
-    expression, or statements that assign the result to a variable named
-    `frame`; either way it must produce a LazyFrame that still carries the
-    `dims` columns so the engine can aggregate it at the query's grain."""
-    ns: dict = {"__builtins__": _FRAME_BUILTINS, "pl": pl, "lf": lf, "dims": list(dims)}
-    try:
-        try:
-            code = compile(source, f"<{owner}>", "eval")
-        except SyntaxError:
-            code = None
-        if code is not None:
-            result = eval(code, ns)  # noqa: S307 - see module docstring
-        else:
-            exec(compile(source, f"<{owner}>", "exec"), ns)  # noqa: S102
-            if "frame" not in ns:
-                raise ModelError(
-                    f"{owner}: frame snippet must assign its result to a variable named 'frame'"
-                )
-            result = ns["frame"]
-    except ModelError:
-        raise
-    except Exception as exc:
-        raise ModelError(f"{owner}: cannot evaluate frame: {exc}") from exc
-    if isinstance(result, pl.DataFrame):
-        result = result.lazy()
-    if not isinstance(result, pl.LazyFrame):
-        raise ModelError(f"{owner}: frame did not produce a polars LazyFrame")
-    return result
+        return sqlgrammar.compile_relation(
+            render_from_block(source, dims if dims is not None else ["__dim"]),
+            allowed_tables={MODEL_RELATION},
+        )
+    except sqlgrammar.SqlCompileError as exc:
+        raise ModelError(f"{owner}: {exc}") from exc
 
 
 @dataclass
@@ -185,27 +156,45 @@ class Measure:
     expr_source: str
     format: str = "number"  # number | currency | percent
     description: str = ""
-    # optional intermediary step: a python snippet building a derived LazyFrame
-    # (business logic) that expr_source then aggregates over — see compile_frame
-    frame_source: Optional[str] = None
-    # dimensions the frame computes itself (columns of the derived frame, e.g.
-    # a per-entity milestone date): excluded from `dims` during the step, and
-    # grouped — time grains included — on the frame's output afterwards
-    frame_emits: list[str] = field(default_factory=list)
+    # optional intermediary step: the SQL SELECT that expr_source aggregates
+    # over, instead of the fact scan. See render_from_block for its two
+    # placeholders, and contracts/measure-sql.md for the shape.
+    from_source: Optional[str] = None
+    # dimensions the block computes itself (columns of the derived relation,
+    # e.g. a per-entity milestone date): excluded from {dims} during the step,
+    # and grouped — time grains included — on its output afterwards
+    emits: list[str] = field(default_factory=list)
     # see Dimension.synonyms — same advisory-only contract, never a second
     # valid identifier for Model.measure()
     synonyms: list[str] = field(default_factory=list)
 
-    def expr(self, schema: Optional["pl.Schema"] = None) -> pl.Expr:
-        # framed measures keep the pre-existing eval-based path (authenticated-
-        # only — see app/api/models.py); every other measure compiles through
-        # the safe DSL, for both model and inline measures alike.
-        if self.frame_source is not None:
-            return compile_expr(self.expr_source, f"measure '{self.name}'").alias(self.name)
+    def sql(self, schema: Optional[dict] = None, *, parameter_values: Optional[dict] = None,
+            window_spec: str = "") -> str:
+        """The SQL to embed for this measure, rendered from its own validated
+        AST rather than from the author's text.
+
+        `schema` is the relation the expression reads — the fact scan, the
+        `from:` block's output, or (for a window measure) the aggregated
+        result; None skips the column-existence check, which is what model load
+        does rather than fetching a schema from S3 just to parse config.
+        `window_spec` is the engine's PARTITION BY/ORDER BY, known only once a
+        query has resolved its dimensions; without one a window measure still
+        validates, against an empty window, which is all a load-time check
+        needs."""
         try:
-            return measure_dsl.compile_measure(self.expr_source, schema, alias=self.name)
-        except measure_dsl.MeasureCompileError as exc:
+            return sqlgrammar.compile_expression(
+                self.expr_source, schema, window=bool(window_spec) or self.is_window,
+                window_spec=window_spec, parameter_values=parameter_values,
+            )
+        except sqlgrammar.SqlCompileError as exc:
             raise ModelError(f"measure '{self.name}': {exc}") from exc
+
+    @property
+    def is_window(self) -> bool:
+        """Does this measure read across already-aggregated rows? Bare names
+        inside one are sibling measures, and it is computed after the
+        group-by rather than in it."""
+        return sqlgrammar.is_window_expr(self.expr_source)
 
 
 @dataclass
@@ -295,7 +284,7 @@ class ImportBinding:
 @dataclass
 class ModelPart:
     """One connected component of a model's dataset graph: a fact table plus
-    everything related to it, scanned as one joined frame.
+    everything related to it, scanned as one joined relation.
 
     A model's datasets need not all be related to each other — two fact tables
     that share nothing but a common dimension model are the ordinary case (see
@@ -419,7 +408,7 @@ class Model:
             "measures": [
                 {"name": m.name, "label": m.label, "format": m.format,
                  "description": m.description, "expr": m.expr_source,
-                 "frame": m.frame_source, "frame_emits": m.frame_emits,
+                 "from": m.from_source, "emits": m.emits,
                  "synonyms": m.synonyms}
                 for m in self.measures.values()
             ],
@@ -559,21 +548,26 @@ def _parse_measures(raw_list: list, owner: str) -> dict[str, Measure]:
     dimension bundle's never do (see _parse_dataset)."""
     measures: dict[str, Measure] = {}
     for m in raw_list:
+        if "frame" in m or "frame_emits" in m:
+            raise ModelError(
+                f"{owner}: measure '{m.get('name')}': 'frame:' was the python "
+                "intermediary-frame construct and is gone — write the same step as "
+                "SQL under 'from:' (and 'emits:' for a dimension it computes itself)")
         meas = Measure(
             name=m["name"],
             label=m.get("label", m["name"].replace("_", " ").title()),
             expr_source=m["expr"],
             format=m.get("format", "number"),
             description=m.get("description", ""),
-            frame_source=m.get("frame"),
-            frame_emits=_as_list(m["frame_emits"]) if m.get("frame_emits") else [],
+            from_source=m.get("from"),
+            emits=_as_list(m["emits"]) if m.get("emits") else [],
             synonyms=_as_list(m["synonyms"]) if m.get("synonyms") else [],
         )
-        if meas.frame_source:
-            validate_frame(meas.frame_source, f"measure '{meas.name}'")
-        elif meas.frame_emits:
-            raise ModelError(f"{owner}: measure '{meas.name}': 'frame_emits' needs a 'frame'")
-        meas.expr()  # validate at load time
+        if meas.from_source:
+            validate_from_block(meas.from_source, f"{owner}: measure '{meas.name}'")
+        elif meas.emits:
+            raise ModelError(f"{owner}: measure '{meas.name}': 'emits' needs a 'from'")
+        meas.sql()  # validate at load time
         measures[meas.name] = meas
     return measures
 
@@ -759,8 +753,9 @@ def _parse_model(raw: dict, origin: Path) -> Model:
 
 
 class _BlockStrDumper(yaml.SafeDumper):
-    """SafeDumper that renders multi-line strings (frame snippets) as literal
-    `|` blocks instead of quoted strings full of \\n escapes."""
+    """SafeDumper that renders multi-line strings (a measure's `from:` block,
+    a pipeline's `sql:`) as literal `|` blocks instead of quoted strings full
+    of \\n escapes."""
 
 
 def _repr_str(dumper: yaml.SafeDumper, data: str):
@@ -1004,7 +999,7 @@ def _measure_to_spec(m: Measure) -> dict:
     return {
         "name": m.name, "label": m.label, "expr": m.expr_source,
         "format": m.format, "description": m.description,
-        "frame": m.frame_source, "frame_emits": list(m.frame_emits),
+        "from": m.from_source, "emits": list(m.emits),
         "synonyms": list(m.synonyms),
     }
 
@@ -1119,10 +1114,10 @@ def _spec_measure_entries(measures: list[dict]) -> list[dict]:
             entry["format"] = m["format"]
         if m.get("description"):
             entry["description"] = m["description"]
-        if m.get("frame"):
-            entry["frame"] = m["frame"]
-        if m.get("frame_emits"):
-            entry["frame_emits"] = list(m["frame_emits"])
+        if m.get("from"):
+            entry["from"] = m["from"]
+        if m.get("emits"):
+            entry["emits"] = list(m["emits"])
         if m.get("synonyms"):
             entry["synonyms"] = list(m["synonyms"])
         entry["expr"] = m["expr"]
@@ -1323,6 +1318,7 @@ def group_objects(objects: list[dict], bucket: str) -> list[dict]:
         members = table_members[root]
         datasets.append({
             "key": root,
+            "bucket": bucket,
             "path": f"s3://{bucket}/{root}",
             "format": fmt,
             "format_ambiguous": False,
@@ -1343,6 +1339,7 @@ def group_objects(objects: list[dict], bucket: str) -> list[dict]:
         glob = f"s3://{bucket}/{prefix + '/' if prefix else ''}*{ext}"
         datasets.append({
             "key": prefix,
+            "bucket": bucket,
             "path": glob,
             "format": fmt,
             "format_ambiguous": ambiguous,
@@ -1510,7 +1507,7 @@ def _join_chain(
     """Order one component's datasets into a join chain starting at `root`, and
     render each edge as the Join engine.scan() applies.
 
-    Each join is applied with the already-accumulated side as polars' left
+    Each join is applied with the already-accumulated side as the left
     operand and `how` taken from the edge as declared — so the root fact table
     (and anything already pulled in) is always preserved in full, gaining
     nullable columns for anything only reachable in the reverse of how the
@@ -1554,7 +1551,7 @@ def _build_part(model: Model, members: list[str]) -> ModelPart:
     declares a measure, since that is the fact table the rest look up against;
     a component of pure lookups (no measures anywhere) roots at its first
     declared dataset. Dimensions and measures are pooled across the whole
-    component: they are evaluated against one joined frame, so a dimension
+    component: they are evaluated against one joined scan, so a dimension
     declared on the order lines is free to read a column the product lookup
     brought in.
     """

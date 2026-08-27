@@ -36,20 +36,20 @@ dimensions:
 measures:
 - name: trips
   label: Trips
-  expr: count()
+  expr: COUNT(*)
 - name: revenue
   label: Revenue
   format: currency
-  expr: sum(total_amount)
+  expr: SUM(total_amount)
 - name: avg_fare
   label: Avg Fare
   format: currency
-  expr: mean(fare_amount)
+  expr: AVG(fare_amount)
 - name: avg_distance
   label: Avg Distance (mi)
-  expr: mean(trip_distance)
+  expr: AVG(trip_distance)
 - name: tip_pct
   label: Tip %
   format: percent
   description: Tips as a share of fares (card tips only in the data).
-  expr: sum(tip_amount) / sum(fare_amount)
+  expr: SUM(tip_amount) / SUM(fare_amount)

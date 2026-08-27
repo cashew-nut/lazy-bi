@@ -60,7 +60,7 @@ def test_unknown_model_is_404(client):
 def test_dimension_values_column_missing_from_source_is_400(client, monkeypatch):
     """Regression: a dimension whose declared column drifted from the real
     file underneath it (e.g. the source got repointed at a differently-shaped
-    extract) used to raise a raw polars.exceptions.ColumnNotFoundError that
+    extract) used to raise a raw engine-level column error that
     only the app-wide 500 handler caught — a scary generic error plus a
     traceback dumped to the server console for what is really a routine
     400-worthy "your model and your data disagree" case. It should read the
@@ -90,7 +90,7 @@ def _visual_spec_with_parameter(parameters=None, inline_measures=None):
             "model": "sales",
             "measures": ["revenue", "revenue_lag"],
             "inline_measures": inline_measures if inline_measures is not None else [
-                {"name": "revenue_lag", "expr": "lag(revenue, param('period_list'))"}
+                {"name": "revenue_lag", "expr": "LAG(revenue, param('period_list')) OVER w"}
             ],
             "parameters": parameters if parameters is not None else [
                 {"name": "period_list", "values": [1, 2, 3, 4], "default": 1}
@@ -148,7 +148,7 @@ def test_visual_with_float_typed_parameter_saves(client):
 def test_visual_with_string_typed_parameter_saves(client):
     spec = _visual_spec_with_parameter(
         parameters=[{"name": "region_pick", "type": "string", "values": ["east", "west"], "default": "east"}],
-        inline_measures=[{"name": "revenue_lag", "expr": "coalesce(revenue, 0)"}],
+        inline_measures=[{"name": "revenue_lag", "expr": "COALESCE(revenue, 0)"}],
     )
     created = client.post("/api/visuals", json={"name": "t_string_param", "model": "sales", "spec": spec}).json()
     assert created["spec"]["query"]["parameters"][0]["type"] == "string"
@@ -158,7 +158,7 @@ def test_visual_with_string_typed_parameter_saves(client):
 def test_visual_rejects_unsupported_parameter_type(client):
     spec = _visual_spec_with_parameter(
         parameters=[{"name": "bad", "type": "date", "values": ["2026-01-01"], "default": "2026-01-01"}],
-        inline_measures=[{"name": "revenue_lag", "expr": "coalesce(revenue, 0)"}],
+        inline_measures=[{"name": "revenue_lag", "expr": "COALESCE(revenue, 0)"}],
     )
     res = client.post("/api/visuals", json={"name": "t_bad_type", "model": "sales", "spec": spec})
     assert res.status_code == 400
@@ -168,7 +168,7 @@ def test_visual_rejects_unsupported_parameter_type(client):
 def test_visual_rejects_wrong_typed_value_in_list(client):
     spec = _visual_spec_with_parameter(
         parameters=[{"name": "threshold", "type": "int", "values": [1, 2.5, 3], "default": 1}],
-        inline_measures=[{"name": "revenue_lag", "expr": "coalesce(revenue, 0)"}],
+        inline_measures=[{"name": "revenue_lag", "expr": "COALESCE(revenue, 0)"}],
     )
     res = client.post("/api/visuals", json={"name": "t_wrong_value_type", "model": "sales", "spec": spec})
     assert res.status_code == 400
@@ -178,7 +178,7 @@ def test_visual_rejects_wrong_typed_value_in_list(client):
 def test_visual_rejects_wrong_typed_default(client):
     spec = _visual_spec_with_parameter(
         parameters=[{"name": "region_pick", "type": "string", "values": ["east", "west"], "default": 1}],
-        inline_measures=[{"name": "revenue_lag", "expr": "coalesce(revenue, 0)"}],
+        inline_measures=[{"name": "revenue_lag", "expr": "COALESCE(revenue, 0)"}],
     )
     res = client.post("/api/visuals", json={"name": "t_wrong_default_type", "model": "sales", "spec": spec})
     assert res.status_code == 400
@@ -192,7 +192,7 @@ def test_visual_rejects_non_int_parameter_used_as_lag_periods(client):
     # test_engine.py) or live-check time (test_measures_check_rejects_*).
     spec = _visual_spec_with_parameter(
         parameters=[{"name": "label", "type": "string", "values": ["a", "b"], "default": "a"}],
-        inline_measures=[{"name": "revenue_lag", "expr": "lag(revenue, param('label'))"}],
+        inline_measures=[{"name": "revenue_lag", "expr": "LAG(revenue, param('label')) OVER w"}],
     )
     res = client.post("/api/visuals", json={"name": "t_lag_type_mismatch", "model": "sales", "spec": spec})
     assert res.status_code == 400
@@ -202,7 +202,7 @@ def test_visual_rejects_non_int_parameter_used_as_lag_periods(client):
 def test_visual_rejects_float_parameter_used_as_lag_periods_even_when_whole(client):
     spec = _visual_spec_with_parameter(
         parameters=[{"name": "n", "type": "float", "values": [2.0, 3.0], "default": 2.0}],
-        inline_measures=[{"name": "revenue_lag", "expr": "lag(revenue, param('n'))"}],
+        inline_measures=[{"name": "revenue_lag", "expr": "LAG(revenue, param('n')) OVER w"}],
     )
     res = client.post("/api/visuals", json={"name": "t_lag_float_mismatch", "model": "sales", "spec": spec})
     assert res.status_code == 400
@@ -232,7 +232,7 @@ def test_dashboard_publish_portal_flow(client):
 def _make_param_visual(client, name, values, default, param_name="period_list"):
     spec = _visual_spec_with_parameter(
         parameters=[{"name": param_name, "values": values, "default": default}],
-        inline_measures=[{"name": "revenue_lag", "expr": f"lag(revenue, param('{param_name}'))"}],
+        inline_measures=[{"name": "revenue_lag", "expr": f"LAG(revenue, param('{param_name}')) OVER w"}],
     )
     return client.post("/api/visuals", json={"name": name, "model": "sales", "spec": spec}).json()
 
@@ -242,9 +242,9 @@ def _make_typed_param_visual(client, name, type_name, values, default, param_nam
     # so this helper is what US4's type-conflict tests use to build a
     # non-int-typed visual without tripping US3's lag()-periods type check
     if type_name == "string":
-        expr = f"count(where(channel, channel == param('{param_name}')))"
+        expr = f"COUNT(channel) FILTER (WHERE channel == param('{param_name}'))"
     else:
-        expr = f"sum(if_(unit_price > param('{param_name}'), unit_price, 0))"
+        expr = f"SUM(CASE WHEN unit_price > param('{param_name}') THEN unit_price ELSE 0 END)"
     spec = _visual_spec_with_parameter(
         parameters=[{"name": param_name, "type": type_name, "values": values, "default": default}],
         inline_measures=[{"name": "flagged", "expr": expr}],
@@ -314,7 +314,7 @@ def test_dashboard_absent_type_and_explicit_int_type_are_the_same_parameter(clie
     v1 = _make_param_visual(client, "v_untyped", [1, 2, 3, 4], 1)  # no "type" key at all
     spec = _visual_spec_with_parameter(
         parameters=[{"name": "period_list", "type": "int", "values": [1, 2, 3, 4], "default": 1}],
-        inline_measures=[{"name": "revenue_lag", "expr": "lag(revenue, param('period_list'))"}],
+        inline_measures=[{"name": "revenue_lag", "expr": "LAG(revenue, param('period_list')) OVER w"}],
     )
     v2 = client.post("/api/visuals", json={"name": "v_explicit_int", "model": "sales", "spec": spec}).json()
     try:
@@ -586,7 +586,7 @@ def test_delete_imported_bundle_refused(client):
                   "  - bundle: throwaway_geo2\n"
                   "    anchor_dataset: regions\n"
                   "    on: region\n"
-                  "measures:\n  - name: rows\n    expr: count()\n")
+                  "measures:\n  - name: rows\n    expr: COUNT(*)\n")
     assert client.post("/api/models", json={"yaml": model_yaml}).status_code == 201
     try:
         res = client.delete("/api/dimensions/throwaway_geo2")
@@ -614,7 +614,7 @@ def test_local_dimension_bundle_survives_reload(client):
 def test_editor_validate(client):
     ok = client.post("/api/models/validate", json={"yaml": (
         "name: probe\nsource: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
-        "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: count()\n")}).json()
+        "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: COUNT(*)\n")}).json()
     assert ok["ok"] and any(c["name"] == "region" for c in ok["columns"])
     bad = client.post("/api/models/validate", json={"yaml": "name: x"}).json()
     assert not bad["ok"] and "source" in bad["error"]
@@ -622,7 +622,7 @@ def test_editor_validate(client):
 
 def test_editor_create_and_delete_model(client, tmp_path):
     yaml_text = ("name: temp_probe\nsource: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
-                 "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: count()\n")
+                 "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: COUNT(*)\n")
     created = client.post("/api/models", json={"yaml": yaml_text})
     assert created.status_code == 201
     assert client.post("/api/models", json={"yaml": yaml_text}).status_code == 409
@@ -644,11 +644,11 @@ def test_locked_models_reject_structural_changes(client):
 
 def test_locked_model_still_accepts_measure_lab_edits(client):
     created = client.post("/api/models/logistics/measures",
-                           json={"name": "temp_measure", "expr": "count()"})
+                           json={"name": "temp_measure", "expr": "COUNT(*)"})
     assert created.status_code == 201
     try:
         updated = client.put("/api/models/logistics/measures/temp_measure",
-                              json={"name": "temp_measure", "expr": "count()", "label": "Temp"})
+                              json={"name": "temp_measure", "expr": "COUNT(*)", "label": "Temp"})
         assert updated.status_code == 200
     finally:
         assert client.delete("/api/models/logistics/measures/temp_measure").status_code == 204
@@ -658,7 +658,7 @@ def test_local_model_created_via_api_is_unlocked_and_not_a_file(client):
     from app import config
 
     yaml_text = ("name: local_probe\nsource: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
-                 "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: count()\n")
+                 "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: COUNT(*)\n")
     created = client.post("/api/models", json={"yaml": yaml_text})
     assert created.status_code == 201
     assert created.json()["locked"] is False
@@ -679,7 +679,7 @@ def test_local_model_created_via_api_is_unlocked_and_not_a_file(client):
 
 def test_local_model_survives_reload(client):
     yaml_text = ("name: local_reload_probe\nsource: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
-                 "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: count()\n")
+                 "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: COUNT(*)\n")
     assert client.post("/api/models", json={"yaml": yaml_text}).status_code == 201
     try:
         assert "local_reload_probe" in client.post("/api/models/reload").json()["loaded"]
@@ -697,7 +697,7 @@ def test_model_schema_reflects_source_change_immediately(client):
     happen."""
     y1 = ("name: schema_cache_probe\n"
           "source: {format: csv, path: s3://cash-intel/ref/products.csv}\n"
-          "dimensions:\n  - name: product\nmeasures:\n  - name: rows\n    expr: count()\n")
+          "dimensions:\n  - name: product\nmeasures:\n  - name: rows\n    expr: COUNT(*)\n")
     assert client.post("/api/models", json={"yaml": y1}).status_code == 201
     try:
         cols = {c["name"] for c in client.get("/api/models/schema_cache_probe/schema").json()["columns"]}
@@ -705,7 +705,7 @@ def test_model_schema_reflects_source_change_immediately(client):
 
         y2 = ("name: schema_cache_probe\n"
               "source: {format: csv, path: s3://cash-intel/ref/regions.csv}\n"
-              "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: count()\n")
+              "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: COUNT(*)\n")
         assert client.put("/api/models/schema_cache_probe/yaml", json={"yaml": y2}).status_code == 200
 
         # same model name, brand new source — must reflect regions.csv now,
@@ -728,7 +728,7 @@ def test_renamed_local_model_delete_and_recreate_under_old_name(client):
     as a non-JSON 500 ("Unexpected token 'I', "Internal S"... is not valid
     JSON") instead of any usable error."""
     y1 = ("name: rename_probe_a\nsource: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
-          "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: count()\n")
+          "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: COUNT(*)\n")
     assert client.post("/api/models", json={"yaml": y1}).status_code == 201
 
     y2 = y1.replace("name: rename_probe_a", "name: rename_probe_b")
@@ -764,7 +764,7 @@ def test_unhandled_exception_returns_json_not_plaintext(client, monkeypatch):
         registry.local_model_store, "create",
         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("kaboom")))
     y = ("name: unhandled_exc_probe\nsource: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
-         "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: count()\n")
+         "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: COUNT(*)\n")
     # raise_server_exceptions=False mirrors what a real client (the browser)
     # receives over the wire — the default test client re-raises instead of
     # handing back the response, which would hide the bug under test.
@@ -788,7 +788,7 @@ def test_orphaned_local_model_dropped_not_fatal(client):
         "name: orphan_probe\n"
         "source: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
         "dimension_imports:\n  - bundle: nonexistent_bundle\n    anchor_dataset: x\n    on: y\n"
-        "measures:\n  - name: rows\n    expr: count()\n"
+        "measures:\n  - name: rows\n    expr: COUNT(*)\n"
     )
     registry.local_model_store.create("orphan_probe", bad_yaml)
     try:
@@ -918,7 +918,7 @@ def test_guided_import_roundtrip(client):
         "  - bundle: geography\n"
         "    anchor_dataset: regions\n"
         "    on: region\n"
-        "measures:\n  - name: rows\n    expr: count()\n"
+        "measures:\n  - name: rows\n    expr: COUNT(*)\n"
     )
     # validation surfaces the imported dims before any save
     ok = client.post("/api/models/validate", json={"yaml": yaml_text}).json()
@@ -937,7 +937,7 @@ def test_raw_yaml_parity_and_invalid_not_persisted(client):
     """Raw-YAML editing keeps full parity: a valid PUT persists + reloads; an
     invalid PUT is rejected (400) and does not change the stored yaml."""
     base = ("name: t_parity\nsource: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
-            "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: count()\n")
+            "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: COUNT(*)\n")
     assert client.post("/api/models", json={"yaml": base}).status_code == 201
     try:
         good = base.replace("label: ", "") + "\n# a valid trailing comment\n"
@@ -945,7 +945,7 @@ def test_raw_yaml_parity_and_invalid_not_persisted(client):
         assert "valid trailing comment" in client.get("/api/models/t_parity/yaml").json()["yaml"]
 
         # invalid yaml (measure expr that cannot compile) must be refused + not stored
-        bad = base.replace("expr: count()", "expr: sum(")
+        bad = base.replace("expr: COUNT(*)", "expr: SUM(")
         assert client.put("/api/models/t_parity/yaml", json={"yaml": bad}).status_code == 400
         assert "valid trailing comment" in client.get("/api/models/t_parity/yaml").json()["yaml"]
     finally:
@@ -956,14 +956,14 @@ def test_raw_yaml_parity_and_invalid_not_persisted(client):
 
 def _probe_model(client):
     yaml_text = ("name: auth_probe\nsource: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
-                 "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: count()\n")
+                 "dimensions:\n  - name: region\nmeasures:\n  - name: rows\n    expr: COUNT(*)\n")
     assert client.post("/api/models", json={"yaml": yaml_text}).status_code == 201
 
 
 def test_measure_mutation_requires_auth(client, anon_client, viewer_client):
     _probe_model(client)
     try:
-        body = {"name": "probe", "expr": "sum(unit_price)"}
+        body = {"name": "probe", "expr": "SUM(unit_price)"}
         # no credentials at all
         assert anon_client.post("/api/models/auth_probe/measures", json=body).status_code == 401
         # the retired spec-008 shared-secret headers grant nothing (spec 011)
@@ -974,9 +974,9 @@ def test_measure_mutation_requires_auth(client, anon_client, viewer_client):
         assert viewer_client.post("/api/models/auth_probe/measures", json=body).status_code == 403
         # PUT/DELETE are gated the same way
         assert anon_client.put("/api/models/auth_probe/measures/rows", json={
-            "name": "rows", "expr": "count()"}).status_code == 401
+            "name": "rows", "expr": "COUNT(*)"}).status_code == 401
         assert viewer_client.put("/api/models/auth_probe/measures/rows", json={
-            "name": "rows", "expr": "count()"}).status_code == 403
+            "name": "rows", "expr": "COUNT(*)"}).status_code == 403
         assert anon_client.delete("/api/models/auth_probe/measures/rows").status_code == 401
         assert viewer_client.delete("/api/models/auth_probe/measures/rows").status_code == 403
     finally:
@@ -987,20 +987,20 @@ def test_measure_authoring_success_and_provenance(client, author_client):
     _probe_model(client)
     try:
         create = author_client.post("/api/models/auth_probe/measures", json={
-            "name": "avg_price", "expr": "mean(unit_price)"})
+            "name": "avg_price", "expr": "AVG(unit_price)"})
         assert create.status_code == 201
         history = client.get("/api/models/auth_probe/measures/avg_price/history").json()
         assert len(history) == 1
         assert history[0]["version"] == 1 and history[0]["author"] == "Author Tester"
         assert history[0]["verified"] is True and history[0]["user_id"]
-        assert history[0]["action"] == "create" and history[0]["expr"] == "mean(unit_price)"
+        assert history[0]["action"] == "create" and history[0]["expr"] == "AVG(unit_price)"
 
         update = author_client.put("/api/models/auth_probe/measures/avg_price", json={
-            "name": "avg_price", "expr": "mean(unit_cost)"})
+            "name": "avg_price", "expr": "AVG(unit_cost)"})
         assert update.status_code == 200
         history = client.get("/api/models/auth_probe/measures/avg_price/history").json()
         assert [h["version"] for h in history] == [2, 1]
-        assert history[0]["action"] == "update" and history[0]["expr"] == "mean(unit_cost)"
+        assert history[0]["action"] == "update" and history[0]["expr"] == "AVG(unit_cost)"
 
         # invalid expression on update is refused, nothing changes
         bad = author_client.put("/api/models/auth_probe/measures/avg_price", json={
@@ -1022,7 +1022,7 @@ def test_saved_measure_queryable_by_any_signed_in_role(client, author_client, vi
     _probe_model(client)
     try:
         author_client.post("/api/models/auth_probe/measures", json={
-            "name": "avg_price", "expr": "mean(unit_price)"})
+            "name": "avg_price", "expr": "AVG(unit_price)"})
         q = viewer_client.post("/api/query", json={
             "model": "auth_probe", "dimensions": [], "measures": ["avg_price"]})
         assert q.status_code == 200 and q.json()["rows"][0]["avg_price"] > 0
@@ -1035,58 +1035,57 @@ def test_saved_measure_queryable_by_any_signed_in_role(client, author_client, vi
 
 # ── 008-safe-measure-compilation: framed-measure carve-out (US3) ──────────
 
-def test_authenticated_frame_measure_saves_and_computes(client):
+def test_authenticated_from_measure_saves_and_computes(client):
     """A frame-bearing measure is an authenticated-model-measure-only
     construct: it's accepted here (with provenance), but never inline
     (see test_engine.py's inline-frame-rejected tests)."""
     _probe_model(client)
     try:
         body = {
-            # a framed measure's `expr` still uses the pre-existing eval
-            # syntax (it aggregates the frame's own output column, which
-            # isn't part of the base schema) — only the scalar DSL path
-            # (no `frame`) uses the new function-call grammar.
-            "name": "distinct_regions_via_frame",
-            "expr": 'pl.col("n").sum()',
-            "frame": 'frame = lf.group_by(dims).agg(pl.len().alias("n"))',
+            # the same metric in the one grammar: `expr:` is a SQL aggregate
+            # either way, and `from:` is what says which rows it reads
+            "name": "distinct_regions_via_from",
+            "expr": "SUM(n)",
+            "from": "SELECT {dims}, count(*) AS n FROM {model} GROUP BY {dims}",
         }
         res = client.post("/api/models/auth_probe/measures", json=body)
-        assert res.status_code == 201
+        assert res.status_code == 201, res.text
         history = client.get(
-            "/api/models/auth_probe/measures/distinct_regions_via_frame/history"
+            "/api/models/auth_probe/measures/distinct_regions_via_from/history"
         ).json()
-        assert history[0]["frame"] == body["frame"]
+        assert history[0]["from"] == body["from"]
 
         q = client.post("/api/query", json={
             "model": "auth_probe", "dimensions": ["region"],
-            "measures": ["distinct_regions_via_frame"]})
+            "measures": ["distinct_regions_via_from"]})
         assert q.status_code == 200
         assert q.json()["row_count"] > 0
     finally:
         client.delete("/api/models/auth_probe")
 
 
-def test_frame_measure_mutation_requires_admin(client, anon_client, author_client):
-    """The frame: escape hatch escalates beyond author — admin only
-    (spec 011, Principle VI)."""
+def test_a_frame_measure_body_is_refused_with_its_replacement(client, anon_client, author_client):
+    """The construct is gone, and a body still carrying one has to be told
+    what to write instead — accepting it as a plain measure would drop the
+    whole intermediary step and quietly change every number."""
     _probe_model(client)
     try:
-        body = {"name": "probe_frame", "expr": "count()", "frame": "frame = lf"}
+        body = {"name": "probe_frame", "expr": "COUNT(*)", "frame": "frame = lf"}
         assert anon_client.post("/api/models/auth_probe/measures", json=body).status_code == 401
         res = author_client.post("/api/models/auth_probe/measures", json=body)
-        assert res.status_code == 403
-        assert "admin" in res.json()["detail"]
+        assert res.status_code == 400
+        assert "'frame:'" in res.json()["detail"]
     finally:
         client.delete("/api/models/auth_probe")
 
 
-def test_frame_emits_without_frame_rejected(client):
+def test_emits_without_from_rejected(client):
     _probe_model(client)
     try:
-        body = {"name": "bad", "expr": "count()", "frame_emits": ["region"]}
+        body = {"name": "bad", "expr": "COUNT(*)", "emits": ["region"]}
         res = client.post("/api/models/auth_probe/measures", json=body)
         assert res.status_code == 400
-        assert "frame_emits" in res.json()["detail"]
+        assert "'emits' needs a 'from'" in res.json()["detail"]
     finally:
         client.delete("/api/models/auth_probe")
 
@@ -1097,7 +1096,7 @@ def _probe_model_with_time(client):
     yaml_text = (
         "name: window_probe\nsource: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
         "dimensions:\n  - name: order_date\n    type: time\n  - name: region\n"
-        "measures:\n  - name: revenue\n    expr: sum(unit_price)\n"
+        "measures:\n  - name: revenue\n    expr: SUM(unit_price)\n"
     )
     assert client.post("/api/models", json={"yaml": yaml_text}).status_code == 201
 
@@ -1109,12 +1108,12 @@ def test_window_measure_saves_without_touching_the_live_source(client, author_cl
     yaml_text = (
         "name: window_probe_unreachable\nsource: {format: parquet, path: s3://nope/does/not/exist/*.parquet}\n"
         "dimensions:\n  - name: order_date\n    type: time\n"
-        "measures:\n  - name: revenue\n    expr: sum(unit_price)\n"
+        "measures:\n  - name: revenue\n    expr: SUM(unit_price)\n"
     )
     assert client.post("/api/models", json={"yaml": yaml_text}).status_code == 201
     try:
         res = author_client.post("/api/models/window_probe_unreachable/measures", json={
-            "name": "revenue_running_total", "expr": "running_total(revenue)"})
+            "name": "revenue_running_total", "expr": "SUM(revenue) OVER w"})
         assert res.status_code == 201
     finally:
         client.delete("/api/models/window_probe_unreachable")
@@ -1124,10 +1123,10 @@ def test_window_measure_authoring_and_query_end_to_end(client, author_client):
     _probe_model_with_time(client)
     try:
         create = author_client.post("/api/models/window_probe/measures", json={
-            "name": "revenue_running_total", "expr": "running_total(revenue)"})
+            "name": "revenue_running_total", "expr": "SUM(revenue) OVER w"})
         assert create.status_code == 201
         history = client.get("/api/models/window_probe/measures/revenue_running_total/history").json()
-        assert history[0]["expr"] == "running_total(revenue)"
+        assert history[0]["expr"] == "SUM(revenue) OVER w"
 
         q = client.post("/api/query", json={
             "model": "window_probe",
@@ -1148,7 +1147,7 @@ def test_window_measure_unknown_sibling_rejected_on_save(client, author_client):
     _probe_model_with_time(client)
     try:
         res = author_client.post("/api/models/window_probe/measures", json={
-            "name": "bad", "expr": "running_total(does_not_exist)"})
+            "name": "bad", "expr": "SUM(does_not_exist) OVER w"})
         assert res.status_code == 400
         assert "does_not_exist" in res.json()["detail"]
     finally:
@@ -1162,7 +1161,7 @@ def _param_query_body(parameter_values=None):
         "model": "sales",
         "dimensions": [{"name": "order_date", "grain": "1q"}],
         "measures": ["revenue", "revenue_lag"],
-        "inline_measures": [{"name": "revenue_lag", "expr": "lag(revenue, param('period_list'))"}],
+        "inline_measures": [{"name": "revenue_lag", "expr": "LAG(revenue, param('period_list')) OVER w"}],
         "parameters": [{"name": "period_list", "values": [1, 2, 3, 4], "default": 1}],
         "parameter_values": parameter_values or {},
     }
@@ -1196,7 +1195,7 @@ def test_query_parameter_undeclared_name_rejected(client):
 
 def test_query_parameterized_measure_promotion_to_model_blocked(client):
     res = client.post("/api/models/sales/measures", json={
-        "name": "revenue_lag_bad", "expr": "lag(revenue, param('period_list'))",
+        "name": "revenue_lag_bad", "expr": "LAG(revenue, param('period_list')) OVER w",
     })
     assert res.status_code == 400
     assert "parameterized measures" in res.json()["detail"]
@@ -1213,7 +1212,7 @@ def test_query_parameterized_measure_promotion_to_model_blocked(client):
 def test_query_endpoint_accepts_float_parameter_value(client):
     res = client.post("/api/query", json={
         "model": "sales", "dimensions": [], "measures": ["revenue", "flagged"],
-        "inline_measures": [{"name": "flagged", "expr": "sum(if_(unit_price > param('threshold'), unit_price, 0))"}],
+        "inline_measures": [{"name": "flagged", "expr": "SUM(CASE WHEN unit_price > param('threshold') THEN unit_price ELSE 0 END)"}],
         "parameters": [{"name": "threshold", "type": "float", "values": [10, 50.5, 100], "default": 50.5}],
         "parameter_values": {"threshold": 10},
     })
@@ -1224,7 +1223,7 @@ def test_query_endpoint_accepts_float_parameter_value(client):
 def test_query_endpoint_accepts_string_parameter_value(client):
     res = client.post("/api/query", json={
         "model": "sales", "dimensions": [], "measures": ["revenue", "flagged"],
-        "inline_measures": [{"name": "flagged", "expr": "sum(where(unit_price, region == param('region_pick')))"}],
+        "inline_measures": [{"name": "flagged", "expr": "SUM(unit_price) FILTER (WHERE region == param('region_pick'))"}],
         "parameters": [{"name": "region_pick", "type": "string", "values": ["EU", "US", "APAC"], "default": "EU"}],
         "parameter_values": {"region_pick": "US"},
     })
@@ -1234,7 +1233,7 @@ def test_query_endpoint_accepts_string_parameter_value(client):
 
 def test_measures_check_resolves_parameter_to_default(client):
     res = client.post("/api/measures/check", json={
-        "expr": "lag(revenue, param('period_list'))",
+        "expr": "LAG(revenue, param('period_list')) OVER w",
         "measure_names": ["revenue"],
         "parameters": [{"name": "period_list", "values": [1, 2, 3, 4], "default": 1}],
     })
@@ -1246,7 +1245,7 @@ def test_measures_check_resolves_parameter_to_default(client):
 
 def test_measures_check_rejects_undeclared_parameter(client):
     res = client.post("/api/measures/check", json={
-        "expr": "lag(revenue, param('nope'))",
+        "expr": "LAG(revenue, param('nope')) OVER w",
         "measure_names": ["revenue"],
         "parameters": [{"name": "period_list", "values": [1, 2, 3, 4], "default": 1}],
     })
@@ -1262,7 +1261,7 @@ def test_measures_check_rejects_undeclared_parameter(client):
 
 def test_measures_check_resolves_float_param_in_comparison(client):
     res = client.post("/api/measures/check", json={
-        "expr": "revenue > param('threshold')",
+        "expr": "SUM(revenue) FILTER (WHERE revenue > param('threshold'))",
         "columns": ["revenue"],
         "parameters": [{"name": "threshold", "type": "float", "values": [10, 50.5, 100], "default": 50.5}],
     })
@@ -1273,7 +1272,7 @@ def test_measures_check_resolves_float_param_in_comparison(client):
 
 def test_measures_check_resolves_string_param_in_coalesce(client):
     res = client.post("/api/measures/check", json={
-        "expr": "coalesce(revenue, param('fallback'))",
+        "expr": "MAX(COALESCE(CAST(revenue AS VARCHAR), param('fallback')))",
         "columns": ["revenue"],
         "parameters": [{"name": "fallback", "type": "string", "values": ["n/a", "unknown"], "default": "n/a"}],
     })
@@ -1286,24 +1285,24 @@ def test_measures_check_resolves_string_param_in_coalesce(client):
 
 def test_measures_check_rejects_string_param_as_lag_periods(client):
     res = client.post("/api/measures/check", json={
-        "expr": "lag(revenue, param('label'))",
+        "expr": "LAG(revenue, param('label')) OVER w",
         "measure_names": ["revenue"],
         "parameters": [{"name": "label", "type": "string", "values": ["a", "b"], "default": "a"}],
     })
     body = res.json()
     assert body["ok"] is False
-    assert "int-typed param" in body["error"]
+    assert "not an integer" in body["error"]
 
 
 def test_measures_check_rejects_float_param_as_lag_periods_even_when_whole(client):
     res = client.post("/api/measures/check", json={
-        "expr": "lag(revenue, param('n'))",
+        "expr": "LAG(revenue, param('n')) OVER w",
         "measure_names": ["revenue"],
         "parameters": [{"name": "n", "type": "float", "values": [2.0, 3.0], "default": 2.0}],
     })
     body = res.json()
     assert body["ok"] is False
-    assert "int-typed param" in body["error"]
+    assert "not an integer" in body["error"]
 
 
 def test_upload_then_reupload_serves_the_new_rows(client):
@@ -1312,7 +1311,7 @@ def test_upload_then_reupload_serves_the_new_rows(client):
     to drop what it is holding, or the uploader sees their old file back."""
     import io
 
-    from app import engine, semantic
+    from app import duck, semantic
 
     def upload(body: bytes):
         return client.post(
@@ -1322,9 +1321,13 @@ def test_upload_then_reupload_serves_the_new_rows(client):
     try:
         assert upload(b"a,b\n1,2\n").status_code == 201
         source = semantic.Source(path="s3://cash-intel/local/cache_probe/rows.csv", format="csv")
-        assert engine._scan_source(source).collect().height == 1
+        assert duck.cursor().execute(
+                f"SELECT count(*) FROM {duck.relation(source.path, source.format)}"
+            ).fetchone()[0] == 1
 
         assert upload(b"a,b\n1,2\n3,4\n5,6\n").status_code == 201
-        assert engine._scan_source(source).collect().height == 3
+        assert duck.cursor().execute(
+                f"SELECT count(*) FROM {duck.relation(source.path, source.format)}"
+            ).fetchone()[0] == 3
     finally:
         client.delete("/api/datasets/local/cache_probe")

@@ -1,5 +1,5 @@
 """The sandbox module's coding agent — the one seam that asks an LLM to write
-polars for the open notebook, and to describe a converted pipeline's lineage.
+SQL for the open notebook, and to describe a converted pipeline's lineage.
 Sibling of app/llm.py (the conversational-analytics seam) and deliberately the
 same shape: everything above this module only ever sees a typed, *unvalidated*
 `RawAgentCall`, re-checked by app/sandbox.py (validate_agent_cells /
@@ -29,7 +29,7 @@ safety net):
 - **No extended thinking.** Adaptive thinking is what app/llm.py's chat path
   wants; here it is pure added latency on a task the model can answer in one
   shot.
-- **Cached system prompt.** The polars doctrine below is long, static, and
+- **Cached system prompt.** The SQL doctrine below is long, static, and
   resent on every turn — it goes out with `cache_system`, which the Anthropic
   wire turns into an explicit `cache_control` breakpoint so repeat turns pay
   the cache-read price for it, not the input price. On providers whose prompt
@@ -283,69 +283,62 @@ def _tools_for_notebook(notebook: NotebookContext) -> list[dict]:
 
 # ── prompts ───────────────────────────────────────────────────────────────
 
-# The performance doctrine is the point of this agent: polars written badly
-# (eager collects, python-level row loops, per-column with_columns chains)
-# is the single easiest way to lose the lazy-scan property this whole
+# The performance doctrine is the point of this agent: SQL written badly (a
+# SELECT * before a filter, a join before a projection, a cross join nobody
+# meant) is the single easiest way to lose the pushdown property this whole
 # platform exists for (constitution Principle II).
 _ASSIST_SYSTEM_PROMPT = (
-    "You are a polars expert writing cells for an admin's sandbox notebook in "
-    "a lazy BI platform. You write the fastest correct polars for the job, and "
-    "nothing else.\n\n"
+    "You are a DuckDB SQL expert writing cells for an admin's sandbox notebook "
+    "in a BI platform over object storage. You write the fastest correct SQL "
+    "for the job, and nothing else.\n\n"
 
-    "NOTEBOOK RUNTIME (this is the whole namespace — nothing else is "
-    "importable or available):\n"
-    "- `pl` — polars.\n"
-    "- `read(path, format=None)` — the ONLY way to reach the bucket. Returns a "
-    "LazyFrame. Format is inferred from the path (.csv -> csv, .parquet -> "
-    "parquet, anything else -> delta); an Iceberg table needs an explicit "
-    "read(path, format=\"iceberg\"). Never call pl.scan_parquet/scan_csv/"
-    "scan_delta yourself — they would have no storage credentials.\n"
-    "- `bucket` — the bucket name string.\n"
-    "- Cells share one namespace and run top to bottom; a later cell sees an "
-    "earlier cell's variables. There is no kernel between runs: a run replays "
-    "every cell from the top, so keep expensive scans lazy.\n"
-    "- A cell's last bare expression is auto-displayed, Jupyter style. End a "
-    "cell with the frame you want to see; a LazyFrame is collected to a "
-    "capped preview automatically, so `lf` alone is a fine last line — you do "
-    "not need `.collect()` to look at something.\n\n"
+    "NOTEBOOK RUNTIME:\n"
+    "- Every cell is SQL. A cell may hold several statements separated by "
+    "semicolons.\n"
+    "- Reach the bucket with DuckDB's own readers: read_parquet('s3://…'), "
+    "read_csv('s3://…'), delta_scan('s3://…') for a Delta table root, "
+    "iceberg_scan('s3://…') for an Iceberg one. Credentials are already "
+    "configured — never write a CREATE SECRET or a SET.\n"
+    "- `bucket` names the bucket; paths are full s3:// urls.\n"
+    "- Cells share one session and run top to bottom, so a CREATE OR REPLACE "
+    "TEMP VIEW in an early cell is visible to every later one. There is no "
+    "session between runs: a run replays every cell from the top, so build "
+    "with views rather than materializing what you can defer.\n"
+    "- A cell's rows are displayed automatically, capped. End a cell with the "
+    "SELECT you want to see; a statement that returns nothing (a CREATE, a "
+    "SET) shows as a bare ok.\n\n"
 
     "PERFORMANCE RULES (in priority order):\n"
-    "1. Stay lazy end to end. read() gives a LazyFrame; keep chaining on it "
-    "and collect at most once, at the very end. Never collect an intermediate "
-    "just to inspect it or to feed the next step.\n"
-    "2. Filter and select as early as possible, directly on the scan, so "
-    "predicate/projection pushdown drops row groups and columns before they "
-    "leave the bucket. Filtering after a join or an aggregation when it could "
-    "have been done before it is a bug, not a style choice.\n"
-    "3. Expressions, never Python. No iter_rows, no map_elements/map_rows/"
-    "apply, no lambdas over data, no Python loops over columns, no pandas. "
-    "Use pl.when/then/otherwise, .over(...) window expressions, group_by(...)"
-    ".agg(...), and the .str/.dt/.list/.struct namespaces.\n"
-    "4. Batch expressions: one .with_columns(...)/.select(...) taking many "
-    "expressions runs them in parallel; a chain of single-column calls does "
-    "not. Use pl.col(a, b, c) / selectors (import as `cs` is NOT available — "
-    "use pl.col with multiple names or a regex '^prefix_.*$') to hit groups "
-    "of columns at once.\n"
-    "5. Joins: join on the smallest frame you can, after filtering both "
-    "sides; use how='semi'/'anti' when you only need filtering, not columns; "
-    "join_asof for nearest-time alignment; and cast join keys to matching "
-    "dtypes once rather than per join.\n"
-    "6. Aggregate with group_by().agg([...]) and pl.len() for counts. Prefer "
-    "a single group_by producing several aggregates over several passes.\n"
-    "7. Big data: .collect(engine=\"streaming\") for larger-than-memory work, "
-    ".head()/.limit() for previews, and .explain() when the question is "
-    "whether pushdown is actually happening. Cast repeated string keys to "
-    "pl.Categorical/pl.Enum when they drive group_by or joins.\n"
-    "8. Use current polars API: group_by (not groupby), pl.len() (not "
-    "pl.count()), .rename/.alias explicitly. No deprecated spellings.\n\n"
+    "1. Project and filter in the scan, not after it. Name the columns you "
+    "need instead of SELECT *, and put the WHERE where the reader can push it "
+    "into the parquet row groups — filtering after a join or an aggregation "
+    "when it could have been done before is a bug, not a style choice.\n"
+    "2. Read each path once. If two cells need the same scan, put it in a "
+    "TEMP VIEW and read the view; a repeated read_parquet of the same glob "
+    "re-lists the prefix.\n"
+    "3. One pass, many aggregates: a single GROUP BY producing several "
+    "measures beats several scans. Use FILTER (WHERE …) for conditional "
+    "aggregates rather than a separate query per condition.\n"
+    "4. Prefer a window function to a self-join for running totals, ranks and "
+    "prior-period comparisons. QUALIFY filters on a window result without a "
+    "subquery.\n"
+    "5. Joins: join on the smallest relation you can, after filtering both "
+    "sides; use a semi/anti join (WHERE EXISTS / NOT EXISTS) when you only "
+    "need filtering, not columns; make sure both join keys are the same type "
+    "so the comparison isn't cast per row.\n"
+    "6. Previews: LIMIT is not a substitute for a filter — LIMIT after an "
+    "aggregation still reads everything. USING SAMPLE for a genuine sample.\n"
+    "7. When the question is whether pushdown is actually happening, EXPLAIN "
+    "ANALYZE the statement and read the scan's row count.\n"
+    "8. Use DuckDB's own conveniences where they make the SQL shorter and no "
+    "less clear: GROUP BY ALL, SELECT * EXCLUDE (…) / REPLACE (…), list and "
+    "struct functions, date_trunc/date_diff.\n\n"
 
     "WHAT NOT TO WRITE (this is a sandbox — the human runs the cell and "
     "pastes the error back, which is faster than anything you could do):\n"
-    "- No tests, no assertions-as-tests, no benchmarks, no timing harnesses.\n"
-    "- No try/except around data code, no defensive existence checks, no "
-    "logging, no print() unless the human asked to see something specific.\n"
-    "- No `if __name__ == \"__main__\"`, no functions wrapping a one-liner, no "
-    "config scaffolding.\n"
+    "- No tests, no benchmarks, no timing harnesses.\n"
+    "- No defensive existence checks, no COALESCE wrapped round everything "
+    "just in case.\n"
     "- Comments only where the reason is non-obvious. No comment that "
     "restates the line below it.\n\n"
 
@@ -357,33 +350,33 @@ _ASSIST_SYSTEM_PROMPT = (
     "- Notes are at most two short sentences. Don't restate the code, don't "
     "list caveats, don't offer next steps unless asked.\n"
     "- If a cell in the context failed, fix the actual cause shown in its "
-    "error — do not paper over it with a try/except or a fallback path.\n"
+    "error.\n"
     "- If the notebook is destined for a pipeline (the human will say so, or "
-    "the notebook will already assign it), the final frame must be assigned "
-    "to `output` — that is the pipeline script contract."
+    "the notebook will already be shaped for it), it must end on a SELECT or "
+    "create a relation named `output` — that is the pipeline contract."
 )
 
 _LINEAGE_SYSTEM_PROMPT = (
-    "You document field-level lineage for a polars pipeline script that was "
-    "just converted from a sandbox notebook. You are given the script, its "
-    "declared sources, and (when the notebook was run) the exact columns its "
-    "output produces.\n\n"
+    "You document field-level lineage for a SQL pipeline that was just "
+    "converted from a sandbox notebook. You are given the SQL, its declared "
+    "sources, and (when the notebook was run) the exact columns its output "
+    "produces.\n\n"
     "Call describe_lineage exactly once.\n"
     "- One entry per output column, using the output column names given. If "
-    "no output columns are given, infer them from the script's final "
-    "`output` expression — only columns it demonstrably produces.\n"
+    "no output columns are given, infer them from the final SELECT — only "
+    "columns it demonstrably produces.\n"
     "- `from` lists the source columns the field derives from, each written "
     "'<source_name>.<column>' where <source_name> is one of the DECLARED "
-    "source names, never a path, a variable name, or an intermediate frame. "
-    "Trace through intermediate variables to the source a column actually "
-    "came from. Use an empty list only for a genuine literal/constant.\n"
+    "source names, never a path, a view name, or a CTE. Trace through "
+    "intermediate views and CTEs to the source a column actually came from. "
+    "Use an empty list only for a genuine literal/constant.\n"
     "- `transform` is one short plain-English line: 'pass-through' for an "
     "unchanged column, otherwise the derivation in business terms (e.g. "
     "'unit_price × quantity per order line', 'summed per customer per "
-    "month'). Never restate the code, never exceed one line.\n"
-    "- Do not invent a column that the script does not produce, and do not "
-    "guess a source column that does not appear in the script. Omit an entry "
-    "you cannot ground in the script rather than fabricating its origin.\n"
+    "month'). Never restate the SQL, never exceed one line.\n"
+    "- Do not invent a column that the SQL does not produce, and do not guess "
+    "a source column that does not appear in it. Omit an entry you cannot "
+    "ground in the SQL rather than fabricating its origin.\n"
     "- `description` is one sentence on what the pipeline produces."
 )
 

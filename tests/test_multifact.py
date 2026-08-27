@@ -10,7 +10,7 @@ chart.
 """
 import pytest
 
-from app import engine, semantic
+from app import duck, engine, semantic
 from app.semantic import ModelError
 
 
@@ -33,14 +33,14 @@ datasets:
       - name: channel
     measures:
       - name: revenue
-        expr: sum(amount)
+        expr: SUM(amount)
   - name: spend
     source: {format: parquet, path: s3://b/spend/*.parquet}
     dimensions:
       - name: region
     measures:
       - name: cost
-        expr: sum(cost)
+        expr: SUM(cost)
 """
 
 
@@ -57,7 +57,7 @@ def test_facts_is_gone_and_says_what_to_do_instead():
     ("source", "source: {format: parquet, path: s3://b/x.parquet}"),
     ("joins", "joins:\n  - name: j\n    source: {format: csv, path: s3://b/j.csv}\n    on: id"),
     ("dimensions", "dimensions:\n  - name: region"),
-    ("measures", "measures:\n  - name: n\n    expr: count()"),
+    ("measures", "measures:\n  - name: n\n    expr: COUNT(*)"),
 ])
 def test_the_two_spellings_cannot_be_mixed(key, block):
     """`source`/`joins`/`dimensions`/`measures` are the single-dataset
@@ -69,7 +69,7 @@ name: bad
 datasets:
   - name: y
     source: {{format: parquet, path: s3://b/y.parquet}}
-    measures: [{{name: m, expr: count()}}]
+    measures: [{{name: m, expr: COUNT(*)}}]
 {block}
 """)
 
@@ -118,7 +118,7 @@ dimensions:
   - name: region
 measures:
   - name: n
-    expr: count()
+    expr: COUNT(*)
 """)
     assert list(model.datasets) == ["shop", "products"]
     assert model.datasets["shop"].joins[0].to == "products"
@@ -139,7 +139,7 @@ datasets:
         on: product
     measures:
       - name: n
-        expr: count()
+        expr: COUNT(*)
   - name: products
     source: {format: csv, path: s3://b/products.csv}
     dimensions:
@@ -183,10 +183,10 @@ name: bad
 datasets:
   - name: a
     source: {format: parquet, path: s3://b/a.parquet}
-    measures: [{name: total, expr: count()}]
+    measures: [{name: total, expr: COUNT(*)}]
   - name: b
     source: {format: parquet, path: s3://b/b.parquet}
-    measures: [{name: total, expr: count()}]
+    measures: [{name: total, expr: COUNT(*)}]
 """)
 
 
@@ -202,7 +202,7 @@ datasets:
     source: {format: parquet, path: s3://b/a.parquet}
     joins: [{to: b, on: id}]
     dimensions: [{name: region}]
-    measures: [{name: n, expr: count()}]
+    measures: [{name: n, expr: COUNT(*)}]
   - name: b
     source: {format: parquet, path: s3://b/b.parquet}
     dimensions: [{name: region}]
@@ -218,7 +218,7 @@ name: bad
 datasets:
   - name: orders
     source: {format: parquet, path: s3://b/orders/*.parquet}
-    measures: [{name: n, expr: count()}]
+    measures: [{name: n, expr: COUNT(*)}]
   - name: stray
     source: {format: csv, path: s3://b/stray.csv}
     dimensions: [{name: colour}]
@@ -233,11 +233,11 @@ datasets:
   - name: a
     source: {format: parquet, path: s3://b/a.parquet}
     dimensions: [{name: when, type: time}]
-    measures: [{name: n, expr: count()}]
+    measures: [{name: n, expr: COUNT(*)}]
   - name: b
     source: {format: parquet, path: s3://b/b.parquet}
     dimensions: [{name: when, type: categorical}]
-    measures: [{name: m, expr: count()}]
+    measures: [{name: m, expr: COUNT(*)}]
 """)
 
 
@@ -252,15 +252,15 @@ datasets:
   - name: a
     source: {format: parquet, path: s3://b/a.parquet}
     dimensions: [{name: when, type: time}]
-    measures: [{name: n, expr: count()}]
+    measures: [{name: n, expr: COUNT(*)}]
   - name: b
     source: {format: parquet, path: s3://b/b.parquet}
     dimensions: [{name: when, type: categorical}]
-    measures: [{name: m, expr: count()}]
+    measures: [{name: m, expr: COUNT(*)}]
   - name: c
     source: {format: parquet, path: s3://b/c.parquet}
     dimensions: [{name: other}]
-    measures: [{name: o, expr: count()}]
+    measures: [{name: o, expr: COUNT(*)}]
 """)
 
 
@@ -273,10 +273,10 @@ name: bad
 datasets:
   - name: a
     source: {format: parquet, path: s3://b/a.parquet}
-    measures: [{name: n, expr: count()}]
+    measures: [{name: n, expr: COUNT(*)}]
   - name: b
     source: {format: parquet, path: s3://b/b.parquet}
-    measures: [{name: m, expr: count()}]
+    measures: [{name: m, expr: COUNT(*)}]
 dimension_imports:
   - bundle: calendar
     anchor_dataset: days
@@ -358,6 +358,24 @@ def test_each_fact_tables_measure_matches_what_it_returns_alone(models):
         merged = _by_date(together, name)
         for bucket, value in solo_by_date.items():
             assert merged[bucket] == pytest.approx(value), f"{name} @ {bucket}"
+
+
+def test_several_fact_tables_answer_in_one_statement(models):
+    """SC-003: the merge is CTEs and joins inside a single statement, not a
+    query per fact table stitched together in Python. Asserted rather than
+    assumed, because "one statement" is what keeps the fact tables on one
+    connection, sharing one set of caches (constitution Principle II)."""
+    sql, params, columns = engine.build_sql(models["commercial_overview"], {
+        "dimensions": [{"name": "calendar_date", "grain": "1mo"}, "region"],
+        "measures": ["revenue", "ad_spend", "active_customers"],
+        "limit": 500,
+    })
+    assert sql.count(";") == 0                     # one statement, no chaining
+    assert sql.lstrip().upper().startswith("WITH")  # its parts are CTEs
+    assert "FULL OUTER JOIN" in sql                 # merged, not cross-joined
+    # and it is the statement that actually runs: DuckDB binds it as one
+    duck.cursor().execute(f"SELECT * FROM ({sql}) LIMIT 0", list(params))
+    assert {c["name"] for c in columns} >= {"revenue", "ad_spend", "active_customers"}
 
 
 def test_the_merged_axis_is_the_union_of_the_buckets(models):
@@ -505,11 +523,11 @@ def test_inline_measures_are_refused_across_fact_tables(models):
     with pytest.raises(engine.QueryError, match="doesn't take inline"):
         engine.run_query(models["commercial_overview"], {
             "dimensions": ["region"], "measures": ["adhoc"],
-            "inline_measures": [{"name": "adhoc", "expr": "count()"}]})
+            "inline_measures": [{"name": "adhoc", "expr": "COUNT(*)"}]})
 
 
 def test_scanning_a_multi_table_model_says_why_it_cannot(models):
-    with pytest.raises(engine.QueryError, match="no single frame to scan"):
+    with pytest.raises(engine.QueryError, match="no single relation to scan"):
         engine.scan(models["commercial_overview"])
 
 
