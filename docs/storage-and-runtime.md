@@ -154,8 +154,17 @@ writing new bytes, a dataset upload/delete) call `cache.clear()` +
 
 One SQLite file, `cash_intel.db`, one class per feature area (this
 project's convention throughout: schema-on-init `SCHEMA` string,
-`sqlite3.Row` factory, a small typed wrapper class). `VisualStore` alone
-owns:
+`sqlite3.Row` factory, a small typed wrapper class). Every one of them opens
+its connection through `app/sqlitedb.py`, which is the single place the
+connection is configured — WAL mode, a busy timeout, `synchronous = NORMAL`.
+That is what turns "SQLite is the single-writer store" (true, and deliberate)
+into something that survives being written from more than one *process* on a
+host: the sqlite3 defaults take a whole-file write lock with a zero-length
+timeout, so a reader arriving mid-commit fails outright rather than waiting a
+millisecond for it. It does not make SQLite a multi-*host* store — network
+filesystems break its locking; see [Scaling §6](scaling.md#6-state-what-has-to-be-shared).
+
+`VisualStore` alone owns:
 
 | Table | Holds |
 |---|---|
@@ -168,7 +177,10 @@ owns:
 Other feature areas get their own store class on the same database file:
 `AuthStore` (users/sessions/tokens/audit — [Auth & Security](auth-and-security.md)),
 `ConversationStore` (chat history), `MemoryStore` (chat-learned model facts),
-`PipelineStore` (run history), `SandboxStore` (saved notebooks), and the
+`PipelineStore` (the run queue *and* its history — see
+[Pipelines](pipelines.md)), `SandboxStore` (saved notebooks),
+`ClusterStore` (leases, change generations and the node roster, when more
+than one process shares this file — see [Scaling](scaling.md)), and the
 three `local*store.py` classes above — see
 [Conversational Analytics](conversational-analytics.md),
 [Pipelines](pipelines.md), [Sandbox](sandbox.md) for each.

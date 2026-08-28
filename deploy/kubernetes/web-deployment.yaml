@@ -1,0 +1,114 @@
+# The read path: N interchangeable replicas, each a complete DuckDB query
+# engine (docs/scaling.md §2). Nothing here is a leader, nothing holds state
+# another replica needs, and no request depends on which one serves it —
+# sessions are rows in the shared store, and the MCP server is already
+# stateless (stateless_http=True in app/mcpserver.py).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cash-intel-web
+  labels: {app: cash-intel, role: web}
+spec:
+  replicas: 3
+  selector:
+    matchLabels: {app: cash-intel, role: web}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # A new replica starts with a cold DuckDB cache and has to re-read
+      # parquet footers before it is as fast as the one it replaces. Adding
+      # one before removing one keeps warm capacity available throughout.
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels: {app: cash-intel, role: web}
+    spec:
+      # Spread replicas across nodes: three replicas on one node share that
+      # node's page cache and its network path to S3, which is most of what
+      # scaling out was meant to multiply.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {app: cash-intel, role: web}
+      serviceAccountName: cash-intel        # IRSA: S3 access via the pod's role
+      containers:
+        - name: app
+          image: cash-intel:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - {name: http, containerPort: 8080}
+          env:
+            - name: CI_ROLE
+              value: "web"
+            # The node id in logs, /api/cluster and pipeline run claims. The
+            # pod name is already unique and already what you would grep for.
+            - name: CI_NODE_ID
+              valueFrom:
+                fieldRef: {fieldPath: metadata.name}
+          envFrom:
+            - configMapRef: {name: cash-intel-config}
+            - secretRef: {name: cash-intel-secrets}
+          volumeMounts:
+            # Uploaded datasets are cached on local disk and re-uploaded to
+            # the bucket on start (app/seed.py's restore_local_uploads). On
+            # shared storage so an upload through one replica survives a
+            # restart of any replica; drop this mount and uploads become
+            # per-pod, which the startup banner warns about.
+            - {name: uploads, mountPath: /data}
+          readinessProbe:
+            # /api/health is the one unauthenticated route (app/main.py's
+            # PUBLIC_API) and reports this pod's own node id and role.
+            httpGet: {path: /api/health, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: {path: /api/health, port: http}
+            initialDelaySeconds: 45     # first start may seed and warm caches
+            periodSeconds: 20
+            failureThreshold: 3
+          startupProbe:
+            # Generous: the first replica up may hold the boot lock while it
+            # seeds, and the others wait on it. Failing them into a crash loop
+            # during that window would make a cold start impossible.
+            httpGet: {path: /api/health, port: http}
+            periodSeconds: 5
+            failureThreshold: 36        # 3 minutes
+          resources:
+            requests: {cpu: "2", memory: "4Gi"}
+            # Keep CI_DUCKDB_MEMORY_LIMIT (see the ConfigMap) below this:
+            # DuckDB's own accounting doesn't include the Python process
+            # around it, so the two must not be the same number.
+            limits: {cpu: "4", memory: "8Gi"}
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities: {drop: ["ALL"]}
+      volumes:
+        - name: uploads
+          persistentVolumeClaim: {claimName: cash-intel-uploads}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cash-intel-uploads
+spec:
+  # ReadWriteMany because every replica mounts it. On EKS that means EFS; a
+  # ReadWriteOnce volume would pin every replica to one node and defeat the
+  # topology spread above.
+  accessModes: ["ReadWriteMany"]
+  resources:
+    requests: {storage: 20Gi}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: cash-intel-web
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels: {app: cash-intel, role: web}

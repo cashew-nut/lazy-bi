@@ -69,15 +69,17 @@ current snapshot by listing the table's `metadata/` directory for the
 highest-versioned `*.metadata.json` file, the same self-describing-directory
 convention Delta's `_delta_log` already relies on.
 
-## Execution: subprocess, killable, strictly serialized
+## Execution: subprocess, killable, serialized per target
 
 **Manual trigger only** — no scheduler. `POST /api/pipelines/{name}/run`
 (admin) creates a `pipeline_runs` row (`PipelineStore.create_run`, status
 `queued`) and hands its id to `pipeline_jobs.enqueue()`.
 
 ```
-pipeline_jobs._drain()  (one daemon thread, started from app/main.py's lifespan)
-    │  pulls one run id off an in-process queue.Queue at a time
+pipeline_jobs._drain()  (a daemon thread, started from app/main.py's lifespan
+    │                    on any node whose CI_ROLE runs pipelines)
+    │  claims the oldest queued run with one atomic UPDATE
+    │  (PipelineStore.claim_next_run) and takes the lock on its target
     ▼
 pipeline_jobs._execute(run_id, pipeline, registry)
     │  subprocess.Popen(["python", "-m", "app.pipeline_runner"], stdin=PIPE, ...)
@@ -104,19 +106,42 @@ on `subprocess.TimeoutExpired`, which a hung query genuinely can't survive.
 exactly this reason: a crash in it can only ever take down its own
 subprocess.
 
-**One run at a time, platform-wide.** `_drain()` is a single consumer
-pulling from a single queue — that alone is what serializes every pipeline
-run, no locking required. Triggering a *different* pipeline while one runs
-queues it; triggering the *same* pipeline again while it has a pending run
-is refused with `409`. An app restart mid-run marks that run
-`interrupted` (`PipelineStore.sweep_interrupted()`, called once at
-startup) rather than leaving it stuck `running` forever.
+**No two runs ever write the same target.** This used to read "one run at a
+time, platform-wide", guaranteed by `_drain()` being a single consumer on a
+single in-process queue — no locking required. That reasoning is a property of
+the *deployment*, not the code: it holds for one process and evaporates at two,
+where two threads on two queues will happily materialize into one bucket path
+at once, and nothing errors. So the guarantee moved into the store
+(see [Scaling §3](scaling.md#3-pipeline-runs-the-one-dangerous-assumption)):
+
+- **The queue is the `pipeline_runs` table.** `claim_next_run` claims the
+  oldest queued run with one atomic `UPDATE … WHERE status = 'queued'`, so
+  exactly one worker gets it however many ask. The in-process `queue.Queue`
+  survives as a doorbell that wakes a worker in the same process immediately;
+  a run triggered on another replica is found by the poll.
+- **The lock is named for the target**, not the platform
+  (`pipeline_target:<path>`), which is the invariant that actually matters.
+  Two pipelines with *different* targets now run concurrently when there is
+  more than one worker; a single worker still runs them one at a time, exactly
+  as before.
+- Triggering the *same* pipeline again while it has a pending run is still
+  refused with `409`.
+
+An app restart mid-run still marks that run `interrupted` rather than leaving
+it stuck `running` forever — but scoped to the restarting node's own claims
+(`PipelineStore.sweep_interrupted(node_id)`), because the old blanket sweep
+would have had a restarting replica declare a *peer's* live run dead and drain
+the queue on its way past. A worker that dies rather than restarts stops
+renewing its lease and is reaped by `sweep_expired()`.
 
 **Post-run bookkeeping** (`_execute`, on success): `cache.clear()` +
 `duck.invalidate()` — the run wrote from a subprocess the main process
 can't see into, so anything cached about the written path (a pinned small
 table, DuckDB's external file cache) is now stale and would otherwise keep
-serving pre-run rows until the TTL lapsed. Then `_sync_lineage()` validates
+serving pre-run rows until the TTL lapsed. `duck.invalidate()` also bumps the
+cluster's data generation, so every *other* replica does the same pair within
+a poll interval — without that, they would each go on serving pre-run rows,
+which is the same staleness bug one process solved locally. Then `_sync_lineage()` validates
 declared lineage against the run's real output schema and, if a loaded
 model scans this pipeline's target, regenerates that model's
 `pipeline_lineage:` YAML section (see [Traceability](#traceability-layers-and-lineage)

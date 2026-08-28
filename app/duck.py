@@ -32,7 +32,7 @@ from typing import Optional
 
 import duckdb
 
-from . import cache, config, s3
+from . import cache, cluster, config, s3
 
 # Extensions are loaded from pinned wheels on disk, never downloaded. See
 # _extension_path: `INSTALL` would reach extensions.duckdb.org at runtime,
@@ -503,7 +503,7 @@ def relation(path: str, fmt: str) -> str:
     return f'"{name}"' if name else _scan_sql(fmt, path)
 
 
-def invalidate() -> None:
+def invalidate(*, announce: bool = True) -> None:
     """Drop everything derived from bucket contents: the pin decisions and the
     pinned tables themselves, plus DuckDB's cached file bytes.
 
@@ -514,7 +514,18 @@ def invalidate() -> None:
     somewhere new is a different key that misses on its own). The byte-cache
     clear is belt and braces on top of DuckDB's own per-open validation: that
     validation needs the endpoint to version its objects (etag), and the one
-    moment we *know* the data changed shouldn't depend on it."""
+    moment we *know* the data changed shouldn't depend on it.
+
+    `announce` is what makes this correct with more than one replica. Each
+    process holds its own pins and its own byte cache, so a write on one node
+    leaves every other node serving pre-write rows until their TTLs lapse —
+    a query engine reading a target a pipeline just rewrote, which is a
+    correctness problem, not a freshness one. Announcing bumps the cluster's
+    data generation and every peer's watcher calls this same function with
+    `announce=False` (app/cluster.py). Unclustered, the bump is a local
+    counter and nothing else happens."""
+    if announce:
+        cluster.bump(cluster.DATA_GENERATION)
     with _lock:
         names = list(_pinned)
         _pinned.clear()
@@ -560,3 +571,10 @@ def source_schema(path: str, fmt: str) -> dict[str, str]:
     bundle name, a source path never means two different things at once."""
     return cache.get_or_set(("duck_source_schema", path, fmt), config.SCHEMA_CACHE_TTL,
                             lambda: relation_schema(_scan_sql(fmt, path)))
+
+
+# A peer's write is this process's invalidation. Registered at import so the
+# reaction exists before the watcher's first pass, and `announce=False` so
+# reacting to someone else's bump can't bump it again — which would have
+# every node re-invalidating every other node, forever.
+cluster.on_change(cluster.DATA_GENERATION, lambda: invalidate(announce=False))

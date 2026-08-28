@@ -34,10 +34,12 @@ touching:
 | [Conversational Analytics](docs/conversational-analytics.md) | Chat, the multi-provider LLM client, the Composer |
 | [API Layer](docs/api-layer.md) | Every HTTP route, grouped by router |
 | [Frontend](docs/frontend.md) | The no-build vanilla-JS architecture and design system |
+| [Scaling & Deployment](docs/scaling.md) | Running it horizontally scaled: process roles, the coordination layer, cloud manifests |
 
 Design history behind individual features (spec, plan, data model,
 research) lives in `specs/NNN-feature-name/`; project principles are in
-`.specify/memory/constitution.md`.
+`.specify/memory/constitution.md`. Deployment manifests (Kubernetes, ECS,
+load-balancer affinity) are in [`deploy/`](deploy/README.md).
 
 ## Run the demo
 

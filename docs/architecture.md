@@ -107,13 +107,25 @@ Two things this diagram is trying to make visible:
 
 ## Process model
 
-- **Single Python process, one uvicorn worker, one DuckDB connection.**
+**One process by default; N when you need them.** Everything below describes
+the default, single-process shape — still what you get with no configuration,
+and still the shape to run until a single container is saturated. Which of
+these properties are *facts* and which are *assumptions* that stop holding at
+two replicas — and what the code now does about the latter — is
+[Scaling](scaling.md).
+
+- **One DuckDB connection per process.**
   `app/duck.py` opens exactly one process-wide `duckdb.DuckDBPyConnection`;
   every caller gets a short-lived `cursor()` off it. This is load-bearing,
   not an optimization detail: DuckDB's parquet-metadata cache, external file
   cache and keep-alive HTTP connections all live on the *instance*, so a
   second connection starts cold and a connection-per-query makes every one
-  of them useless (see [Query Engine](query-engine.md)).
+  of them useless (see [Query Engine](query-engine.md)). Note the scope:
+  *per process*, not per deployment. DuckDB is embedded, so each replica is
+  a complete, independent query engine — which is why scaling the read path
+  out is nearly free, and why the cost that is real is N cold caches rather
+  than any contention (see
+  [Scaling §2](scaling.md#2-duckdb-the-process-is-the-query-engine)).
 - **The embedded demo S3 server** (`app/emulator.py`, a `moto`
   `ThreadedMotoServer`) runs in-process on `127.0.0.1:9600` whenever the demo
   store's endpoint is that loopback address — the default, and still true
@@ -125,13 +137,27 @@ Two things this diagram is trying to make visible:
   main process — a runaway query or an infinite loop in admin-authored SQL
   can only take down a subprocess the parent kills on timeout, never the
   app itself. See [Pipelines](pipelines.md) and [Sandbox](sandbox.md).
-- **Pipeline runs are strictly serialized** platform-wide by a single FIFO
-  worker thread (`app/pipeline_jobs.py`) — at most one pipeline executes at
-  any moment, because a run *writes* a shared target. Sandbox runs are
+- **Pipeline runs never overlap on a target.** A run *writes* a shared bucket
+  path, so two runs of the same pipeline must not interleave. That used to be
+  guaranteed by there being one FIFO worker thread — an argument that holds
+  only for one process. The queue is now the `pipeline_runs` table itself: a
+  run is claimed by one atomic UPDATE and holds a lease-backed lock named for
+  its target while it executes (`app/pipeline_jobs.py`, `app/cluster.py`), so
+  the guarantee reads the same with one worker or three. Sandbox runs are
   read-only, so they answer synchronously with no queue.
 - **SQLite is a single-writer store**, `cash_intel.db`, holding everything
   the platform itself needs to remember — never business data. The bucket
-  is the one and only source of truth for the data being analyzed.
+  is the one and only source of truth for the data being analyzed. It opens
+  in WAL mode with a busy timeout (`app/sqlitedb.py`), which is what lets one
+  writer and several readers be several *processes* on one host; across hosts
+  the store classes want Postgres behind them (see
+  [Scaling §6](scaling.md#6-state-what-has-to-be-shared)).
+- **Coordination between processes is explicit, and inert when there is only
+  one.** `app/cluster.py` holds this process's role (`CI_ROLE`), the
+  lease-based locks that replace "there is only one of me", and the change
+  generations replicas watch each other with. Unclustered — the default — a
+  lock is a `threading.Lock`, the generations are local integers, and no
+  watcher thread starts.
 
 ## The module map
 
@@ -146,6 +172,7 @@ Two things this diagram is trying to make visible:
 | [Agents & MCP](agents-and-mcp.md) | `app/skills.py`, `app/agents.py`, `app/skills_analytics.py`, `app/mcpserver.py` | The Skill/Agent abstractions and the MCP server mounted at `/mcp` |
 | [Conversational Analytics](conversational-analytics.md) | `app/llm.py`, `app/llmclient.py`, `app/nlq.py`, `app/composer.py`, `app/memorystore.py`, `app/conversationstore.py` | Chat's translate→re-validate→execute loop, the multi-provider LLM client, the Composer, self-learning model memories |
 | [API Layer](api-layer.md) | `app/api/*.py` | Every HTTP route, grouped by router, with roles and request/response shapes |
+| [Scaling & Deployment](scaling.md) | `app/cluster.py`, `app/clusterstore.py`, `app/sqlitedb.py`, `app/pipeline_jobs.py`, `deploy/` | What "single process" actually coupled, how each coupling is broken, and the manifests for running it horizontally scaled |
 | [Frontend](frontend.md) | `app/static/js/*`, `app/static/*.css`, `design.md` | The no-build vanilla-JS architecture: router, state, chart dispatch, the design system |
 
 ## Data at rest
@@ -200,11 +227,20 @@ Full detail, including the session/role/CSRF model, is in
 
 ## Deployment topology
 
-- **A single Docker image** (`python:3.12-slim`), built once, running one
-  `uvicorn` worker by design — the in-process S3 emulator and the SQLite
-  store both want a single writer. Scaling out horizontally is only
-  supported against an **external** S3 endpoint (real AWS, or a shared
-  MinIO/LocalStack), never the embedded emulator.
+- **A single Docker image** (`python:3.12-slim`), built once. One container
+  is the default and the right size until it is saturated; `CI_ROLE` splits
+  the same image into `web` (serves HTTP, scale to N) and `worker` (drains
+  the pipeline queue) when it is not. Manifests for both — Kubernetes,
+  ECS/Fargate, and a runnable local three-replica compose profile — are in
+  [`deploy/`](../deploy/README.md), and the reasoning is in
+  [Scaling](scaling.md).
+- **Scaling out requires an external S3 endpoint** (real AWS, or a shared
+  MinIO/LocalStack), never the embedded emulator: it is in-memory and
+  per-process, so each replica would serve its own demo bucket and answer the
+  same query differently. A clustered process refuses to start on that
+  configuration rather than doing it quietly (`app/cluster.py`'s preflight),
+  along with a `CI_DUCKDB_PATH` pointing at a file, which two replicas cannot
+  share.
 - **State lives outside the image**: the SQLite volume (`/data`) and the
   host-mounted `models/`, `dimensions/`, `pipelines/` directories, which
   `docker-compose.yml` bind-mounts so editing a YAML file on the host takes

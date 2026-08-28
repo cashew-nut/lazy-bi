@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse, Response
 
-from . import auth, config, emulator, llmclient, mcpserver, pipeline_jobs, seed
+from . import auth, cluster, config, emulator, llmclient, mcpserver, pipeline_jobs, seed
 # Registers ask_question/list_models into app/skills.py's registry as a
 # module-import side effect — must happen before mcpserver.create_asgi_app()
 # below reads that registry (specs/017-agent-skills-mcp-server/research.md
@@ -37,6 +37,13 @@ STATIC_DIR = Path(__file__).parent / "static"
 # /mcp has no equivalent public entry at all (specs/017-agent-skills-mcp-
 # server/): even the MCP `initialize` handshake requires valid credentials.
 PUBLIC_API = {("POST", "/api/auth/login"), ("GET", "/api/health")}
+
+# How long a replica waits for the boot lock before starting anyway. Long
+# enough to cover seeding the demo bucket on a cold bucket (the slowest thing
+# under that lock), short enough that one wedged replica cannot hold a whole
+# deployment's rollout hostage — the loser's own first-run checks are still
+# correct on their own, it just may briefly serve an emptier catalog.
+_BOOT_LOCK_WAIT = 120.0
 
 # Built once at import time (not inside create_app()/lifespan) so its
 # `.lifespan` can be composed into the app's own lifespan() below — see
@@ -155,6 +162,73 @@ def _llm_banner() -> str:
     return "LLM: " + " ".join(parts)
 
 
+def _cluster_banner() -> str:
+    """This process's place in the deployment, printed on every start.
+
+    Which role a container is running is the first question when a scaled-out
+    deployment misbehaves ("why is nothing draining the queue?"), and it is
+    invisible from the outside — a `web` replica and a `worker` share an image,
+    a port and a health endpoint."""
+    line = f"cluster: role={config.ROLE} node={config.NODE_ID}"
+    if not config.CLUSTERED:
+        return line + " (single process — CI_CLUSTERED unset)"
+    return (line + f" clustered poll={config.CLUSTER_POLL_SECONDS}s "
+                   f"lease={config.CLUSTER_LEASE_SECONDS}s")
+
+
+def _run_preflight() -> None:
+    """Refuse to start on a configuration that cannot survive a second
+    replica, and warn about one that can only just.
+
+    Fatal rather than a warning because every problem it catches is silent at
+    runtime: a per-replica in-memory demo bucket answers queries, it just
+    answers them differently on each replica. `CI_CLUSTER_PREFLIGHT=0` is the
+    escape hatch for someone who knows exactly what they are doing (a single
+    clustered process, say, sharing a database with nothing yet)."""
+    problems = cluster.preflight()
+    if problems and config.CLUSTER_PREFLIGHT:
+        raise SystemExit(
+            "[cash-intel] refusing to start clustered with this configuration:\n"
+            + "\n".join(f"  - {p}" for p in problems)
+            + "\n  (set CI_CLUSTER_PREFLIGHT=0 to start anyway, or CI_CLUSTERED=0 "
+              "if this really is a single process)")
+    for problem in problems:
+        print(f"[cash-intel] cluster WARNING: {problem}")
+    for note in cluster.warnings():
+        print(f"[cash-intel] cluster note: {note}")
+
+
+def _initialize_shared_state() -> None:
+    """The first-run steps that write shared state, run by one replica only.
+
+    Every one of these is "do it if it hasn't been done" — seed the demo
+    bucket if empty, create the bootstrap admin if there are no accounts,
+    seed the demo notebook if there are none. That is a check-then-act, and
+    N replicas booting from the same image at the same second all pass the
+    check: two bootstrap admins, two printed passwords, or a half-seeded
+    bucket read while it is still being written. Under one lock they happen
+    once; the replicas that lose simply carry on, since by then the work is
+    done and their own checks correctly find nothing to do.
+
+    Waits rather than skipping, because the loser still needs the *result* —
+    a replica that starts serving before the demo bucket exists answers a
+    query with an empty catalog.
+    """
+    with cluster.lock(cluster.BOOT_LOCK, wait=_BOOT_LOCK_WAIT) as lease:
+        if lease is None:
+            print("[cash-intel] another node is still initializing shared state "
+                  "— continuing without waiting further")
+        if seed.seed_bucket():
+            print(f"[cash-intel] seeded demo data into s3://{config.DEMO_BUCKET}")
+        restored = seed.restore_local_uploads()
+        if restored:
+            print(f"[cash-intel] restored {restored} uploaded file(s) into s3://{config.BUCKET}")
+        registry.init()
+        seed.seed_bootstrap_admin()
+        if seed.seed_notebook_demo():
+            print("[cash-intel] seeded demo notebook: Sales Overview")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # mcp_app's own lifespan (its Streamable HTTP session manager's task
@@ -171,26 +245,33 @@ async def lifespan(app: FastAPI):
         if config.ENV_FILE_OVERRODE:
             print(f"[cash-intel] .env overrode {', '.join(config.ENV_FILE_OVERRODE)} "
                   f"— already set in the environment, but .env wins")
+        print(f"[cash-intel] {_cluster_banner()}")
+        if config.CLUSTERED:
+            _run_preflight()
         print(f"[cash-intel] {_s3_banner()}")
         if emulator.start_if_embedded():
             print(f"[cash-intel] embedded S3 emulator on {config.DEMO_S3_ENDPOINT}")
-        if seed.seed_bucket():
-            print(f"[cash-intel] seeded demo data into s3://{config.DEMO_BUCKET}")
-        restored = seed.restore_local_uploads()
-        if restored:
-            print(f"[cash-intel] restored {restored} uploaded file(s) into s3://{config.BUCKET}")
-        registry.init()
+        _initialize_shared_state()
         print(f"[cash-intel] loaded models: {', '.join(registry.models) or '(none)'}")
         print(f"[cash-intel] loaded agents: {', '.join(registry.agents) or '(none)'}")
         print(f"[cash-intel] {_llm_banner()}")
-        seed.seed_bootstrap_admin()
-        if seed.seed_notebook_demo():
-            print("[cash-intel] seeded demo notebook: Sales Overview")
-        interrupted = registry.pipeline_store.sweep_interrupted()
+        # Scoped to this node when clustered: a restarting replica reaps the
+        # runs *it* left mid-flight and nothing else. The unscoped sweep — the
+        # original "nothing can be running if I am starting" — is still right
+        # for a single process, and only for a single process, which is
+        # exactly the distinction config.CLUSTERED draws.
+        interrupted = registry.pipeline_store.sweep_interrupted(
+            config.NODE_ID if config.CLUSTERED else None)
         if interrupted:
             print(f"[cash-intel] marked {interrupted} pipeline run(s) interrupted (restart mid-run)")
-        pipeline_jobs.start_worker(registry)
+        if pipeline_jobs.start_worker(registry):
+            print("[cash-intel] pipeline worker started")
+        else:
+            print(f"[cash-intel] no pipeline worker on this node (CI_ROLE={config.ROLE})")
+        if cluster.start_watcher():
+            print("[cash-intel] cluster watcher started — following peers' data/config changes")
         yield
+        cluster.stop_watcher()
         pipeline_jobs.stop_worker()
         emulator.stop()
 

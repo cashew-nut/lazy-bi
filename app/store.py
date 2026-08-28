@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from . import sqlitedb
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS visuals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,9 +75,7 @@ class VisualStore:
                 conn.execute("ALTER TABLE measure_provenance RENAME COLUMN frame_emits TO emits")
 
     def _conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+        return sqlitedb.connect(self.db_path)
 
     @staticmethod
     def _now() -> str:

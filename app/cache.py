@@ -18,6 +18,8 @@ import threading
 import time
 from typing import Callable, Hashable, TypeVar
 
+from . import cluster
+
 _T = TypeVar("_T")
 
 _lock = threading.Lock()
@@ -52,3 +54,20 @@ def get_or_set(key: Hashable, ttl: float, compute: Callable[[], _T]) -> _T:
 def clear() -> None:
     with _lock:
         _store.clear()
+
+
+# A bucket write on *any* replica empties this one's derived answers.
+#
+# The two call sites that write to the bucket (a pipeline run's completion in
+# app/pipeline_jobs.py, an upload/delete in app/api/datasets.py) each call
+# clear() and then duck.invalidate(). Both are process-local: they fix the
+# replica that did the writing and leave every other replica answering from a
+# schema, listing or spine bound derived before the write, for as long as the
+# TTL says. That is the freshness assumption a single process was entitled to
+# and a cluster is not, so the same pair runs here on a peer's bump.
+#
+# Registered before app/duck.py's reaction (which imports this module, so this
+# line has already run by the time its own registration does), which keeps the
+# cluster path in the same order as the local one: clear the derived answers,
+# then drop the pins and cached bytes they were derived from.
+cluster.on_change(cluster.DATA_GENERATION, clear)

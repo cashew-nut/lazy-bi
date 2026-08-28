@@ -21,6 +21,7 @@ same name (_load_env_file below), so editing the file is always enough — no
 `unset` of some earlier experiment's export required.
 """
 import os
+import socket
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
@@ -416,6 +417,71 @@ def store_for_path(path: str) -> Store:
     if path.startswith("s3://"):
         return store_for(path[len("s3://"):].partition("/")[0])
     return primary_store()
+
+# ── Cluster / process roles (app/cluster.py) ─────────────────────────────
+# The platform runs as one process by default and every setting below is
+# inert in that shape — the point of them is that the *assumptions* a single
+# process is allowed to make (I am the only writer; my cache is the only
+# cache; my registry is the whole truth) stop being true the moment a second
+# replica exists, and they must be named before they can be enforced.
+#
+# CI_ROLE splits the one image into the two things it does:
+#   all     — everything in one process. The default, and exactly the
+#             behaviour that shipped before this existed.
+#   web     — serves HTTP: queries, authoring, chat, MCP. Runs no pipeline.
+#             Scale this one out; it is the read path.
+#   worker  — drains the pipeline queue. It still mounts the whole API (one
+#             image, one entrypoint, and a health endpoint a scheduler can
+#             probe); it is simply not in the load balancer's target group,
+#             so nothing routes user traffic onto a node that is busy
+#             materializing a table.
+# A deployment scaled out horizontally runs N `web` and (usually) one
+# `worker`; more than one worker is supported and safe — see
+# CI_PIPELINE_LEASE_SECONDS — it just isn't usually needed.
+ROLE = _env("CI_ROLE", "all").lower()
+if ROLE not in ("all", "web", "worker"):
+    raise SystemExit(f"CI_ROLE must be one of all/web/worker, got '{ROLE}'")
+SERVES_HTTP = ROLE in ("all", "web")
+RUNS_PIPELINES = ROLE in ("all", "worker")
+
+# A stable name for this process in logs, `/api/cluster`, and the `claimed_by`
+# column of a pipeline run. Defaults to hostname:pid, which is what a
+# container orchestrator already makes unique for you.
+NODE_ID = _env("CI_NODE_ID") or f"{socket.gethostname()}:{os.getpid()}"
+
+# Whether this process must assume other processes share its state. Off, the
+# coordination primitives short-circuit to plain in-process ones and cost a
+# dict lookup; on, they go through the shared store and this process gives up
+# every "I am the only one" shortcut. Set it whenever more than one process
+# points at the same CI_DB_PATH — including two workers on one host.
+CLUSTERED = _bool("CI_CLUSTERED", False)
+
+# How often a clustered process asks the shared store whether anyone else
+# changed the data or the configuration (app/cluster.py's watcher). This is
+# the staleness bound on a scaled-out deployment: after a pipeline writes or
+# a model is saved on node A, node B is correct within this many seconds.
+# Two indexed single-row reads per interval, so it is cheap to make short.
+CLUSTER_POLL_SECONDS = _float("CI_CLUSTER_POLL_SECONDS", 5.0)
+
+# How long a lock or a claimed pipeline run stays valid without being
+# renewed. A process that dies mid-run leaves its claim behind; this is how
+# long the rest of the cluster waits before deciding it is gone and reaping
+# it. Renewal happens at a third of this interval, so it must be comfortably
+# longer than one poll cycle.
+CLUSTER_LEASE_SECONDS = _float("CI_CLUSTER_LEASE_SECONDS", 60.0)
+
+# Refuse to start when the configuration cannot survive being scaled out —
+# see app/cluster.py's preflight(). On by default in clustered mode because
+# every failure it catches is silent otherwise: an embedded, per-replica demo
+# bucket answers happily with *different* data per replica, and that reads as
+# a flaky dashboard rather than a misconfiguration.
+CLUSTER_PREFLIGHT = _bool("CI_CLUSTER_PREFLIGHT", True)
+
+# How long a SQLite call waits for another process's write lock before
+# giving up (seconds). Zero — sqlite3's own default — is what turns a
+# millisecond of overlap between a web replica and the pipeline worker into
+# a "database is locked" error; see app/sqlitedb.py.
+SQLITE_BUSY_TIMEOUT = _float("CI_SQLITE_BUSY_TIMEOUT", 10.0)
 
 # Semantic models + persistence
 MODELS_DIR = Path(_env("CI_MODELS_DIR") or PROJECT_ROOT / "models")

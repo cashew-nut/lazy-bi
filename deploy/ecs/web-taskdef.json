@@ -1,0 +1,58 @@
+{
+  "family": "cash-intel-web",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "4096",
+  "memory": "8192",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/cash-intel-execution",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/cash-intel-task",
+  "volumes": [
+    {
+      "name": "uploads",
+      "efsVolumeConfiguration": {
+        "fileSystemId": "fs-REPLACE_ME",
+        "transitEncryption": "ENABLED",
+        "rootDirectory": "/cash-intel"
+      }
+    }
+  ],
+  "containerDefinitions": [
+    {
+      "name": "app",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/cash-intel:latest",
+      "essential": true,
+      "portMappings": [{"containerPort": 8080, "protocol": "tcp"}],
+      "mountPoints": [{"sourceVolume": "uploads", "containerPath": "/data"}],
+      "environment": [
+        {"name": "CI_ROLE", "value": "web"},
+        {"name": "CI_CLUSTERED", "value": "1"},
+        {"name": "CI_BUCKET", "value": "my-data-lake"},
+        {"name": "AWS_REGION", "value": "eu-west-2"},
+        {"name": "CI_DEMO", "value": "0"},
+        {"name": "CI_COOKIE_SECURE", "value": "1"},
+        {"name": "CI_CLUSTER_POLL_SECONDS", "value": "5"},
+        {"name": "CI_CLUSTER_LEASE_SECONDS", "value": "60"},
+        {"name": "CI_DUCKDB_THREADS", "value": "4"},
+        {"name": "CI_DUCKDB_MEMORY_LIMIT", "value": "6GB"}
+      ],
+      "secrets": [
+        {"name": "CI_LLM_API_KEY", "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:cash-intel/llm-api-key"}
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=3)\""],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 120
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/cash-intel",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "web"
+        }
+      }
+    }
+  ]
+}
