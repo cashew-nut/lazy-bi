@@ -1,0 +1,15 @@
+# Routes only to `web`. The worker deliberately has no Service: it mounts the
+# same API (one image, one entrypoint) but nothing should send it a user
+# query while it is materializing a table.
+apiVersion: v1
+kind: Service
+metadata:
+  name: cash-intel
+  labels: {app: cash-intel}
+spec:
+  type: ClusterIP
+  selector:
+    app: cash-intel
+    role: web          # <- the whole point of this file
+  ports:
+    - {name: http, port: 80, targetPort: http}

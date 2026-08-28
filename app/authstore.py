@@ -14,6 +14,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+from . import sqlitedb
+
 ROLES = ("viewer", "author", "admin")
 # spec 013: kept in sync by hand with the 4 ids in app/static/js/theme.js's
 # THEMES catalog — this backend has no shared-code path to the frontend, and
@@ -91,9 +93,7 @@ class AuthStore:
                 conn.execute("ALTER TABLE users ADD COLUMN theme_updated_at TEXT")
 
     def _conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+        return sqlitedb.connect(self.db_path)
 
     # ── users ────────────────────────────────────────────────
 

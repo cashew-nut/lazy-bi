@@ -1,12 +1,42 @@
-"""FIFO pipeline run worker (specs/014-polars-pipeline-module/): a single
-daemon thread drains queued runs one at a time, spawning each in its own
-subprocess (app/pipeline_runner.py) so a hard timeout can actually be
-enforced — a plain thread cannot be killed — and a runaway query or infinite
-loop never takes the app down. The worker is the only writer of
-pipeline_runs rows, extending this app's existing single-writer posture
-(embedded S3 emulator, sqlite store) to pipeline execution: at most one run
-executes platform-wide at any moment, enforced simply by there being one
-consumer thread pulling from one queue.
+"""The pipeline run worker (specs/014-polars-pipeline-module/): a daemon
+thread drains queued runs, spawning each in its own subprocess
+(app/pipeline_runner.py) so a hard timeout can actually be enforced — a plain
+thread cannot be killed — and a runaway query or infinite loop never takes
+the app down.
+
+**What changed for horizontal scaling.** The original guarantee was "at most
+one run executes platform-wide at any moment, enforced simply by there being
+one consumer thread pulling from one queue". That enforcement is a property
+of the *deployment*, not of the code: run a second replica and there are two
+threads, two queues, and no guarantee — two runs materializing into the same
+bucket path at the same time, silently, with the loser's rows or the winner's
+depending on how the writes interleave. It is the single most dangerous thing
+about scaling this app out, precisely because nothing errors.
+
+So the guarantee now lives where the number of processes cannot change it:
+
+  - **The queue is the `pipeline_runs` table**, not the in-process
+    `queue.Queue`. A run is claimed by one atomic UPDATE
+    (`PipelineStore.claim_next_run`), so exactly one worker gets it however
+    many ask. The in-process queue survives as a *doorbell* — it wakes this
+    thread immediately when the run was triggered on this same process, which
+    is the common case and saves a poll interval of latency. A run triggered
+    on another replica is found by the poll.
+  - **Mutual exclusion is per target, not global.** A run holds a cluster
+    lock named for the path it writes (`pipeline_target:<path>`) for as long
+    as it runs. That is the actual invariant — two runs writing the same
+    target must not overlap — and it is strictly stronger than the old
+    global serialization where it matters (it holds across processes) and
+    deliberately weaker where it did not (two pipelines writing different
+    targets now run concurrently, on different workers).
+  - **A dead worker is detected, not assumed.** The claim carries a lease
+    that this thread renews while the subprocess runs. A worker that is
+    killed mid-run stops renewing and its run is swept to `interrupted` by
+    whoever notices; a worker that is merely slow keeps its claim.
+
+Unclustered — the default — all three collapse back to the original
+behaviour: one process, one worker, an uncontended lock, and a claim nobody
+races for.
 """
 from __future__ import annotations
 
@@ -18,7 +48,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Optional
 
-from . import cache, config, duck, semantic
+from . import cache, cluster, config, duck, semantic
 from . import pipelines as pipelines_mod
 from .pipelines import Pipeline
 from .pipelinestore import PipelineStore
@@ -79,9 +109,23 @@ def _sync_lineage(registry, pipeline: Pipeline, output_schema: Optional[list]) -
     return (len(issues) == 0), issues
 
 
+def target_lock_name(pipeline: Pipeline) -> str:
+    """The cluster lock a run of `pipeline` holds while it executes.
+
+    Named for the target path rather than the pipeline, because the thing
+    that must not overlap is the *write*: two differently-named pipelines
+    pointed at one path are exactly the collision this is for, and two
+    pipelines with different targets have no reason to wait for each other."""
+    return f"pipeline_target:{pipeline.target.path}"
+
+
 def _execute(run_id: int, pipeline: Pipeline, registry) -> None:
+    """Run one already-claimed run to completion and record its outcome.
+
+    The caller has claimed `run_id` (so its row is `running`, attributed to
+    this node) and holds this pipeline's target lock. This function only
+    executes and records."""
     store: PipelineStore = registry.pipeline_store
-    store.mark_running(run_id)
     target = duck.split_s3(pipeline.target.path)
     job = {
         "pipeline": _pipeline_job_spec(pipeline),
@@ -104,8 +148,21 @@ def _execute(run_id: int, pipeline: Pipeline, registry) -> None:
         store.finish_run(run_id, "failed", error=f"could not start runner subprocess: {exc}")
         return
 
+    # The run's own lease is renewed for as long as the subprocess is alive.
+    # The run row's own lease is renewed for as long as the subprocess is
+    # alive. A pipeline's timeout may be an hour (config.PIPELINE_TIMEOUT_MAX)
+    # and a lease is a minute, so without this every long run would look
+    # abandoned and be swept out from under itself. The caller's keeper thread
+    # renews the *target lock* over the same span; this one is for the row.
+    #
+    # None unclustered: there is no lease on the row (see _lease_seconds) and
+    # nothing sweeping it mid-flight, so a renewal thread would tick for the
+    # life of every run to call a function that returns True.
+    keep = _RunLease(store, run_id, config.NODE_ID) if config.CLUSTERED else None
     try:
-        stdout, stderr = proc.communicate(input=json.dumps(job), timeout=pipeline.timeout_seconds)
+        with cluster.renewing(None, alongside=keep.renew if keep else None):
+            stdout, stderr = proc.communicate(
+                input=json.dumps(job), timeout=pipeline.timeout_seconds)
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.communicate()  # reap the process so its pipes don't leak
@@ -157,35 +214,113 @@ def _execute(run_id: int, pipeline: Pipeline, registry) -> None:
         )
 
 
+class _RunLease:
+    """Renews one claimed run's lease, in the shape `cluster.renewing` wants
+    (a callable returning False when the claim is gone). Only constructed in
+    a cluster — see _execute."""
+
+    def __init__(self, store: PipelineStore, run_id: int, node_id: str):
+        self._store, self._run_id, self._node_id = store, run_id, node_id
+
+    def renew(self) -> bool:
+        return self._store.renew_lease(
+            self._run_id, self._node_id, config.CLUSTER_LEASE_SECONDS)
+
+
+def _lease_seconds() -> float:
+    """The lease a claim carries. Zero unclustered, which writes NULL and
+    means "nothing is watching this claim" — the single-process case, where
+    a crash is recovered by `sweep_interrupted` at the next start rather than
+    by a peer noticing."""
+    return config.CLUSTER_LEASE_SECONDS if config.CLUSTERED else 0.0
+
+
+def _run_one(registry) -> bool:
+    """Claim and run at most one queued run. True if one was executed.
+
+    The order is claim-then-lock, not lock-then-claim, because the claim is
+    what tells us which target to lock. A claim that cannot get its target
+    lock is handed straight back to the queue: another worker is writing that
+    path right now, and this one has other runs it could be doing.
+    """
+    store: PipelineStore = registry.pipeline_store
+    run = store.claim_next_run(config.NODE_ID, _lease_seconds())
+    if run is None:
+        return False
+    run_id = run["id"]
+    pipeline = registry.pipelines.get(run["pipeline"])
+    if pipeline is None:
+        # Reachable in a cluster for a reason it never was in one process: a
+        # pipeline created on a peer whose CONFIG_GENERATION bump this node
+        # has not polled yet. Requeue rather than fail — the registry will
+        # catch up within a poll interval, and failing a run because the
+        # worker was momentarily behind would be a lie about the pipeline.
+        if config.CLUSTERED and store.requeue_run(run_id, config.NODE_ID):
+            return False
+        store.finish_run(run_id, "failed",
+                         error=f"pipeline '{run['pipeline']}' no longer exists")
+        return True
+    with cluster.lock(target_lock_name(pipeline), wait=0.0) as lease:
+        if lease is None:
+            # Someone else is writing this target. Back to the queue.
+            store.requeue_run(run_id, config.NODE_ID)
+            return False
+        with cluster.renewing(lease) as lost:
+            _execute(run_id, pipeline, registry)
+        if lost.is_set():
+            print(f"[cash-intel] pipeline run {run_id}: target lock lapsed mid-run "
+                  f"— another worker may have run the same target concurrently")
+    return True
+
+
 def _drain(registry) -> None:
     while not _stop_event.is_set():
         try:
-            run_id = _queue.get(timeout=1)
+            # The doorbell: a run triggered on this process wakes the loop
+            # immediately. The timeout is the poll that finds runs triggered
+            # elsewhere — and, unclustered, simply the idle tick it always was.
+            _queue.get(timeout=config.CLUSTER_POLL_SECONDS if config.CLUSTERED else 1)
         except queue.Empty:
-            continue
-        run = registry.pipeline_store.get_run(run_id)
-        if run is None or run["status"] != "queued":
-            continue  # defensive only — enqueue() only ever posts freshly-queued ids
-        pipeline = registry.pipelines.get(run["pipeline"])
-        if pipeline is None:
-            registry.pipeline_store.finish_run(
-                run_id, "failed", error=f"pipeline '{run['pipeline']}' no longer exists"
-            )
-            continue
-        _execute(run_id, pipeline, registry)
+            pass
+        try:
+            # Drain rather than run-one-per-wake: several runs may be queued
+            # (a burst, or a peer's backlog after this worker restarted), and
+            # each _queue.get only accounts for one of them.
+            while not _stop_event.is_set() and _run_one(registry):
+                pass
+            if config.CLUSTERED:
+                registry.pipeline_store.sweep_expired()
+        except Exception as exc:                                # noqa: BLE001
+            # The worker thread must outlive one bad run: dying here would
+            # leave every future trigger queued forever with nothing to say
+            # why. The run itself is already recorded failed by _execute.
+            print(f"[cash-intel] pipeline worker pass failed: {exc}")
 
 
 def enqueue(run_id: int) -> None:
-    """Post a freshly-created queued run to the worker. Safe to call before
-    start_worker() — the queue simply holds it until the thread is running."""
+    """Ring the doorbell for a freshly-created queued run.
+
+    Not the queue itself any more — the run's `queued` row in the store is
+    (see the module docstring). This only saves a poll interval when the
+    worker happens to live in the process that took the trigger, so it is
+    safe to call from a `web` replica with no worker at all: the row is
+    already there and some worker will claim it."""
     _queue.put(run_id)
 
 
-def start_worker(registry) -> None:
+def start_worker(registry) -> bool:
+    """Start draining runs, unless this process's role says not to.
+
+    Returns whether a worker started, so the caller can say so at boot — "no
+    worker here" is exactly the kind of thing that must be visible in a log
+    rather than inferred from runs sitting queued."""
     global _worker_thread
+    if not config.RUNS_PIPELINES:
+        return False
     _stop_event.clear()
     _worker_thread = threading.Thread(target=_drain, args=(registry,), daemon=True, name="pipeline-jobs")
     _worker_thread.start()
+    return True
 
 
 def stop_worker() -> None:

@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Optional
 
 from . import agents as agents_mod
-from . import config, pipelines as pipelines_mod, semantic
+from . import cluster, config, pipelines as pipelines_mod, semantic
 from .authstore import AuthStore
 from .conversationstore import ConversationStore
 from .localbundlestore import LocalBundleStore
@@ -60,7 +60,7 @@ class Registry:
         from . import skills_analytics  # noqa: F401
         self.reload_all()
 
-    def reload_all(self) -> None:
+    def reload_all(self, *, announce: bool = True) -> None:
         """Reload dimension bundles, then models, then resolve each model
         (its fact tables and their imports) against the freshly-loaded
         bundles — bundles must load first since models validate their imports
@@ -158,6 +158,18 @@ class Registry:
         # the editor's debounced re-validations queued up behind it. The
         # data-changing call sites (a pipeline run, an upload/delete) still
         # clear both — see app/pipeline_jobs.py and app/api/datasets.py.
+        #
+        # `announce` is the multi-replica half of the same reasoning. Every
+        # cache above is keyed on something that dies with the object this
+        # reload replaced — *in this process*. A model saved through one
+        # replica lives in that replica's `self.models` and nowhere else, so
+        # a request load-balanced to a peer reports it missing until the peer
+        # reloads on its own (which nothing was making it do). Announcing
+        # bumps the cluster's config generation; every peer's watcher calls
+        # this same method with announce=False. Unclustered it is one integer
+        # increment and no peers. See app/cluster.py.
+        if announce:
+            cluster.bump(cluster.CONFIG_GENERATION)
 
     def read_model_text(self, model: semantic.Model) -> str:
         if model.locked:
@@ -192,3 +204,8 @@ class Registry:
 
 
 registry = Registry()
+
+# A peer's model/bundle/pipeline/agent save is this process's reload. Reacting
+# with announce=False is what stops N replicas from bumping each other in a
+# loop — one save is one bump and one reload per replica, not a cascade.
+cluster.on_change(cluster.CONFIG_GENERATION, lambda: registry.reload_all(announce=False))

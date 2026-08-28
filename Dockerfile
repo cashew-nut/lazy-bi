@@ -50,6 +50,12 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=45s \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=3)"
 
-# single worker by design: demo mode runs the S3 emulator in-process, and the
-# sqlite store expects one writer. Scale out only with an external S3 endpoint.
+# One uvicorn worker per container, and one container by default: demo mode
+# runs the S3 emulator in-process, so a second worker would hold a second,
+# different demo bucket. Scale by running more *containers* against an
+# external S3 endpoint, with CI_CLUSTERED=1 and CI_ROLE splitting them into
+# `web` and `worker` — see docs/scaling.md and deploy/. Deliberately not
+# `--workers N`: every replica needs its own node identity and its own
+# lifespan (the boot lock, the cluster watcher, the pipeline worker), which
+# uvicorn's forked workers would each duplicate under one identity.
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]

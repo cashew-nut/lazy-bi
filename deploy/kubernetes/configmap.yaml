@@ -1,0 +1,59 @@
+# Non-secret configuration shared by every role. Credentials live in the
+# Secret alongside this (secret.example.yaml); everything here is safe to
+# commit.
+#
+# Read docs/scaling.md before changing any of the CI_CLUSTER_* values — each
+# one trades a specific failure mode against a specific cost, and the comments
+# below name which.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cash-intel-config
+data:
+  # ── the object store ──────────────────────────────────────────────────
+  # The bucket is the source of truth and the only thing every replica must
+  # agree on. Leave CI_S3_ENDPOINT unset for real AWS: DuckDB then derives
+  # <bucket>.s3.<region>.amazonaws.com itself, which is the only form that
+  # doesn't turn a cross-region bucket into a redirect reported as an HTTP
+  # error (app/duck.py's _secret_sql).
+  CI_BUCKET: "my-data-lake"
+  AWS_REGION: "eu-west-2"
+
+  # The demo catalog is off. The alternative is pointing CI_DEMO_S3_ENDPOINT
+  # at a shared endpoint — what must never happen is leaving it on the
+  # in-process emulator, where each replica would hold its own copy in memory
+  # and answer the same query differently. The preflight refuses to start on
+  # that; this is the other way to satisfy it.
+  CI_DEMO: "0"
+
+  # ── clustering ────────────────────────────────────────────────────────
+  CI_CLUSTERED: "1"
+  # The staleness bound: after a pipeline writes or a model is saved on one
+  # replica, every other replica is correct within this many seconds. Two
+  # indexed single-row reads per replica per interval, so it is cheap to
+  # shorten if 5s of staleness is visible to your users.
+  CI_CLUSTER_POLL_SECONDS: "5"
+  # How long a dead worker's pipeline run stays un-reclaimed. Must be
+  # comfortably longer than one poll interval, and the pod's
+  # terminationGracePeriodSeconds should exceed it (see worker-deployment).
+  CI_CLUSTER_LEASE_SECONDS: "60"
+
+  # ── DuckDB, per replica ───────────────────────────────────────────────
+  # Unset (:memory:) is required, not preferred: DuckDB takes an exclusive
+  # lock on a database file, so two replicas sharing a path means the second
+  # one fails to open it. Left out of this map entirely so it cannot be set
+  # by accident.
+  #
+  # Both limits MUST be set in a container. Without them DuckDB sizes itself
+  # from the *host's* cores and RAM, which is how a pod memory limit turns
+  # into an OOM kill instead of a spill to disk. Keep the memory limit below
+  # the pod's own limit — DuckDB's accounting doesn't include the Python
+  # process around it.
+  CI_DUCKDB_THREADS: "4"
+  CI_DUCKDB_MEMORY_LIMIT: "6GB"
+
+  # ── sessions ──────────────────────────────────────────────────────────
+  # Behind TLS termination at the ingress. Sessions are rows in the shared
+  # store, not server-side memory, which is why no session affinity is
+  # required at the load balancer.
+  CI_COOKIE_SECURE: "1"

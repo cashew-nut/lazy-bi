@@ -103,7 +103,8 @@ picker and its landing-page overview — see
 | `POST /api/datasets/local` | author | Multipart upload (`.csv`/`.parquet`) into `local/<name>/…`, unmodeled, ready to build a model on. |
 | `DELETE /api/datasets/local/{name}` | author | |
 | `GET /api/explorer` | any | Same bucket walk as `/datasets`, shaped for the data-overview pane. |
-| `GET /api/health` | public | Liveness probe + LLM configuration echo (provider, model choices, thinking-capable models) — see [Conversational Analytics](conversational-analytics.md). |
+| `GET /api/health` | public | Liveness probe + LLM configuration echo (provider, model choices, thinking-capable models) — see [Conversational Analytics](conversational-analytics.md). Also reports this replica's `node`, `role` and `clustered`, so two identical requests returning two node ids confirms the load balancer is spreading — see [Scaling](scaling.md). |
+| `GET /api/cluster` | admin | The deployment's own state: the live node roster with roles, the change generations each node has observed, and every held lock with its holder and expiry. The questions a load-balanced `/api/health` cannot answer — is the worker running, is a replica a generation behind, is a pipeline target locked by a node that died. See [Scaling](scaling.md#8-observability). |
 
 ## Query (`app/api/query.py`)
 

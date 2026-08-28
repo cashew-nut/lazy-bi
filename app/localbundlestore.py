@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from . import sqlitedb
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS local_bundles (
     name TEXT PRIMARY KEY,
@@ -28,9 +30,7 @@ class LocalBundleStore:
             conn.executescript(SCHEMA)
 
     def _conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+        return sqlitedb.connect(self.db_path)
 
     @staticmethod
     def _now() -> str:

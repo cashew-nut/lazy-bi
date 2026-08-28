@@ -1,9 +1,10 @@
-"""Data explorer (bucket objects mapped to models) and health."""
+"""Data explorer (bucket objects mapped to models), health, and cluster state."""
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
-from .. import config, llmclient, s3, semantic
+from .. import cluster, config, llmclient, s3, semantic
+from ..auth import require_role
 from ..registry import registry
 
 router = APIRouter(tags=["explorer"])
@@ -50,10 +51,32 @@ def explorer():
     }
 
 
+@router.get("/cluster", dependencies=[Depends(require_role("admin"))])
+def cluster_status():
+    """What this deployment actually looks like right now: this node, its
+    peers, the change generations everyone is following, and what is locked.
+
+    Admin-only and never cached. It exists because a horizontally-scaled
+    deployment of this app has no other way to answer the questions that
+    matter when it misbehaves — is the worker running, is a replica stuck a
+    generation behind, is a pipeline target locked by a node that died — and
+    every one of those is invisible from a load-balanced `/api/health`, which
+    answers from whichever replica happens to take the request.
+    """
+    return cluster.status()
+
+
 @router.get("/health")
 def health():
     return {
-        "ok": True, "models": list(registry.models),
+        # Deliberately part of the *public* health payload (the one route that
+        # answers unauthenticated): a probe needs to distinguish replicas, and
+        # a load balancer that sends the same request twice and gets two
+        # different node ids is how you find out affinity isn't working.
+        # Nothing here is a secret — a role name and a container's id.
+        "ok": True, "node": config.NODE_ID, "role": config.ROLE,
+        "clustered": config.CLUSTERED,
+        "models": list(registry.models),
         "s3_endpoint": config.primary_store().label,
         "bucket": config.BUCKET, "demo_bucket": config.DEMO_BUCKET if config.DEMO_ENABLED else "",
         "llm_enabled": config.LLM_ENABLED,

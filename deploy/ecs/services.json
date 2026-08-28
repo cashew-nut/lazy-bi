@@ -1,0 +1,65 @@
+{
+  "_comment": [
+    "Two service definitions, as arguments to `aws ecs create-service`. The",
+    "differences between them are the whole point and are listed in",
+    "deploy/README.md: web sits behind the load balancer and autoscales;",
+    "worker has no load balancer, runs one task, and is deployed by",
+    "replacement rather than surge."
+  ],
+  "web": {
+    "serviceName": "cash-intel-web",
+    "taskDefinition": "cash-intel-web",
+    "desiredCount": 3,
+    "launchType": "FARGATE",
+    "loadBalancers": [
+      {
+        "targetGroupArn": "arn:aws:elasticloadbalancing:REGION:ACCOUNT_ID:targetgroup/cash-intel/REPLACE_ME",
+        "containerName": "app",
+        "containerPort": 8080
+      }
+    ],
+    "healthCheckGracePeriodSeconds": 120,
+    "deploymentConfiguration": {
+      "_comment": "Surge before draining: a new task starts with a cold DuckDB cache, so warm capacity should overlap with it.",
+      "maximumPercent": 200,
+      "minimumHealthyPercent": 100
+    },
+    "networkConfiguration": {
+      "awsvpcConfiguration": {
+        "subnets": ["subnet-REPLACE_ME"],
+        "securityGroups": ["sg-REPLACE_ME"],
+        "assignPublicIp": "DISABLED"
+      }
+    }
+  },
+  "worker": {
+    "serviceName": "cash-intel-worker",
+    "taskDefinition": "cash-intel-worker",
+    "desiredCount": 1,
+    "launchType": "FARGATE",
+    "loadBalancers": [],
+    "deploymentConfiguration": {
+      "_comment": "Replace rather than surge. Two workers are safe (a run is claimed atomically and holds a lock on the path it writes) but there is nothing to gain from doubling the pool during a deploy.",
+      "maximumPercent": 100,
+      "minimumHealthyPercent": 0
+    },
+    "networkConfiguration": {
+      "awsvpcConfiguration": {
+        "subnets": ["subnet-REPLACE_ME"],
+        "securityGroups": ["sg-REPLACE_ME"],
+        "assignPublicIp": "DISABLED"
+      }
+    }
+  },
+  "autoscaling_web": {
+    "_comment": "Register with Application Auto Scaling. CPU, not request count: a request's cost varies by orders of magnitude here. The long scale-in cooldown protects warm caches.",
+    "MinCapacity": 2,
+    "MaxCapacity": 10,
+    "TargetTrackingScalingPolicyConfiguration": {
+      "PredefinedMetricSpecification": {"PredefinedMetricType": "ECSServiceAverageCPUUtilization"},
+      "TargetValue": 70.0,
+      "ScaleOutCooldown": 60,
+      "ScaleInCooldown": 900
+    }
+  }
+}

@@ -1,0 +1,122 @@
+# A horizontally-scaled Cash Intelligence, runnable on one machine.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.scale.yml \
+#                  --profile scale up
+#
+# Two `web` replicas behind nginx on :8090, one `worker`, and MinIO holding
+# the demo bucket — the last of which is the point rather than a detail. The
+# default compose file's app serves the demo catalog from an S3 emulator
+# running *inside its own process*; two replicas of that would each hold
+# their own copy in memory and answer the same query differently, which is
+# why app/cluster.py's preflight refuses to start on it. Here the demo bucket
+# is somewhere both replicas can actually share.
+#
+# What this demonstrates that a single container cannot:
+#
+#   - **A model saved on one replica appears on the other.** Save it against
+#     :8091, then read it from :8092; it shows up within
+#     CI_CLUSTER_POLL_SECONDS. Before app/cluster.py, it never would have.
+#   - **A pipeline run is claimed once.** Trigger it from a web replica that
+#     runs no worker at all; the worker picks it up from the shared queue.
+#   - **/api/cluster reports the whole deployment**, not just the replica
+#     that happened to answer.
+#
+# The one thing it does NOT demonstrate is multi-*host* operation: SQLite on
+# a shared Docker volume is fine for processes on one machine, and is not a
+# network-filesystem story. See docs/scaling.md §6.
+services:
+  scale-minio:
+    profiles: ["scale"]
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: cashintel
+      MINIO_ROOT_PASSWORD: cashintel-secret
+    ports:
+      - "9010:9000"
+      - "9011:9001"                 # web console
+    volumes:
+      - scale-minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── the read path ────────────────────────────────────────────────────
+  # Two identical replicas. Nothing distinguishes them; either can serve any
+  # request, and the ports are exposed individually only so you can address
+  # one deliberately and watch the other catch up.
+  scale-web-1: &scale-web
+    profiles: ["scale"]
+    build: .
+    ports:
+      - "8091:8080"
+    environment: &scale-env
+      CI_ROLE: web
+      CI_CLUSTERED: "1"
+      CI_NODE_ID: web-1
+      # Every bucket, demo included, lives in MinIO — see the header.
+      CI_S3_ENDPOINT: http://scale-minio:9000
+      AWS_ACCESS_KEY_ID: cashintel
+      AWS_SECRET_ACCESS_KEY: cashintel-secret
+      # Short enough to watch a change propagate while you have the two tabs
+      # open. Production defaults to 5s; see docs/scaling.md §4.
+      CI_CLUSTER_POLL_SECONDS: "2"
+      CI_CLUSTER_LEASE_SECONDS: "30"
+      # A container gets the host's core count and RAM from DuckDB unless
+      # told otherwise, and three containers each sizing themselves to the
+      # whole machine is how a laptop runs out of memory.
+      CI_DUCKDB_THREADS: "2"
+      CI_DUCKDB_MEMORY_LIMIT: 2GB
+      CI_LLM_API_KEY: ${CI_LLM_API_KEY:-}
+      CI_LLM_MODEL: ${CI_LLM_MODEL:-claude-sonnet-5}
+      CI_LLM_BASE_URL: ${CI_LLM_BASE_URL:-}
+      CI_LLM_PROVIDER: ${CI_LLM_PROVIDER:-auto}
+    volumes:
+      # One volume, three containers: this is the shared store. The bootstrap
+      # admin created by whichever replica wins the boot lock is the account
+      # all three authenticate against.
+      - scale-data:/data
+      - ./models:/srv/models
+      - ./dimensions:/srv/dimensions
+      - ./pipelines:/srv/pipelines
+    depends_on:
+      scale-minio:
+        condition: service_healthy
+
+  scale-web-2:
+    <<: *scale-web
+    ports:
+      - "8092:8080"
+    environment:
+      <<: *scale-env
+      CI_NODE_ID: web-2
+
+  # ── the write path ───────────────────────────────────────────────────
+  # No port published: nothing routes user traffic to a worker. It shares
+  # everything else, including the registry, so it can resolve the pipelines
+  # it runs.
+  scale-worker:
+    <<: *scale-web
+    ports: []
+    environment:
+      <<: *scale-env
+      CI_ROLE: worker
+      CI_NODE_ID: worker-1
+      CI_DUCKDB_MEMORY_LIMIT: 3GB
+
+  scale-lb:
+    profiles: ["scale"]
+    image: nginx:alpine
+    ports:
+      - "8090:8090"
+    volumes:
+      - ./deploy/loadbalancer/nginx.compose.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - scale-web-1
+      - scale-web-2
+
+volumes:
+  scale-data:
+  scale-minio-data:

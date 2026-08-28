@@ -98,6 +98,7 @@ authenticated user.
 | Route | Method(s) | Minimum role |
 |---|---|---|
 | `/api/health` | GET | public |
+| `/api/cluster` | GET | admin |
 | `/api/auth/login` | POST | public |
 | `/api/auth/logout`, `/api/auth/me`, `/api/auth/password` | POST/GET/POST | viewer |
 | `/api/tokens`, `/api/tokens/{id}` | GET/POST/DELETE | viewer (own only) |

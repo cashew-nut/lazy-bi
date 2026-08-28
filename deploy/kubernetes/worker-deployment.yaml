@@ -1,0 +1,81 @@
+# The write path: drains the pipeline run queue. Separate from `web` for one
+# concrete reason — a pipeline run is a subprocess that can hold a core and
+# several GB for minutes, and a node doing that should not also be trying to
+# answer an interactive query.
+#
+# `replicas: 1` is a preference, not a safety requirement. Two workers are
+# safe: a run is claimed by one atomic UPDATE and holds a cluster lock named
+# for the path it writes, so two runs never overlap on one target
+# (docs/scaling.md §3). Raise it when you have several independent pipelines
+# whose targets never collide.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cash-intel-worker
+  labels: {app: cash-intel, role: worker}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: cash-intel, role: worker}
+  strategy:
+    # Recreate, not RollingUpdate: a surging second worker would briefly
+    # double the pool. That is safe (see above) but pointless during a
+    # deploy, and it makes "one run at a time" harder to reason about while
+    # you are watching a rollout.
+    type: Recreate
+  template:
+    metadata:
+      labels: {app: cash-intel, role: worker}
+    spec:
+      # A worker killed mid-run stops renewing its lease, and its run is
+      # swept to `interrupted` once the lease expires. Longer than
+      # CI_CLUSTER_LEASE_SECONDS (60) so a run in flight gets the chance to
+      # finish, or to lose its claim cleanly, rather than leaving the queue
+      # waiting out a lease on every deploy.
+      terminationGracePeriodSeconds: 90
+      serviceAccountName: cash-intel
+      containers:
+        - name: app
+          image: cash-intel:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - {name: http, containerPort: 8080}
+          env:
+            - name: CI_ROLE
+              value: "worker"
+            - name: CI_NODE_ID
+              valueFrom:
+                fieldRef: {fieldPath: metadata.name}
+            # A run's own timeout is per-pipeline (`timeout_seconds`, capped
+            # at CI_PIPELINE_TIMEOUT_MAX). This only bounds how long a
+            # *worker* holds its lease between renewals.
+          envFrom:
+            - configMapRef: {name: cash-intel-config}
+            - secretRef: {name: cash-intel-secrets}
+          volumeMounts:
+            - {name: uploads, mountPath: /data}
+          readinessProbe:
+            # Present so the pod reports healthy to the scheduler, not
+            # because anything routes to it — the Service selects role=web
+            # only. A worker with no traffic is the point.
+            httpGet: {path: /api/health, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /api/health, port: http}
+            initialDelaySeconds: 45
+            periodSeconds: 20
+          resources:
+            # More memory than a web replica and fewer cores: a materializing
+            # pipeline is memory-hungry (it holds a result set to write) and
+            # its subprocess does its own DuckDB threading.
+            requests: {cpu: "2", memory: "8Gi"}
+            limits: {cpu: "4", memory: "16Gi"}
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities: {drop: ["ALL"]}
+      volumes:
+        - name: uploads
+          persistentVolumeClaim: {claimName: cash-intel-uploads}

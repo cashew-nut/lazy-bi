@@ -14,6 +14,7 @@ import pytest
 MATRIX = {
     ("POST", "/api/auth/login"): "public",
     ("GET", "/api/health"): "public",
+    ("GET", "/api/cluster"): "admin",
 
     ("POST", "/api/auth/logout"): "viewer",
     ("GET", "/api/auth/me"): "viewer",

@@ -1,0 +1,39 @@
+# Scale `web` on CPU, and be slow about scaling back in.
+#
+# CPU rather than request count because DuckDB is CPU-bound on aggregation
+# and a request's cost varies by three orders of magnitude between a cached
+# dimension lookup and a full scan — request count says nothing useful about
+# how loaded a replica is.
+#
+# The long scale-in window is the DuckDB-specific part: every new replica
+# starts with a cold object cache and re-reads parquet footers it has never
+# seen, so a replica that is removed and re-added costs real S3 round trips
+# (docs/scaling.md §9). Flapping is more expensive here than in a stateless
+# web app, and the stabilization window is what stops it.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: cash-intel-web
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: cash-intel-web
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: {type: Utilization, averageUtilization: 70}
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - {type: Pods, value: 2, periodSeconds: 60}
+    scaleDown:
+      # 15 minutes: long enough that a lunchtime lull doesn't throw away
+      # caches an afternoon of queries warmed.
+      stabilizationWindowSeconds: 900
+      policies:
+        - {type: Pods, value: 1, periodSeconds: 300}
