@@ -1,6 +1,6 @@
 # API Layer
 
-**Source:** `app/api/*.py` (17 routers, ~3,326 lines), aggregated under
+**Source:** `app/api/*.py` (18 routers, ~3,563 lines), aggregated under
 `/api` by `app/api/__init__.py`'s `api_router`.
 
 One router module per resource, each a plain `fastapi.APIRouter()` with its
@@ -27,7 +27,8 @@ mutations must carry, and the full role matrix
   `PipelineError` into a 400, so an edit that breaks something is refused
   and reported rather than silently applied.
 - **SSE routes** (`chat.py`'s `/ask/stream` and `/panel/ask/stream`,
-  `composer.py`'s `/compose/stream`, `sandbox.py`'s `/agent/stream`) all
+  `composer.py`'s `/compose/stream`, `measures.py`'s `/write/stream`,
+  `sandbox.py`'s `/agent/stream`) all
   emit the same wire shape (`event: <kind>\ndata: <json>\n\n`) and end with
   one terminal `response` event carrying exactly what the non-streaming
   form of the same action would have returned.
@@ -72,6 +73,20 @@ mutations must carry, and the full role matrix
 | `PUT`/`DELETE /api/models/{name}/measures/{measure}` | author | Only on a single-fact-table model — see `_single_fact_or_400`. |
 | `GET /api/models/{name}/measures/{measure}/history` | any | Append-only provenance (`measure_provenance` table). |
 | `GET /api/models/{name}/dimensions/{dim}/values` | any | Distinct values for filter pickers (`engine.dimension_values`). |
+
+## AI-written measures (`app/api/measures.py`)
+
+| Route | Role |
+|---|---|
+| `POST /api/measures/write/stream` | author — 503 unless LLM-configured |
+
+One authoring turn as SSE (`thinking`, `draft`, `verifying`, `rejected`, then
+the terminal `response`). Names either a loaded `model` or the modelling
+form's unsaved draft `spec`, plus the `scope` (`model`/`visual`), the
+visual's current `query`, and the measure being rewritten. Saves nothing: a
+verified draft goes back to the editor, and the measure endpoints above stay
+the only write path. Full detail:
+[Conversational Analytics → The measure writer](conversational-analytics.md#the-measure-writer-appmeasurewriterpy).
 
 ## Dimension bundles (`app/api/dimensions.py`)
 

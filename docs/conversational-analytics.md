@@ -2,18 +2,20 @@
 
 **Source:** `app/llm.py` (623 lines) · `app/llmclient.py` (731 lines) ·
 `app/nlq.py` (675 lines) · `app/composer.py` (563 lines) ·
-`app/memorystore.py` (191 lines) · `app/conversationstore.py` (214 lines)
+`app/measurewriter.py` (1,096 lines) · `app/memorystore.py` (191 lines) ·
+`app/conversationstore.py` (214 lines)
 
 Every LLM-backed surface in this codebase — Chat, the modelling panel's
-inline chat, the Composer, MCP's `ask_question` skill, and (a related but
-separate seam) the [sandbox coding agent](sandbox.md) — follows one rule
-without exception: **the model's output is a proposal, never a decision.**
-A typed, *unvalidated* result comes back from the LLM call; a plain-Python
-step re-checks it against live server state before anything executes,
-saves, or renders. This page covers the seam that enforces that rule for
-query answering (`nlq.py`/`llm.py`) and for page composition
-(`composer.py`), plus the provider-neutral client both are built on
-(`llmclient.py`).
+inline chat, the Composer, the measure writer, MCP's `ask_question` skill,
+and (a related but separate seam) the [sandbox coding agent](sandbox.md) —
+follows one rule without exception: **the model's output is a proposal,
+never a decision.** A typed, *unvalidated* result comes back from the LLM
+call; a plain-Python step re-checks it against live server state before
+anything executes, saves, or renders. This page covers the seam that
+enforces that rule for query answering (`nlq.py`/`llm.py`), for page
+composition (`composer.py`) and for measure authoring
+(`measurewriter.py`), plus the provider-neutral client all three are built
+on (`llmclient.py`).
 
 **Off entirely unless configured** — every route this page describes 503s
 unless `CI_LLM_API_KEY` is set (or `CI_LLM_PROVIDER=bedrock`, which
@@ -44,7 +46,7 @@ class LLMClient(Protocol):
     def stream(self, req: ChatRequest) -> Iterator[ClientEvent]: ...
 ```
 
-All three callers ask for exactly one thing — *call one of these tools,
+Every caller asks for exactly one thing — *call one of these tools,
 with these arguments* — with **no multi-turn tool loop and no assistant
 message history**. That narrow contract is what makes "point it at a URL
 and a key" actually work: there's nothing provider-specific left to port
@@ -281,6 +283,85 @@ fields, rebuilt live per request.
 accepted draft through the ordinary author-gated notebooks CRUD (see
 [API Layer](api-layer.md)), so there's exactly one write path for notebook
 HTML, and it's the one `sanitize_notebook_html`'s contract documents.
+
+## The measure writer (`app/measurewriter.py`)
+
+The third seam, and the one with an **oracle**: a measure either compiles and
+runs against the real data or it doesn't. So this one doesn't stop at
+re-validating a proposal — it *executes* it, and when that fails it hands the
+error back to the model and asks again.
+
+```
+build_context() -> write_measure | decline -> check() -> dry run -> Verdict
+                        ^                                              |
+                        |___________ Attempt(measure, error) __________|   (MAX_ATTEMPTS = 3)
+```
+
+**One forced tool call**, like the other two: `write_measure`
+(`{name, label, format, description, expr, from, emits, synonyms, rationale}`)
+or `decline` when the declared columns can't express the ask. `RawMeasure` is
+unvalidated; only a proposal that survives the loop below is ever returned.
+
+**`check()` re-applies the save paths' own rules** — snake_case name, unique
+against every declared dimension/measure, a known `format`, `emits` needing a
+`from`, and the parameter rules (`param()` is refused outright in the model
+scope, exactly as `app/api/models.py` refuses to save one; in the visual scope
+it must be declared, and int-typed in `LAG`'s offset position, as
+`app/api/visuals.py` requires). Then the expression itself goes through the
+identical `sqlgrammar.compile_expression` / `semantic.validate_from_block`
+calls a hand-typed measure does — including the stricter of the two schemas
+(the fact scan's source columns, not the query's dimension names), so a
+measure that verifies here is one the author can also **save**.
+
+**The dry run is what makes it trustworthy.** `verify()` runs the proposal as
+an *inline measure* through `engine.run_query()` — the same code path
+`POST /api/query` uses — and that catches everything static checking
+structurally can't: a column the block selects that isn't in the source, a
+type error inside an aggregate, an `emits` the block never outputs, and above
+all a `from:` block that drops the query's dimensions. That last one is the
+most common way a complex measure breaks and it is invisible until it runs,
+so `dry_run_query()` deliberately shapes a query that would expose it: a
+window measure gets a time dimension if the query has none, an emitted
+dimension is grouped on, and a `from:` measure is always grouped by at least
+one real dimension (with no grouping at all, `{dims}` collapses to the
+engine's constant column and a block that forgot to carry the dimensions
+through would pass). In the visual scope the shape starts from the query the
+author is actually looking at, so a pass means "this works where you're
+putting it".
+
+An **unreachable source is not a rejection**: the measure compiled, so it
+comes back with `ran=False` and a note saying it couldn't be executed — a
+broken bucket must never read like a bad measure.
+
+**The repair loop** (`run_streaming`) is the payoff: a rejected proposal
+becomes an `Attempt(measure, error)` in the next prompt, under an explicit
+instruction to fix the cause rather than resend or retreat to something
+trivially different. Every attempt and its error travels back to the UI, so a
+measure that took two tries says so instead of looking like magic. Three
+attempts is the ceiling — past that the cause is usually data that isn't
+there, and the author is better served by the error and the last attempt than
+by more waiting.
+
+**Context is built live per request** (`build_context()`), never taken from
+the client — the caller names a model (or the modelling form's unsaved draft
+`spec`), a fact table and a scope, and the server introspects: real columns
+with dtypes (`engine.scan_schema`), every declared dimension with real sample
+values for the categorical ones (bounded by `SAMPLE_VALUES_LIMIT`/
+`SAMPLE_DIMENSIONS_LIMIT`, since each costs a `SELECT DISTINCT`), every
+existing measure **with its formula** (the house style to match, and the
+sibling names a window expression may read), and in the visual scope the
+query and parameters the measure is being written into. The system prompt
+teaches the three shapes structurally — plain, window (`OVER w`), and complex
+(`from:`/`emits`, with the patterns that need one: an aggregate of an
+aggregate, de-duplicating to a coarser entity, first/last event per entity,
+semi-additive balances) — and its function list is read from
+`sqlgrammar.aggregate_functions() & allowed_functions()`, so it can't
+advertise something the validator would refuse.
+
+**Saving is deliberately not this module's job**, same as the Composer: a
+verified draft lands in the measure lab or the modelling form, and the author
+saves it through the ordinary author-gated measure endpoints. One write path
+for a measure, and it's the one a typed measure uses.
 
 ## Any provider: a URL and a key
 

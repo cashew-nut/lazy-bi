@@ -183,6 +183,13 @@ structurally, not declared:
   withheld from `{dims}` during the step and grouped on the block's output
   afterward.
 
+A measure can also be **asked for** rather than typed: the measure lab and the
+modelling form both carry an ASK AI bar that describes the fact table to a
+model and gets back a measure that has already been compiled *and run* — see
+[Conversational Analytics → The measure writer](conversational-analytics.md#the-measure-writer-appmeasurewriterpy).
+It writes all three shapes, `from:` blocks included, and what it produces is
+saved through the same endpoints a hand-written measure is.
+
 The full grammar — what's allowed inside an `expr:`, the function allowlist,
 window measures, `param()` visual parameters — is documented in
 [Query Engine → The SQL grammar](query-engine.md#the-sql-grammar),

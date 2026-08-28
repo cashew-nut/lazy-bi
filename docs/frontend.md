@@ -97,7 +97,8 @@ whichever theme is active.
 | `builder.js` (1185 lines) | The query builder itself: model switcher, field rail, query strip, chart toolbar, execution, saved visuals. The largest single view module. |
 | `dashboard.js` (921 lines) | Tile grid, named filter-set views, ephemeral cross-filtering, session-only grain override, focus mode. Serves both Studio (editable) and the Portal (view/grain/filter choices stay local — `saveDash()` is a no-op there, so nothing a portal viewer touches ever writes back into the saved view). |
 | `filters.js` | The filter-op vocabulary and value-entry widgets, shared by the builder, dashboard views, and focus mode. |
-| `measurelab.js` | Author a SQL measure directly on the open visual, with live completion and a live-rendering draft; two save paths — onto the visual (`inline_measures`) or promoted to the model YAML. |
+| `measurelab.js` | Author a SQL measure directly on the open visual, with live completion and a live-rendering draft; edits a complex measure's `from:` step too, and has two save paths — onto the visual (`inline_measures`) or promoted to the model YAML. |
+| `measureai.js` | The ASK AI bar shared by the measure lab and the modelling form: one SSE turn against `POST /api/measures/write/stream`, the progress it reports (writing → running it against your data → a repair round), and the note that says whether the answer was actually run. Hidden unless the deployment has an LLM configured and the signed-in role can author. |
 | `completion.js` | The one shared expression/column completion engine behind both the measure lab and the model YAML editor — one implementation, one vocabulary, no drift between the two surfaces. |
 | `instant.js` | Client-side re-aggregation — see below. |
 

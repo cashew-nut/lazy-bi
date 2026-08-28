@@ -1,7 +1,13 @@
 /* Measure lab: author a measure directly on the visual.
    Type a SQL aggregate with completion (source columns + aggregate
-   functions), watch it resolve live in the chart, then keep it on the visual
-   (saved with the visual's spec) or promote it to the model yaml. */
+   functions) — or describe it and let ASK AI write it — watch it resolve live
+   in the chart, then keep it on the visual (saved with the visual's spec) or
+   promote it to the model yaml.
+
+   A measure that needs a step in between (a per-order total before it can be
+   averaged, a per-customer first purchase) carries a `from:` block: the rows
+   its aggregate reads instead of the raw scan. The lab edits that block too,
+   since asking for one is exactly the kind of measure worth asking for. */
 "use strict";
 
 import {
@@ -10,10 +16,14 @@ import {
 } from "./builder.js";
 import { dslContext, dslItems, makeCompleter } from "./completion.js";
 import { $, api, el, fmtMeasure } from "./lib.js";
+import { askBar, askForMeasure, measureAiAvailable, measureOrThrow, outcomeNote } from "./measureai.js";
 import { hooks, state } from "./state.js";
 
-const lab = { open: false, editingName: null, schema: [], schemaModel: null };
+const lab = { open: false, editingName: null, schema: [], schemaModel: null, emits: [],
+              description: "", synonyms: [], asks: [] };
 let completer = null;
+let fromCompleter = null;
+let ai = null;
 
 function setStatus(html, isError = false) {
   const box = $("#lab-status");
@@ -59,6 +69,11 @@ export function openLab(def = null) {
   $("#lab-label").value = (def && def.label) || "";
   $("#lab-format").value = (def && def.format) || "number";
   $("#lab-expr").value = (def && def.expr) || "";
+  setStep((def && def.from) || "", (def && def.emits) || []);
+  setMeta((def && def.description) || "", (def && def.synonyms) || []);
+  $("#lab-ai").hidden = !measureAiAvailable();
+  if (ai) ai.setStatus(AI_HINT);
+  lab.asks = [];
   setStatus('type a SQL aggregate — e.g. <b>SUM(unit_price * quantity)</b>; '
     + 'a bare name offers columns, sibling measures and functions');
   loadSchema();
@@ -72,19 +87,59 @@ hooks.openLab = openLab;
 export function closeLab(rerun = true) {
   lab.open = false;
   lab.editingName = null;
+  lab.asks = [];
   $("#measure-lab").hidden = true;
   if (completer) completer.hide();
+  if (fromCompleter) fromCompleter.hide();
   if (rerun) scheduleRun();   // drop any live preview from the chart
 }
 hooks.closeLab = closeLab;
 
+// The step (`from:`) is part of the measure wherever it goes — the query API,
+// the visual's saved spec and POST /models/{name}/measures all take the same
+// {name,label,format,expr,from,emits} shape — so it is built here once, and
+// omitted entirely when there is no block rather than saved as an empty one.
 function labDef() {
-  return {
+  const def = {
     name: $("#lab-name").value.trim(),
     label: $("#lab-label").value.trim(),
     format: $("#lab-format").value,
     expr: $("#lab-expr").value.trim(),
   };
+  const step = stepText();
+  if (step) {
+    def.from = step;
+    def.emits = [...lab.emits];
+  }
+  // carried, not dropped: a description is what Chat reads to decide whether a
+  // measure answers a question, and both survive the round trip to the model
+  if (lab.description) def.description = lab.description;
+  if (lab.synonyms.length) def.synonyms = [...lab.synonyms];
+  return def;
+}
+
+// The prose a measure carries — written by ASK AI, or already on the measure
+// being edited. Shown rather than held invisibly, since it is saved with it.
+function setMeta(description, synonyms) {
+  lab.description = description || "";
+  lab.synonyms = [...(synonyms || [])];
+  const box = $("#lab-meta");
+  const bits = [];
+  if (lab.description) bits.push(lab.description);
+  if (lab.synonyms.length) bits.push(`also called: ${lab.synonyms.join(", ")}`);
+  box.textContent = bits.join(" · ");
+  box.hidden = !bits.length;
+}
+
+const stepText = () => ($("#lab-from-wrap").hidden ? "" : $("#lab-from").value.trim());
+
+// Show/hide the step editor as one operation, so "has a from: block" is a
+// single fact about the lab rather than three fields that can disagree.
+function setStep(text, emits = []) {
+  lab.emits = [...emits];
+  $("#lab-from").value = text || "";
+  $("#lab-from-wrap").hidden = !text;
+  $("#lab-emits").textContent = lab.emits.length ? `emits: ${lab.emits.join(", ")}` : "";
 }
 
 function nameProblem(def) {
@@ -202,6 +257,46 @@ async function renderLabHistory(name) {
   } catch { /* the strip is informational only */ }
 }
 
+// ── ASK AI (POST /api/measures/write/stream) ─────────────────
+
+const AI_HINT = 'describe the measure — "average order value", "revenue from '
+  + 'repeat customers only", "3-month moving average of revenue"';
+
+/* The server builds the whole catalog it shows the model (columns, dimensions
+   with real values, every existing formula) from the model name and the query
+   below — the client sends what it alone knows: which visual this is, what it
+   is currently showing, and which measure is being edited. What comes back has
+   already been compiled and run server-side; it still lands in these fields
+   for the author to read and change, and saving stays their click. */
+async function askMeasure(text, ui) {
+  const editing = lab.editingName
+    ? state.inlineMeasures.find((m) => m.name === lab.editingName)
+      || state.model.measures.find((m) => m.name === lab.editingName)
+    : null;
+  const payload = await askForMeasure({
+    instruction: text,
+    model: state.model.name,
+    scope: "visual",
+    query: buildQuery(),
+    editing: editing || null,
+    history: lab.asks,
+  }, { onStatus: (msg) => ui.setStatus(msg) });
+
+  const measure = measureOrThrow(payload);   // throws a decline/failure as-is
+  $("#lab-name").value = measure.name || "";
+  $("#lab-label").value = measure.label || "";
+  $("#lab-format").value = measure.format || "number";
+  $("#lab-expr").value = measure.expr || "";
+  setStep(measure.from || "", measure.emits || []);
+  setMeta(measure.description || "", measure.synonyms || []);
+  lab.asks = [...lab.asks, { instruction: text, summary: measure.name }].slice(-6);
+  ui.clear();
+  ui.setStatus(outcomeNote(payload) || AI_HINT);
+  updateSaveModelGuard(labDef());
+  renderLabHistory(measure.name);
+  tryResolve();       // and show it in the chart, the same as a typed one
+}
+
 // ── completion (shared engine, SQL-expression context) ────
 
 // combined completion pool for a bare identifier: source columns plus
@@ -233,6 +328,17 @@ function labResolve(upto, after, caret) {
 export function initMeasureLab() {
   $("#lab-open").addEventListener("click", () => openLab());
   $("#lab-cancel").addEventListener("click", () => closeLab());
+  ai = askBar({ placeholder: "what should this measure compute?", onAsk: askMeasure, hint: AI_HINT });
+  $("#lab-ai").append(ai.bar);
+  $("#lab-drop-step").addEventListener("click", () => {
+    setStep("", []);          // back to a plain aggregate over the fact scan
+    scheduleResolve();
+  });
+  const from = $("#lab-from");
+  fromCompleter = makeCompleter(from, $("#lab-from-suggest"), labResolve, scheduleResolve);
+  from.addEventListener("input", () => { fromCompleter.update(); scheduleResolve(); });
+  from.addEventListener("keydown", (e) => fromCompleter.onKeydown(e));
+  from.addEventListener("blur", () => setTimeout(() => fromCompleter.hide(), 150));
   $("#lab-save-visual").addEventListener("click", saveToVisual);
   $("#lab-save-model").addEventListener("click", saveToModel);
   $("#lab-param-insert").addEventListener("change", (e) => {
