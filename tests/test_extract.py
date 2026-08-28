@@ -527,3 +527,30 @@ def test_plain_query_endpoint_is_unchanged(client):
     assert res.status_code == 200
     assert res.headers["content-type"].startswith("application/json")
     assert set(res.json()) == {"columns", "rows", "row_count", "elapsed_ms"}
+
+
+def test_an_inline_measure_with_a_from_block_falls_back(client):
+    """An inline (visual-scoped) measure can carry a `from:` block — the
+    measure lab authors them and so does ASK AI — and its expression names the
+    block's derived columns, which an extract can't carry. Same fallback as a
+    declared from: measure, not a wrong number."""
+    res = client.post("/api/query/extract", json={
+        "model": "sales", "dimensions": ["channel"], "measures": ["aov_probe"],
+        "inline_measures": [{
+            "name": "aov_probe", "expr": "AVG(order_total)",
+            "from": "SELECT {dims}, SUM(unit_price * quantity) AS order_total\n"
+                    "FROM {model} GROUP BY {dims}, order_id",
+        }]})
+    assert res.status_code == 200
+    fallback = res.json()["fallback"]
+    assert "from: relation" in fallback["reason"] and fallback["cap"] is None
+    # and the live path still answers it correctly
+    live = client.post("/api/query", json={
+        "model": "sales", "dimensions": ["channel"], "measures": ["aov_probe"],
+        "inline_measures": [{
+            "name": "aov_probe", "expr": "AVG(order_total)",
+            "from": "SELECT {dims}, SUM(unit_price * quantity) AS order_total\n"
+                    "FROM {model} GROUP BY {dims}, order_id",
+        }]})
+    assert live.status_code == 200
+    assert all(row["aov_probe"] > 0 for row in live.json()["rows"])

@@ -133,21 +133,29 @@ def _measure_meta(model: Model, name: str, inline: dict) -> dict:
     return meta
 
 
+_FROM_RELATION_REASON = ("measure '{name}' aggregates a from: relation, which can't be "
+                         "re-aggregated in the browser")
+
+
 def _measure_text(model: Model, name: str, inline: dict) -> str:
     """The SQL text behind a measure, whichever kind it is. Raises
     NotInstantable for the one construct whose expression means nothing on its
     own — a measure that aggregates a `from:` relation."""
     if name in inline:
-        return inline[name]["expr"]
+        spec = inline[name]
+        if spec.get("from"):
+            # an inline measure can carry a from: block too (the measure lab
+            # authors them, and so does app/measurewriter.py) — its expression
+            # names the block's derived columns, which the extract has no way
+            # to carry, so it is exactly as un-instantable as a declared one
+            raise NotInstantable(_FROM_RELATION_REASON.format(name=name))
+        return spec["expr"]
     try:
         meas = model.measure(name)
     except ModelError as exc:
         raise NotInstantable(str(exc)) from exc
     if meas.from_source:
-        raise NotInstantable(
-            f"measure '{name}' aggregates a from: relation, which can't be re-aggregated "
-            "in the browser"
-        )
+        raise NotInstantable(_FROM_RELATION_REASON.format(name=name))
     return meas.expr_source
 
 

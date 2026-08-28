@@ -134,12 +134,13 @@ class MeasureIn(BaseModel):
     frame: Optional[str] = None
     frame_emits: Optional[list[str]] = None
 
-    # the measure lab (measurelab.js) never surfaces this field or
-    # `description` — it only ever sends name/label/format/expr, and
-    # update_measure() replaces the measure's whole yaml block — so, like
-    # description, re-saving an existing measure through the lab (not the
-    # guided model form or the raw yaml editor) drops synonyms hand-authored
-    # outside it. Pre-existing, accepted narrowness of that editor.
+    # the measure lab has no editor for this or for `description`, but it does
+    # carry both: whatever the measure it opened already had, or what ASK AI
+    # wrote for it (app/measurewriter.py), shown in the lab's own meta strip
+    # so nothing is saved that wasn't visible. What the lab still can't do is
+    # *change* them — update_measure() replaces the measure's whole yaml block,
+    # so an edit that starts somewhere the lab can't see (a hand-written yaml
+    # description) survives only because the lab sends it back unchanged.
     synonyms: list[str] = []
 
 

@@ -9,6 +9,9 @@ are declared once and never bypassed. **Pipelines** materialize new sources
 into the bucket with full lineage; a **Sandbox** gives you scratch SQL
 notebooks and a coding agent; **Chat** answers business questions by
 proposing — and always re-validating — a semantic query, never raw SQL.
+Measures can be **asked for** in plain language instead of typed — including
+the complex ones that compute an intermediary result first — and the answer
+is compiled and run against the real data before it reaches the editor.
 
 Everything a person or an LLM authors is SQL, and every fragment of it is
 parsed, allowlisted, and re-serialized from a validated AST before it can
@@ -81,8 +84,8 @@ then create your own accounts under **ACCOUNT**. See
 [Auth & Security](docs/auth-and-security.md) for roles, sessions, and
 personal access tokens.
 
-**Conversational analytics, the Composer, and the sandbox coding agent**
-are off until `CI_LLM_API_KEY` is set (copy `.env.example` to `.env` and
+**Conversational analytics, the Composer, AI-written measures, and the
+sandbox coding agent** are off until `CI_LLM_API_KEY` is set (copy `.env.example` to `.env` and
 fill it in). Any OpenAI- or Anthropic-compatible endpoint works — see
 [Conversational Analytics](docs/conversational-analytics.md) for the
 provider list and exactly what each surface sends once configured.

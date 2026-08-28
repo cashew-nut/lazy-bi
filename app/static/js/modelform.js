@@ -28,6 +28,9 @@ import {
   spineFields, synonymsInput, textAreaField, textField, uploadRow,
 } from "./formkit.js";
 import { $, api, el } from "./lib.js";
+import {
+  askBar, askForMeasure, measureAiAvailable, measureOrThrow, outcomeNote,
+} from "./measureai.js";
 import { setPanelDescription, setPanelModel } from "./panelchat.js";
 import { navigate, paths, setPath } from "./router.js";
 import { hooks, showView, state } from "./state.js";
@@ -1162,6 +1165,65 @@ function fromEditor(m, owner, statusEl) {
   return wrap;
 }
 
+// ── ASK AI (POST /api/measures/write/stream) ──────────────────────────────
+
+// Asks are remembered per form session so a follow-up ("now exclude
+// refunds") reads as a follow-up rather than a fresh request.
+let measureAsks = [];
+
+/* The draft spec is what the server writes against — not a saved model — so a
+   measure can be asked for while the model itself is still being built, and
+   the writer sees exactly the datasets, joins and dimensions this form would
+   save. The form must parse first: with a half-finished dataset there is no
+   fact table to introspect, and the server would only say so less clearly. */
+async function askForMeasureInto(owner, text, ui, existing = null) {
+  const problem = firstProblem();
+  if (problem) {
+    throw new Error(`finish the ${problem.section.toUpperCase()} section first — ${problem.problem}`);
+  }
+  const payload = await askForMeasure({
+    instruction: text,
+    spec: toSpec(),
+    dataset: owner.name,
+    scope: "model",
+    editing: existing && existing.name.trim()
+      ? { name: existing.name, label: existing.label, format: existing.format,
+          expr: existing.expr, description: existing.description,
+          ...(hasFrom(existing) ? { from: existing.from, emits: existing.emits || [] } : {}) }
+      : null,
+    history: measureAsks,
+  }, { onStatus: (msg) => ui.setStatus(msg) });
+
+  const written = measureOrThrow(payload);
+  measureAsks = [...measureAsks, { instruction: text, summary: written.name }].slice(-6);
+  ui.clear();
+  markDirty();
+  return {
+    note: outcomeNote(payload),
+    measure: {
+      name: written.name || "", label: written.label || "", expr: written.expr || "",
+      format: written.format || "number", description: written.description || "",
+      synonyms: written.synonyms || [],
+      ...(written.from ? { from: written.from, emits: written.emits || [] } : {}),
+    },
+  };
+}
+
+// A written measure re-renders the list it lands in, which throws away the ask
+// bar that was reporting on it — so the note is handed to the bar the redraw
+// builds instead of being lost.
+let pendingAskNote = "";
+
+/* The bar element, or null when this deployment has no LLM configured or the
+   signed-in role can't author — every caller appends it conditionally, since
+   measures are still written by hand on those deployments. */
+function askBarOrNull(opts) {
+  if (!measureAiAvailable()) return null;
+  const ai = askBar(opts);
+  if (pendingAskNote) { ai.setStatus(pendingAskNote); pendingAskNote = ""; }
+  return ai.bar;
+}
+
 function measureCard(m, owner, idx, box) {
   const isFramed = hasFrom(m);
   const card = el("div", { class: "mf-measure-card" + (isFramed ? " framed" : "") });
@@ -1184,7 +1246,7 @@ function measureCard(m, owner, idx, box) {
   card.append(head);
 
   if (isFramed) {
-    card.append(el("div", { class: "field-label", style: "margin-top:6px" }, "FRAME · derived step ahead of the aggregation (open the full editor for guidance)"));
+    card.append(el("div", { class: "field-label", style: "margin-top:6px" }, "FROM · the derived rows this measure aggregates ({model} scan, {dims} carried through — ⤢ EXPAND for guidance)"));
     card.append(fromEditor(m, owner, status));
     card.append(el("div", { class: "field-label", style: "margin-top:8px" }, "EXPR · aggregates the from: block's output"));
     card.append(exprEditor(m, owner, status));
@@ -1220,6 +1282,19 @@ function renderMeasureSection(main) {
 
 function renderMeasures(box, owner) {
   box.innerHTML = "";
+  const bar = askBarOrNull({
+    placeholder: `what should this measure compute? (${owner.name})`,
+    hint: "describe it in business terms — the writer is given this table's columns, "
+      + "its dimensions and every measure declared here, and its answer is compiled "
+      + "and run before it lands",
+    onAsk: async (text, ui) => {
+      const { measure, note } = await askForMeasureInto(owner, text, ui);
+      owner.measures.push(measure);
+      pendingAskNote = note;
+      renderMeasures(box, owner);          // the new card checks itself (✓/✗)
+    },
+  });
+  if (bar) box.append(bar);
   owner.measures.forEach((m, idx) => box.append(measureCard(m, owner, idx, box)));
   const add = el("button", { class: "ghost" }, "+ add measure");
   add.addEventListener("click", () => { owner.measures.push(blankMeasure()); markDirty(); renderMeasures(box, owner); });
@@ -1319,9 +1394,11 @@ function drawMeasureModal() {
 
   if (isFramed) {
     editorCol.append(
-      el("div", { class: "field-label" }, "FRAME · builds a derived LazyFrame ahead of the aggregation"),
-      note("lf (filtered scan), dims (the query's other grouping columns) and pl are in scope; assign the "
-        + "reads. {model} is the filtered fact scan, {dims} the query's grouping."),
+      el("div", { class: "field-label" }, "FROM · the derived rows this measure aggregates, instead of the fact scan"),
+      note("{model} is the fact scan with the query's filters applied; {dims} is the query's grouping "
+        + "columns, which the block must carry through (SELECT {dims}, … / GROUP BY {dims}, …) or the "
+        + "measure fails at query time. CTEs, joins between them, window functions and QUALIFY are all "
+        + "allowed; no other table and no table function is."),
       fromEditor(m, owner, status),
       el("div", { class: "field-label", style: "margin-top:10px" }, "EMITS · dimensions the block computes itself"),
       emitsPicker(m, owner, drawMeasureModal),
@@ -1335,6 +1412,26 @@ function drawMeasureModal() {
   editorCol.append(status,
     el("div", { class: "field-label", style: "margin-top:10px" }, "SYNONYMS · plain-language names Chat can match"),
     synonymsInput(m.synonyms || (m.synonyms = []), markDirty));
+
+  // ASK AI, applied to the measure this editor is open on: an empty one is
+  // written from scratch, an existing one is rewritten from what's here now
+  // ("also exclude refunds", "make it a share of the category total").
+  const askRow = askBarOrNull({
+    placeholder: m.expr.trim() ? "change this measure…" : "what should this measure compute?",
+    hint: m.expr.trim()
+      ? "the writer is shown this measure as it stands, plus the table's columns and dimensions"
+      : "describe it in business terms — a step-in-between (from:) is written for you when it needs one",
+    onAsk: async (text, ui) => {
+      const { measure, note } = await askForMeasureInto(owner, text, ui, m);
+      // a rewrite that no longer needs a derived step must drop the old one,
+      // so the from:/emits pair is always reset before the new shape lands
+      Object.assign(m, { from: null, emits: [] }, measure);
+      if (modalListBox) renderMeasures(modalListBox, owner);
+      pendingAskNote = note;
+      drawMeasureModal();
+    },
+  });
+  if (askRow) editorCol.append(askRow);
 
   // clickable function reference: inserts at the caret of the last-focused editor
   const ref = el("div", { class: "mm-ref" }, el("div", { class: "sec-title" }, "Function reference"));

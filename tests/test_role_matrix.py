@@ -72,6 +72,10 @@ MATRIX = {
 
     ("POST", "/api/models/generate"): "author",
     ("POST", "/api/dimensions/generate"): "author",
+    # asking the AI for one is the same authoring act as writing it: it reads
+    # the source schema and runs a check query, and its answer is a draft for
+    # the endpoints below to save
+    ("POST", "/api/measures/write/stream"): "author",
     ("POST", "/api/models/{name}/measures"): "author",
     ("PUT", "/api/models/{name}/measures/{measure_name}"): "author",
     ("DELETE", "/api/models/{name}/measures/{measure_name}"): "author",

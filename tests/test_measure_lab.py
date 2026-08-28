@@ -168,3 +168,36 @@ def test_the_measure_lab_declines_a_model_with_several_fact_tables(client):
     assert res.status_code == 400
     assert "3 unrelated fact tables" in res.json()["detail"]
     assert "orders, spend, subs" in res.json()["detail"]
+
+
+def test_the_lab_promotes_a_complex_measure_whole(client):
+    """What the lab can now author, it can also save: a `from:` measure keeps
+    its block, its emits, its description and its synonyms through SAVE TO
+    MODEL — the fields ASK AI writes (app/measurewriter.py) are exactly the
+    ones a measure is worth having, and dropping them silently on the way to
+    the yaml would waste them."""
+    yaml_text = ("name: lab_complex\nsource: {format: parquet, path: s3://cash-intel/sales/*.parquet}\n"
+                 "dimensions:\n  - name: region\n  - name: channel\n"
+                 "measures:\n  - name: rows\n    expr: COUNT(*)\n")
+    assert client.post("/api/models", json={"yaml": yaml_text}).status_code == 201
+    try:
+        res = client.post("/api/models/lab_complex/measures", json={
+            "name": "avg_order_value", "label": "Average Order Value", "format": "currency",
+            "description": "Mean value of a whole order, not of an order line.",
+            "synonyms": ["basket size"],
+            "expr": "AVG(order_total)",
+            "from": "SELECT {dims}, SUM(unit_price * quantity) AS order_total\n"
+                    "FROM {model}\nGROUP BY {dims}, order_id",
+        })
+        assert res.status_code == 201, res.text
+        saved = next(m for m in res.json()["measures"] if m["name"] == "avg_order_value")
+        assert saved["description"].startswith("Mean value")
+        assert saved["synonyms"] == ["basket size"]
+        assert "{dims}" in saved["from"]
+        # and it computes, grouped by a dimension the block has to carry through
+        q = client.post("/api/query", json={
+            "model": "lab_complex", "dimensions": ["channel"], "measures": ["avg_order_value"]})
+        assert q.status_code == 200, q.text
+        assert all(row["avg_order_value"] > 0 for row in q.json()["rows"])
+    finally:
+        client.delete("/api/models/lab_complex")

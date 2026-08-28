@@ -244,9 +244,23 @@
             <span id="lab-status"></span>
           </div>
           <div id="lab-history" class="lab-history" hidden></div>
+          <div id="lab-meta" class="lab-meta" hidden></div>
+          <div id="lab-ai"></div>
+          <div id="lab-from-wrap" hidden>
+            <div class="lab-row lab-from-head">
+              <span class="lab-hint">STEP · the rows this measure aggregates, instead of the raw scan — {model} is the filtered fact scan, {dims} the query's grouping columns</span>
+              <span id="lab-emits" class="lab-emits"></span>
+              <button class="btn plain" id="lab-drop-step">✕ DROP STEP</button>
+            </div>
+            <div class="lab-expr-wrap">
+              <textarea id="lab-from" rows="6" spellcheck="false" autocomplete="off"
+                placeholder="SELECT {dims}, ... FROM {model} GROUP BY {dims}, ..."></textarea>
+              <div id="lab-from-suggest" hidden></div>
+            </div>
+          </div>
           <div class="lab-expr-wrap">
             <textarea id="lab-expr" rows="2" spellcheck="false" autocomplete="off"
-              placeholder='mean(unit_price)'></textarea>
+              placeholder="SUM(unit_price * quantity)"></textarea>
             <div id="lab-suggest" hidden></div>
           </div>
           <div class="lab-row lab-actions">

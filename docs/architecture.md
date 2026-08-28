@@ -99,10 +99,13 @@ Two things this diagram is trying to make visible:
   proposal, or a pipeline/sandbox subprocess's own cursor. There is no second
   way to reach the bucket.
 - **The LLM never runs a query.** Every LLM-backed surface (chat, MCP's
-  `ask_question`, the Composer, the sandbox coding agent) produces a
-  *proposal* — a typed, unvalidated tool call — that a plain-Python
-  re-validation step checks against live server state before anything
-  executes. See [Conversational Analytics](conversational-analytics.md) and
+  `ask_question`, the Composer, the measure writer, the sandbox coding agent)
+  produces a *proposal* — a typed, unvalidated tool call — that a
+  plain-Python re-validation step checks against live server state before
+  anything executes. The measure writer then runs its own proposal as an
+  ordinary query to prove the measure works — *after* those checks, through
+  `engine.run_query` like any other query, never instead of them. See
+  [Conversational Analytics](conversational-analytics.md) and
   [Agents & MCP](agents-and-mcp.md).
 
 ## Process model
@@ -170,7 +173,7 @@ two replicas — and what the code now does about the latter — is
 | [Pipelines](pipelines.md) | `app/pipelines.py`, `app/pipeline_runner.py`, `app/pipeline_jobs.py`, `app/pipelinestore.py`, `app/materialize.py` | Hosted SQL transformations: YAML shape, subprocess execution, the FIFO worker, materialization modes, lineage |
 | [Sandbox](sandbox.md) | `app/sandbox.py`, `app/sandbox_runner.py`, `app/sandbox_agent.py`, `app/sandboxstore.py` | Scratch multi-cell SQL notebooks, the coding-agent seam, convert-to-pipeline |
 | [Agents & MCP](agents-and-mcp.md) | `app/skills.py`, `app/agents.py`, `app/skills_analytics.py`, `app/mcpserver.py` | The Skill/Agent abstractions and the MCP server mounted at `/mcp` |
-| [Conversational Analytics](conversational-analytics.md) | `app/llm.py`, `app/llmclient.py`, `app/nlq.py`, `app/composer.py`, `app/memorystore.py`, `app/conversationstore.py` | Chat's translate→re-validate→execute loop, the multi-provider LLM client, the Composer, self-learning model memories |
+| [Conversational Analytics](conversational-analytics.md) | `app/llm.py`, `app/llmclient.py`, `app/nlq.py`, `app/composer.py`, `app/measurewriter.py`, `app/memorystore.py`, `app/conversationstore.py` | Chat's translate→re-validate→execute loop, the multi-provider LLM client, the Composer, the measure writer's propose→verify→repair loop, self-learning model memories |
 | [API Layer](api-layer.md) | `app/api/*.py` | Every HTTP route, grouped by router, with roles and request/response shapes |
 | [Scaling & Deployment](scaling.md) | `app/cluster.py`, `app/clusterstore.py`, `app/sqlitedb.py`, `app/pipeline_jobs.py`, `deploy/` | What "single process" actually coupled, how each coupling is broken, and the manifests for running it horizontally scaled |
 | [Frontend](frontend.md) | `app/static/js/*`, `app/static/*.css`, `design.md` | The no-build vanilla-JS architecture: router, state, chart dispatch, the design system |
