@@ -71,7 +71,7 @@ they don't have an unambiguous "auto" trigger.
 | Chart module | Renders |
 |---|---|
 | `charts/common.js` | Shared constants (`PALETTE`, `MAX_SERIES=8`, `GRAINS`), `ctx` helpers, the shared tooltip singleton, the legend. |
-| `charts/frame.js` | Shared plot scaffolding: the SVG frame, scales, axes — every axis-based chart builds on this. |
+| `charts/frame.js` | Shared plot scaffolding: the SVG frame, scales, axes — every axis-based chart builds on this. `plotSpace()` measures the pane; `plotFrame(box, want)` grows the canvas past it (and hands the pane a scrollbar) when the content needs more room than it offers. |
 | `charts/pivot.js` | Pivots long query rows into `{xs, series}` for bar/line/ribbon — the shape every axis chart actually draws from. |
 | `charts/bar.js` / `line.js` / `ribbon.js` | Rounded-mark bars grouped by series; 2px lines with crosshair; stacked bands that re-rank at every x (rank 1 on top). |
 | `charts/scatter.js` | Color *and* a distinct marker shape per series — color alone fails all-pairs colorblind checks. |
@@ -80,6 +80,22 @@ they don't have an unambiguous "auto" trigger.
 | `charts/stat.js` | Hero numbers for a dimensionless query. |
 | `charts/table.js` | The table renderer — also the accessibility fallback every chart type falls back to. |
 | `charts/rolemap.js` | A small readout of which selected dims/measures are driving which encoding (x/legend/y/sort) — otherwise invisible in the builder UI. |
+
+**Panes that scroll.** A chart is laid out into the pane it was given, but
+some content simply needs more room than the pane has: a sankey stage with
+forty nodes, a bar chart with four hundred categories. `plotFrame(box, want)`
+takes the canvas the content actually needs — `charts/sankey.js` asks for a
+slot per node and label room per stage, `charts/bar.js` for a band per
+category — and when that exceeds the pane it grows the canvas past it, sizes
+it in real pixels, and puts it in a `.viz-scroll` pane so the rest is
+reachable. Charts that fit are untouched: same fitted 100%/100% SVG, no
+scrollbar. Growth is capped at `MAX_CANVAS`, past which a chart compresses
+again rather than asking the browser to paint a canvas no one can read.
+
+The same rule covers the non-SVG forms a visual can take: `.table-scroll`
+(the table renderer, and the fallback any chart type can drop to) and
+`.stat-grid` scroll inside their pane wherever they render — tile, focus
+modal, notebook, chat answer.
 
 **The categorical palette** (`PALETTE`, 8 validated slots, assigned in
 sequence and never cycled — a 9th series folds into a neutral "Other") is
