@@ -3,7 +3,7 @@
 
 import { svgEl, fmtMeasure } from "../lib.js";
 import { ctxDim, ctxGrain, fmtDimValue, tooltipHide, tooltipShow } from "./common.js";
-import { drawAxisTitle, drawXLabels, drawYAxis, logSafeExtent, plotFrame, yExtent } from "./frame.js";
+import { drawAxisTitle, drawXLabels, drawYAxis, logSafeExtent, plotFrame, plotSpace, yExtent } from "./frame.js";
 
 function roundedBarPath(x, w, y, h, yZero) {
   const r = Math.min(4, w / 2, Math.abs(h));
@@ -14,9 +14,19 @@ function roundedBarPath(x, w, y, h, yZero) {
   return `M${x},${yZero} L${x},${yb - r} Q${x},${yb} ${x + r},${yb} L${x + w - r},${yb} Q${x + w},${yb} ${x + w},${yb - r} L${x + w},${yZero} Z`;
 }
 
+// Room one category needs on the x axis before its bars stop being marks and
+// start being hairlines: a band each, and more when the category carries a
+// group of series bars. A result denser than the pane can hold at that rate
+// grows the canvas and scrolls (frame.js) instead of shaving every bar down.
+const MIN_BAND = 10;
+const MIN_BAR_SLOT = 7;
+
 export function renderBar(ctx, pivot) {
-  const f = plotFrame(ctx.container);
   const { xs, series, measure, xCol } = pivot;
+  const space = plotSpace(ctx.container);
+  const f = plotFrame(ctx.container, {
+    width: space.m.l + space.m.r + xs.length * Math.max(MIN_BAND, MIN_BAR_SLOT * series.length),
+  });
   const grain = xCol ? ctxGrain(ctx, xCol.name) : null;
   let [lo, hi] = yExtent(series);
   const isLog = ctx.yScale === "log";

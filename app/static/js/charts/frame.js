@@ -1,16 +1,70 @@
 /* Shared plot scaffolding: frame, scales, axes. */
 "use strict";
 
-import { svgEl, fmtMeasure } from "../lib.js";
+import { el, svgEl, fmtMeasure } from "../lib.js";
 import { ctxDim, fmtDimValue } from "./common.js";
 
-export function plotFrame(box) {
-  const W = Math.max(280, box.clientWidth - 16);
-  const H = Math.max(160, box.clientHeight - 14);
-  const m = { l: 62, r: 18, t: 16, b: 44 };
+const MARGIN = { l: 62, r: 18, t: 16, b: 44 };
+
+// Ceiling on a canvas grown past its pane: a 10k-row result can carry 10k
+// distinct values, and a canvas that tall costs the browser real memory to
+// paint something nobody can read anyway. Past this a chart compresses
+// again, exactly as it did before it could grow at all.
+export const MAX_CANVAS = 6000;
+
+// Width the scrollbar takes out of a pane it appears in (::-webkit-scrollbar
+// is 10px in style.css; the slack covers a platform that asks for more). Only
+// charged to the axis that did NOT grow, so a tall canvas doesn't also scroll
+// sideways to reveal a sliver of nothing.
+const SCROLLBAR = 12;
+
+// The drawing room the pane itself offers — what a chart that fits gets, and
+// what a chart that needs more measures against before asking plotFrame for
+// the bigger canvas. clientWidth/clientHeight include the pane's padding, so
+// the padding comes back off: the canvas is sized in real pixels now, and a
+// canvas wider than the pane it sits in would scroll on its own overshoot.
+export function plotSpace(box) {
+  const pad = getComputedStyle(box);
+  const w = box.clientWidth - (parseFloat(pad.paddingLeft) || 0) - (parseFloat(pad.paddingRight) || 0);
+  const h = box.clientHeight - (parseFloat(pad.paddingTop) || 0) - (parseFloat(pad.paddingBottom) || 0);
+  return { W: Math.max(280, w), H: Math.max(160, h), m: { ...MARGIN } };
+}
+
+// `want` is the canvas the caller's content actually needs, in viewBox units
+// (both keys optional). Anything bigger than the pane grows the frame and
+// hands the pane a scrollbar, rather than crushing the marks into a fit —
+// past a point that fit stops being merely unreadable and starts laying
+// marks outside the frame, where they are clipped with no way to reach them.
+export function plotFrame(box, want = {}) {
+  const space = plotSpace(box);
+  // the pane's own size is always a floor, so MAX_CANVAS can never shrink a
+  // chart below the room it already had
+  let W = Math.max(space.W, Math.min(MAX_CANVAS, Math.ceil(want.width || 0)));
+  let H = Math.max(space.H, Math.min(MAX_CANVAS, Math.ceil(want.height || 0)));
+  const m = space.m;
+  const growsX = W > space.W, growsY = H > space.H;
+  const scrolls = growsX || growsY;
+  if (growsY && !growsX) W = Math.max(280, space.W - SCROLLBAR);
+  if (growsX && !growsY) H = Math.max(160, space.H - SCROLLBAR);
   const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}` });
-  box.append(svg);
-  return { svg, W, H, m, plotW: W - m.l - m.r, plotH: H - m.t - m.b };
+  if (scrolls) {
+    // a fitted chart is sized by the stylesheet (100%/100%); a grown one
+    // carries its own pixel size, so the marks keep the size they were laid
+    // out at instead of being scaled back down into the pane
+    svg.style.width = W + "px";
+    svg.style.height = H + "px";
+    const pane = el("div", { class: "viz-scroll" }, svg);
+    // an axis-title editor is positioned against the box, not the canvas
+    // under it, so scrolling would strand it mid-air — commit and close
+    pane.addEventListener("scroll", () => {
+      const editing = box.querySelector(".axis-title-input");
+      if (editing) editing.blur();   // the editor's own blur handler commits + removes it
+    });
+    box.append(pane);
+  } else {
+    box.append(svg);
+  }
+  return { svg, W, H, m, plotW: W - m.l - m.r, plotH: H - m.t - m.b, scrolls };
 }
 
 export function niceTicks(lo, hi, n = 5) {

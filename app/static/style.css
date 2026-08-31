@@ -832,6 +832,13 @@ main { flex: 1; min-width: 0; padding: 0; display: flex; flex-direction: column;
 
 .chart-box { flex: 1; min-height: 0; position: relative; padding: var(--space-sm) var(--space-xl) var(--space-lg); }
 .chart-box svg { display: block; width: 100%; height: 100%; }
+/* A visual whose content needs more room than the pane gives it (a crowded
+   sankey, a dense bar) grows past the pane and scrolls, rather than being
+   crushed — or, past a point, clipped — into the fit. The canvas carries its
+   own pixel size then, set on the element by plotFrame, so the rule above
+   must not scale it back down to the pane. */
+.viz-scroll { width: 100%; height: 100%; overflow: auto; }
+.chart-box .viz-scroll > svg { width: auto; height: auto; }
 .chart-box .axis text { fill: var(--ink-2); font-family: var(--mono); font-size: var(--text-xs); }
 .chart-box .grid line { stroke: color-mix(in srgb, var(--neon) 7%, transparent); }
 .chart-box .axis-line { stroke: var(--line); }
@@ -846,7 +853,7 @@ main { flex: 1; min-width: 0; padding: 0; display: flex; flex-direction: column;
 
 .stat-grid {
   height: 100%; display: flex; align-items: center; justify-content: center;
-  gap: 40px; flex-wrap: wrap;
+  gap: 40px; flex-wrap: wrap; align-content: center; overflow: auto;
 }
 .stat-tile { text-align: center; padding: 20px 30px; }
 .stat-tile .val {
@@ -857,6 +864,10 @@ main { flex: 1; min-width: 0; padding: 0; display: flex; flex-direction: column;
   color: var(--ink-3); letter-spacing: var(--track-label); font-size: var(--text-xs);
   margin-top: var(--space-md); text-transform: uppercase;
 }
+
+/* the table form of a visual (and the fallback every chart type can drop to)
+   scrolls inside its pane wherever it renders — tile, focus modal, notebook */
+.table-scroll { height: 100%; overflow: auto; }
 
 .msg { height: 100%; display: flex; align-items: center; justify-content: center;
   color: var(--ink-3); letter-spacing: var(--track-name); text-align: center; padding: 0 40px; }
@@ -1112,7 +1123,7 @@ table.data tr:hover td { background: color-mix(in srgb, var(--neon) 4%, transpar
 }
 .tile .legend-box { padding: 8px 12px 0; gap: 10px; }
 .tile .chart-box { padding: 4px 6px 8px; }
-.tile .table-scroll { flex: 1; min-height: 0; overflow: auto; padding: 8px 12px; }
+.tile .table-scroll { padding: 8px 12px; }
 .tile .stat-tile .val { font-size: var(--text-stat); }
 .tile .stat-grid { gap: 18px; }
 .saved-item .add-dash { color: var(--ink-3); background: none; border: none; cursor: pointer; font-family: var(--mono); }

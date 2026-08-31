@@ -3,14 +3,18 @@
 
 import { svgEl, fmtMeasure } from "../lib.js";
 import { MAX_SERIES, OTHER_COLOR, PALETTE, tooltipHide, tooltipShow, vizMessage } from "./common.js";
-import { plotFrame } from "./frame.js";
+import { plotFrame, plotSpace } from "./frame.js";
+
+const GAP = 8;           // vertical space between two nodes of the same stage
+const NODE_W = 12;
+const MIN_NODE_H = 6;    // floor, so a hairline flow keeps a node you can see and hit
+const SLOT_H = 20;       // vertical room one node's label wants (node + its gap)
+const STAGE_W = 150;     // horizontal room a stage's labels want before the next stage
 
 export function renderSankey(ctx) {
   const res = ctx.result;
   const dimCols = res.columns.filter((c) => c.kind === "dimension");
   const mea = res.columns.find((c) => c.kind === "measure");
-  const f = plotFrame(ctx.container);
-  const GAP = 8, NODE_W = 12;
 
   // per-stage node totals (positive flows only)
   const stages = dimCols.map((col) => {
@@ -26,17 +30,44 @@ export function renderSankey(ctx) {
     return { col, nodes, total: nodes.reduce((s, n) => s + n.total, 0) };
   });
   if (!stages.every((s) => s.nodes.length)) return vizMessage(ctx.container, "no positive flows to draw");
-  const scale = Math.min(...stages.map((s) => (f.plotH - GAP * (s.nodes.length - 1)) / s.total));
+
+  // The canvas the flows need, which is not the canvas the pane offers: every
+  // node wants a slot its label fits in, and every stage wants room for those
+  // labels before the next one. Fitting a crowded diagram into the pane
+  // regardless is what collapsed it into hairlines — and once the gaps alone
+  // outgrew the pane, the scale went negative and the whole layout landed
+  // outside the frame, clipped, with no way to reach the rest of it. Ask for
+  // the room instead; plotFrame gives the pane a scrollbar (frame.js).
+  const space = plotSpace(ctx.container);
+  const crowd = Math.max(...stages.map((s) => s.nodes.length));
+  const f = plotFrame(ctx.container, {
+    width: space.m.l + space.m.r + NODE_W + (stages.length - 1) * STAGE_W,
+    height: space.m.t + space.m.b + crowd * SLOT_H,
+  });
+
+  // Proportional scale against the room we actually got — which is the room
+  // asked for, unless MAX_CANVAS capped it (a pathological result set).
+  let gap = GAP, floorH = MIN_NODE_H;
+  let scale = Math.min(...stages.map((s) => Math.max(1, f.plotH - gap * (s.nodes.length - 1)) / s.total));
+  // flooring the tiny nodes can push the tallest stage past the canvas; when
+  // it does, squeeze heights, floor and gaps by one factor so the layout
+  // lands inside the frame with every proportion intact
+  const stageH = (s) => s.nodes.reduce((h, n) => h + Math.max(floorH, n.total * scale), 0) + gap * (s.nodes.length - 1);
+  const tallest = Math.max(...stages.map(stageH));
+  if (tallest > f.plotH) {
+    const squeeze = f.plotH / tallest;
+    scale *= squeeze; floorH *= squeeze; gap *= squeeze;
+  }
 
   const stageX = (i) => f.m.l + (i / (stages.length - 1)) * (f.plotW - NODE_W);
   for (const [i, stage] of stages.entries()) {
-    let y = f.m.t + (f.plotH - (stage.total * scale + GAP * (stage.nodes.length - 1))) / 2;
+    let y = f.m.t + (f.plotH - stageH(stage)) / 2;
     for (const node of stage.nodes) {
       node.x = stageX(i);
       node.y = y;
-      node.h = Math.max(1, node.total * scale);
+      node.h = Math.max(floorH, node.total * scale);
       node.inOff = 0; node.outOff = 0;
-      y += node.h + GAP;
+      y += node.h + gap;
     }
   }
 
@@ -62,13 +93,15 @@ export function renderSankey(ctx) {
     for (const [k, v] of ordered) {
       const [ka, kb] = k.split(SEP);
       const na = byNode(a, ka), nb = byNode(b, kb);
-      const h = Math.max(1, v * scale);
+      // a link's share of each end's node, so both ends fill their node
+      // exactly even where the node was floored up off its true height
+      const h0 = (v / na.total) * na.h, h1 = (v / nb.total) * nb.h;
       const x0 = na.x + NODE_W, x1 = nb.x;
       const y0 = na.y + na.outOff, y1 = nb.y + nb.inOff;
-      na.outOff += h; nb.inOff += h;
+      na.outOff += h0; nb.inOff += h1;
       const xm = (x0 + x1) / 2;
       const path = svgEl("path", {
-        d: `M${x0},${y0} C${xm},${y0} ${xm},${y1} ${x1},${y1} L${x1},${y1 + h} C${xm},${y1 + h} ${xm},${y0 + h} ${x0},${y0 + h} Z`,
+        d: `M${x0},${y0} C${xm},${y0} ${xm},${y1} ${x1},${y1} L${x1},${y1 + h1} C${xm},${y1 + h1} ${xm},${y0 + h0} ${x0},${y0 + h0} Z`,
         fill: na.color, "fill-opacity": 0.3,
       });
       path.addEventListener("mousemove", (evt) => {
