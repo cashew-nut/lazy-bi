@@ -685,9 +685,10 @@ if LLM_MODEL and LLM_MODEL not in LLM_MODEL_CHOICES:
 # anything else has to be named.
 #
 # *Whether* to ask is the UI's THINKING toggle (per conversation in chat,
-# per session in the modelling panel and the Composer) — this list decides
-# where that toggle is offered at all, and a request for thinking on a model
-# that isn't listed is dropped rather than sent (app/llmclient.py).
+# per session in the modelling panel and the Composer, per ask on the measure
+# lab's and modelling form's ASK AI bars) — this list decides where that
+# toggle is offered at all, and a request for thinking on a model that isn't
+# listed is dropped rather than sent (app/llmclient.py).
 LLM_THINKING_MODELS = set(_csv(
     "CI_LLM_THINKING_MODELS",
     [m for m in ("claude-opus-4-8", "claude-sonnet-5") if m in LLM_MODEL_CHOICES],

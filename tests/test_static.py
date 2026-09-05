@@ -146,3 +146,63 @@ def test_pipeline_lineage_suggest_button_carries_admin_data_role(client):
     editor control, for correct initial paint before any editor is opened."""
     html = client.get("/").text
     assert 'id="editor-lineage-suggest" data-role="admin"' in html
+
+
+# ── AI measure authoring: the THINKING toggle, and emits where it is edited ──
+
+def test_the_ask_ai_bar_carries_a_thinking_toggle_both_surfaces_send(client):
+    """Extended thinking was reachable from CHAT, the COMPOSER and the
+    modelling panel but not from the one seam whose hard case needs it most —
+    a complex measure, which has to derive rows before it can aggregate them.
+    The toggle lives on the shared ask bar, so both surfaces get the same
+    control, and both have to actually send what it says."""
+    ai = client.get("/static/js/measureai.js").text
+    assert "flag-toggle" in ai and "THINKING" in ai
+    assert "supportsThinking()" in ai and "thinkingDefault()" in ai
+    assert "thinking: () => thinking" in ai
+    for surface in ("measurelab.js", "modelform.js"):
+        js = client.get(f"/static/js/{surface}").text
+        assert "thinking: ui.thinking()" in js, f"{surface} builds a body without the toggle's answer"
+
+
+def test_the_thinking_toggle_resyncs_when_the_lab_opens(client):
+    """The measure lab wires its ask bar once, at boot — which can be before
+    /api/health has said which models can think. Without a re-sync on open,
+    the toggle would stay hidden for the rest of the session."""
+    lab = client.get("/static/js/measurelab.js").text
+    assert "ai.syncThinking()" in lab
+
+
+def test_the_lab_can_start_a_from_block_by_hand(client):
+    """DROP STEP had no counterpart: the step editor was only ever revealed by
+    an ASK AI answer or by opening a measure that already had one, so a
+    hand-written complex measure — and the emits: that goes with it — could
+    not be authored in the lab at all."""
+    html = client.get("/").text
+    assert 'id="lab-add-step"' in html
+    lab = client.get("/static/js/measurelab.js").text
+    assert "FROM_TEMPLATE" in lab
+    assert '$("#lab-add-step-row").hidden' in lab      # the two states of one control
+
+
+def test_emits_is_editable_where_a_measure_is_actually_edited(client):
+    """It was a read-only line in the lab and, in the modelling form, offered
+    only inside the ⤢ EXPAND modal — so a complex measure's emits: was plainly
+    there in the yaml and nowhere an author could see or change it on the card
+    in front of them."""
+    lab = client.get("/static/js/measurelab.js").text
+    assert "renderEmits" in lab and "toggleEmit" in lab
+    assert "textContent = lab.emits.length" not in lab          # the old read-only line
+
+    form = client.get("/static/js/modelform.js").text
+    card = form[form.index("function measureCard"):form.index("function renderMeasureSection")]
+    assert "emitsPicker(m, owner)" in card
+
+
+def test_a_generated_timeline_is_never_offered_as_an_emit(client):
+    """A spine dimension is a timeline the engine generates, not a column of
+    the fact table — no from: block can output one, so emitting it can only
+    fail at query time. Neither picker should offer it."""
+    for name in ("measurelab.js", "modelform.js"):
+        js = client.get(f"/static/js/{name}").text
+        assert "!d.spine" in js, f"{name} offers spine dimensions as emits candidates"

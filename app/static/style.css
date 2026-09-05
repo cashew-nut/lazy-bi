@@ -1510,8 +1510,9 @@ body.portal-dash #dash-name { pointer-events: none; }
    author does, since "is this tile instant, and how big is it" is the honest
    answer to "why did that feel slow" for either of them. */
 /* .flag-toggle is the same control in the CHAT / COMPOSER / modelling-panel
-   headers (the THINKING opt-in) — one look for "a header-level switch", so a
-   second one never invents a third appearance. */
+   headers and on the ASK AI bars that write measures (the THINKING opt-in) —
+   one look for "a switch on a bar", so a second one never invents a third
+   appearance. */
 .dash-instant, .flag-toggle {
   display: inline-flex; align-items: center; gap: 5px; margin-left: 14px;
   font-size: var(--text-xs); letter-spacing: var(--track-label); color: var(--pink); cursor: pointer;
@@ -1676,7 +1677,20 @@ button.ghost.mk-new { margin-top: 2px; }
   padding: var(--space-sm) var(--space-md); outline: none;
 }
 #lab-from:focus { border-color: transparent; outline: var(--rule-mark) solid var(--pink); outline-offset: -1px; }
-.lab-emits { font-size: var(--text-xs); color: var(--cyan); letter-spacing: var(--track-body); }
+/* EMITS: chips for the dimensions the block declares it computes, plus a
+   select to add one. Wraps, since a model with imported bundles has more
+   dimensions than one row holds. */
+.lab-emits { display: flex; align-items: center; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.lab-emits .emit-lead { flex: none; color: var(--cyan); }
+.lab-emits .chip { padding: var(--space-3xs) var(--space-xs); font-size: var(--text-sm); }
+/* selects are full-width by default (they are usually a form field); this one
+   sits inline among the chips, so it is sized to its content instead */
+.lab-emit-add {
+  flex: none; width: auto;
+  font-size: var(--text-xs); padding: var(--space-3xs) var(--space-2xs);
+}
+/* the other half of DROP STEP: offered in its place when there is no step */
+.lab-step-add { margin-top: 8px; }
 
 /* ── ask ai: one prompt bar, shared by the measure lab and the model form ── */
 .ai-ask { margin-top: 8px; }

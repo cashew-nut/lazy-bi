@@ -444,6 +444,21 @@ def test_route_streams_a_verified_measure(author_client, monkeypatch):
     assert payload["rationale"] == "plain sum"
 
 
+def test_route_carries_the_thinking_toggle_through_to_the_writer(author_client, monkeypatch):
+    """The ASK AI bar's THINKING toggle is only worth having if what it says
+    reaches the request. An absent field still means "the server's default",
+    which is what an untouched bar sends."""
+    writer = _fake(monkeypatch, [measure(name="ai_units", expr="SUM(quantity)")])
+    assert _write(author_client, thinking=False).status_code == 200
+    assert writer.requests[-1].thinking is False
+
+    assert _write(author_client, thinking=True).status_code == 200
+    assert writer.requests[-1].thinking is True
+
+    assert _write(author_client).status_code == 200
+    assert writer.requests[-1].thinking is None
+
+
 def test_route_reports_the_repair_round(author_client, monkeypatch):
     _fake(monkeypatch, [measure(name="ai_aov", expr="AVG(nope)"),
                         measure(name="ai_aov", expr="AVG(unit_price)")])

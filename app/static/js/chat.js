@@ -51,14 +51,18 @@ export const isChatEnabled = () => chat.enabled;
 export const supportsThinking = (model) => chat.thinkingModels.includes(model || chat.defaultModel);
 export const thinkingDefault = () => chat.thinkingDefault;
 
-// Wires one of those header toggles to its capability: checked only when the
-// model can think *and* the flag is on, disabled (with the reason in the
-// tooltip) when it can't. Returns nothing — the caller owns what a change
-// means, since the chat's toggle persists on a conversation and the
-// panel's/Composer's lives for the session.
-export function renderThinkingToggle(boxId, inputId, model, on) {
-  const box = $(boxId);
-  const input = $(inputId);
+// Wires one of those toggles to its capability: checked only when the model
+// can think *and* the flag is on, disabled (with the reason in the tooltip)
+// when it can't. Returns nothing — the caller owns what a change means, since
+// the chat's toggle persists on a conversation, the panel's/Composer's lives
+// for the session, and the ASK AI bars' lives for the ask.
+//
+// Takes either a selector or the element itself: the header toggles are in
+// index.html and name themselves by id, while the ASK AI bar builds its own
+// (measureai.js) and there may be several on a page at once.
+export function renderThinkingToggle(boxRef, inputRef, model, on) {
+  const box = typeof boxRef === "string" ? $(boxRef) : boxRef;
+  const input = typeof inputRef === "string" ? $(inputRef) : inputRef;
   if (!box || !input) return;
   const capable = supportsThinking(model);
   input.disabled = !capable;

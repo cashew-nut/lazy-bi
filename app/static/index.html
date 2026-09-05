@@ -249,7 +249,6 @@
           <div id="lab-from-wrap" hidden>
             <div class="lab-row lab-from-head">
               <span class="lab-hint">STEP · the rows this measure aggregates, instead of the raw scan — {model} is the filtered fact scan, {dims} the query's grouping columns</span>
-              <span id="lab-emits" class="lab-emits"></span>
               <button class="btn plain" id="lab-drop-step">✕ DROP STEP</button>
             </div>
             <div class="lab-expr-wrap">
@@ -257,6 +256,11 @@
                 placeholder="SELECT {dims}, ... FROM {model} GROUP BY {dims}, ..."></textarea>
               <div id="lab-from-suggest" hidden></div>
             </div>
+            <div id="lab-emits" class="lab-emits"></div>
+          </div>
+          <div class="lab-row lab-step-add" id="lab-add-step-row">
+            <span class="lab-hint">a measure that has to derive rows before it can aggregate them — an aggregate of an aggregate, a per-entity first event, a latest-row balance — needs a step first</span>
+            <button class="btn plain" id="lab-add-step" data-role="author">+ ADD STEP</button>
           </div>
           <div class="lab-expr-wrap">
             <textarea id="lab-expr" rows="2" spellcheck="false" autocomplete="off"
