@@ -72,7 +72,7 @@ export function openLab(def = null) {
   setStep((def && def.from) || "", (def && def.emits) || []);
   setMeta((def && def.description) || "", (def && def.synonyms) || []);
   $("#lab-ai").hidden = !measureAiAvailable();
-  if (ai) ai.setStatus(AI_HINT);
+  if (ai) { ai.setStatus(AI_HINT); ai.syncThinking(); }
   lab.asks = [];
   setStatus('type a SQL aggregate — e.g. <b>SUM(unit_price * quantity)</b>; '
     + 'a bare name offers columns, sibling measures and functions');
@@ -133,13 +133,68 @@ function setMeta(description, synonyms) {
 
 const stepText = () => ($("#lab-from-wrap").hidden ? "" : $("#lab-from").value.trim());
 
+// What "+ ADD STEP" starts from — the same skeleton modelform.js seeds a
+// complex measure with, so the two authoring surfaces teach one shape.
+const FROM_TEMPLATE = "SELECT {dims}, ...\nFROM {model}\nGROUP BY {dims}, ...";
+
 // Show/hide the step editor as one operation, so "has a from: block" is a
 // single fact about the lab rather than three fields that can disagree.
 function setStep(text, emits = []) {
   lab.emits = [...emits];
   $("#lab-from").value = text || "";
   $("#lab-from-wrap").hidden = !text;
-  $("#lab-emits").textContent = lab.emits.length ? `emits: ${lab.emits.join(", ")}` : "";
+  // the two are one control in two states: the step is either being edited
+  // (with DROP STEP to leave) or offered (with ADD STEP to start one)
+  $("#lab-add-step-row").hidden = !!text;
+  renderEmits();
+}
+
+/* EMITS: the dimensions this block computes itself rather than inheriting
+   from the raw rows — a per-entity milestone date, a cohort month. The engine
+   withholds an emitted dimension from {dims} while the block runs and groups
+   on the block's own output afterwards, which is what lets a timeline bucket
+   what you derived. It is only ever a *declared* dimension's name (anything
+   else is refused at save time), so it is picked here rather than typed.
+
+   A generated timeline is left out: it is not a column of the fact table, so
+   no block can produce one and emitting it can only fail. Offered as a select
+   plus chips rather than the model form's chip-per-dimension, because the lab
+   sees a resolved model — every imported bundle dimension included — and that
+   is a longer list than one row can hold. */
+const emitCandidates = () => (state.model.dimensions || []).filter((d) => !d.spine);
+
+function renderEmits() {
+  const box = $("#lab-emits");
+  box.replaceChildren(el("span", { class: "lab-hint emit-lead" },
+    "EMITS · dimensions this block computes itself"));
+  // what is emitted is drawn from lab.emits, not from the candidate list: a
+  // measure written elsewhere may emit something this picker wouldn't offer,
+  // and it must still be visible (and removable) rather than silently kept
+  for (const name of lab.emits) {
+    const chip = el("button", { class: "chip on", title: "stop emitting this dimension" },
+      el("span", { class: "tick" }, "✓"), el("span", { class: "lbl" }, name));
+    chip.addEventListener("click", () => toggleEmit(name));
+    box.append(chip);
+  }
+  const rest = emitCandidates().filter((d) => !lab.emits.includes(d.name));
+  if (!rest.length) {
+    if (!lab.emits.length) box.append(el("span", { class: "lab-hint" }, "— this table declares none"));
+    return;
+  }
+  const add = el("select", { class: "lab-emit-add",
+                             title: "the block outputs this dimension itself" },
+    el("option", { value: "" }, "+ emit"),
+    ...rest.map((d) => el("option", { value: d.name }, d.name)));
+  add.addEventListener("change", () => { if (add.value) toggleEmit(add.value); });
+  box.append(add);
+}
+
+function toggleEmit(name) {
+  lab.emits = lab.emits.includes(name)
+    ? lab.emits.filter((n) => n !== name)
+    : [...lab.emits, name];
+  renderEmits();
+  scheduleResolve();     // emitting changes the query the measure has to run
 }
 
 function nameProblem(def) {
@@ -280,6 +335,7 @@ async function askMeasure(text, ui) {
     query: buildQuery(),
     editing: editing || null,
     history: lab.asks,
+    thinking: ui.thinking(),
   }, { onStatus: (msg) => ui.setStatus(msg) });
 
   const measure = measureOrThrow(payload);   // throws a decline/failure as-is
@@ -333,6 +389,12 @@ export function initMeasureLab() {
   $("#lab-drop-step").addEventListener("click", () => {
     setStep("", []);          // back to a plain aggregate over the fact scan
     scheduleResolve();
+  });
+  $("#lab-add-step").addEventListener("click", () => {
+    // a hand-written complex measure, rather than only one ASK AI wrote:
+    // the skeleton, the emits picker and the completer, then the caret in it
+    setStep(FROM_TEMPLATE, []);
+    $("#lab-from").focus();
   });
   const from = $("#lab-from");
   fromCompleter = makeCompleter(from, $("#lab-from-suggest"), labResolve, scheduleResolve);

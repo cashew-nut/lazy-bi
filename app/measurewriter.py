@@ -16,6 +16,13 @@ a per-entity intermediate result before aggregating it — worth asking for at
 all. If it still fails, the caller gets the error and the last attempt, never
 a measure that doesn't run.
 
+Those complex measures are also what sizes the request. The answer can be long
+(a `from:` block alone may be sqlgrammar.MAX_RELATION_LEN characters) and the
+thinking that precedes it longer still, and every provider charges thinking to
+the same ceiling as the answer — so the budget is
+config.MEASURE_WRITER_MAX_TOKENS for the answer with app/llmclient.py adding
+the thinking headroom on top, rather than one number asked to cover both.
+
 The other half of "good at it" is context, rebuilt live per request by
 build_context(): the fact table's real columns and types, every declared
 dimension (with real sample values for the categorical ones, so a
@@ -53,12 +60,15 @@ FORMATS = ("number", "currency", "percent")
 
 MEASURE_NAME = re.compile(r"^[a-z_][a-z0-9_]*$")
 
-# One proposal plus two repairs. Every attempt is a full model call and (when
-# it gets that far) one real query against the source, so the ceiling is
-# deliberately low: past the second failure the cause is nearly always
-# something no amount of re-prompting fixes — a column that isn't in the data
-# — and the human is better served by seeing the error than by waiting.
-MAX_ATTEMPTS = 3
+# One proposal plus two repairs, by default. Every attempt is a full model
+# call and (when it gets that far) one real query against the source, so the
+# ceiling is deliberately low: past the second failure the cause is nearly
+# always something no amount of re-prompting fixes — a column that isn't in
+# the data — and the human is better served by seeing the error than by
+# waiting. CI_MEASURE_WRITER_ATTEMPTS buys more patience where the models are
+# cheap or the measures are hard; one is the floor, since a setting of zero
+# would end every turn with nothing to report.
+MAX_ATTEMPTS = max(1, config.MEASURE_WRITER_ATTEMPTS)
 
 # Sample values are what let a proposed `FILTER (WHERE channel = 'Online')`
 # name a value that actually exists. Bounded twice: a dimension with more
@@ -412,8 +422,11 @@ _TOOLS = [_WRITE_TOOL, _DECLINE_TOOL]
 
 # ── the prompt ──────────────────────────────────────────────────────────────
 
+_AGGREGATE_HINT = ""      # memoized by _aggregate_hint() on its first success
+
+
 def _aggregate_hint() -> str:
-    """A real sample of the live function allowlist, not a remembered one.
+    """A real sample of the live function allowlist, not one written down here.
 
     sqlgrammar derives what may be called from DuckDB's own catalog, so the
     only honest way to tell the model what it may use is to read the same
@@ -424,8 +437,19 @@ def _aggregate_hint() -> str:
     only (list/struct/json builders); it narrows what is *shown*, never what
     is allowed, which is why the line says "include".
 
+    Read once per process and remembered: the catalog and the allowlist are
+    both fixed for the life of the process, and the system prompt carries a
+    cache breakpoint — a list that came back in a different order, or came
+    back empty because one call happened to find no connection, would miss
+    the cache for every later request as well as costing a catalog query per
+    attempt. Only a successful read is remembered, so a transient failure
+    degrades one request rather than the process.
+
     Best-effort: with no connection the rule is stated without the list rather
     than failing the request."""
+    global _AGGREGATE_HINT
+    if _AGGREGATE_HINT:
+        return _AGGREGATE_HINT
     noise = ("list_", "array_", "json", "map_", "struct_", "union_", "enum_",
              "has_", "inet_", "format_", "current_", "get_", "st_", "bit",
              "col_description", "generate_subscripts", "ago", "date_add",
@@ -437,7 +461,8 @@ def _aggregate_hint() -> str:
     names = [n for n in names if not n.startswith(noise)]
     if not names:
         return ""
-    return "Aggregates here include: " + ", ".join(names[:140]) + "."
+    _AGGREGATE_HINT = "Aggregates here include: " + ", ".join(names[:140]) + "."
+    return _AGGREGATE_HINT
 
 
 _SYSTEM_PROMPT_HEAD = """\
@@ -489,7 +514,7 @@ be aggregated.
      from: |
        SELECT {dims},
               date_diff('day', start_date, end_date) AS tenure_days,
-              date_trunc('month', end_date)          AS churn_month
+              end_date                               AS churn_month
        FROM {model}
        WHERE end_date IS NOT NULL
      emits: [churn_month]
@@ -514,7 +539,12 @@ per-entity milestone date, a cohort month). An emitted dimension is withheld fro
 {dims} while the block runs and grouped on the block's output afterwards, so a \
 timeline buckets what you derived — output it as a column named exactly like the \
 declared dimension. Emit only declared dimensions, and only ones the block \
-really outputs.
+really outputs. Emit a TIME dimension as the raw date you derived: the engine \
+truncates it to whatever grain the query asked for, so truncating it yourself in \
+the block is right only at that one grain and wrong at every finer one. A \
+generated timeline (the dimension list marks them) is not a column of the fact \
+table at all — carry it through {dims} like any other dimension, but never name \
+it in emits:, because the block has no way to produce it.
 
    REACH FOR from: WHEN THE NUMBER IS:
    - an aggregate of an aggregate — the median/average/max of a per-customer, \
@@ -536,9 +566,65 @@ HAVING, DISTINCT. It may NOT name any table other than {model} and its own CTEs,
 and may not call a table function (read_parquet, glob, iceberg_scan, ...) — those \
 are refused outright.
 
+   HOW THE PLACEHOLDERS EXPAND, because that decides what is legal around them. \
+{dims} becomes bare quoted column names, comma-separated — "region", \
+"signup_month" — so it is a select list and a GROUP BY list, never a single \
+column. You cannot qualify it (f.{dims} qualifies only the first name), wrap it \
+in a function, or give it an alias. When the block joins two of its own CTEs that \
+both carry the dimensions, join them with USING ({dims}): that is what keeps the \
+final SELECT {dims} from being ambiguous. And {model} arrives with the query's \
+own filters already applied, so anything you derive per entity is derived inside \
+the filtered window — where that changes the meaning (a "first" event is the \
+first one in the window, not the first ever), say so in the description.
+
    Do NOT use from: when a plain aggregate is already correct. It costs an extra \
 pass and is harder to read: SUM(a)/SUM(b), COUNT(DISTINCT x) and \
 SUM(x) FILTER (WHERE ...) are all plain measures.
+
+WORKED PATTERNS — the from: shapes asked for most often. Copy the structure; the \
+column names are whatever this model actually has.
+
+A. TIME TO AN ENTITY'S FIRST EVENT — time to first order, activation lag, days \
+to conversion — bucketed by when the entity started:
+     expr: MEDIAN(days_to_first)
+     from: |
+       SELECT {dims},
+              date_diff('day', MIN(signup_date), MIN(order_date)) AS days_to_first,
+              MIN(signup_date)                                    AS signup_month
+       FROM {model}
+       WHERE order_date IS NOT NULL
+       GROUP BY {dims}, customer_id
+     emits: [signup_month]
+   `GROUP BY {dims}, <the entity>` is the whole trick: it makes one row per \
+entity, so the aggregate in expr is a median OF ENTITIES, and the emitted raw \
+date is what buckets them into cohorts. date_diff('day', earlier, later) counts \
+forward — reversing the arguments silently returns negatives. The WHERE decides \
+the denominator (here: entities that never converted are excluded, not counted as \
+slow), so state which in the description.
+   Use QUALIFY instead when you need whole ROWS of the first event rather than \
+one date out of it, and keep the dimensions in the partition:
+       QUALIFY row_number() OVER (PARTITION BY {dims}, customer_id
+                                  ORDER BY order_date) = 1
+
+B. AN AGGREGATE OF AN AGGREGATE, or a number about a coarser entity than the \
+rows — average order value over order LINES, median basket size, orders over \
+$500:
+     expr: AVG(order_total)
+     from: |
+       SELECT {dims}, SUM(unit_price * quantity) AS order_total
+       FROM {model}
+       GROUP BY {dims}, order_id
+   Add HAVING to the block and COUNT(*) in expr to count the entities that clear \
+a threshold.
+
+C. SEMI-ADDITIVE — a balance or level that must be taken at each entity's latest \
+date and only then summed:
+     expr: SUM(balance)
+     from: |
+       SELECT {dims}, balance
+       FROM {model}
+       QUALIFY row_number() OVER (PARTITION BY {dims}, account_id
+                                  ORDER BY as_of_date DESC) = 1
 
 GROUNDING — everything you may name is in the prompt below.
 - expr (when there is no from: block) may name SOURCE COLUMNS only, from the \
@@ -563,6 +649,17 @@ groups by a particular dimension unless you emit it yourself.
 - A percent-formatted measure returns a fraction — 0.42, not 42.
 - No semicolons, no comments, no CTE in front of expr, no DDL, no subquery \
 inside expr (a derived relation belongs in from:).
+
+BEFORE YOU ANSWER, re-read your own from: block once against the four things \
+the validator actually rejects. Each one costs a whole round to find the other \
+way:
+1. every column {dims} carries survives to the block's output — it is in the \
+final SELECT and its GROUP BY, and in every CTE that SELECT reads from;
+2. every name in emits: is a declared dimension AND a column the block really \
+outputs, under exactly that name;
+3. no table but {model} and your own CTEs, and no table function;
+4. expr aggregates only columns the block's final SELECT produces — not raw \
+source columns it dropped on the way.
 
 WRITE IT LIKE THE MEASURES ALREADY THERE: same naming, same label style, same \
 level of description detail. If the ask is ambiguous between two readings, pick \
@@ -772,10 +869,20 @@ class LLMMeasureWriter:
     def _request(self, request: WriteRequest) -> llmclient.ChatRequest:
         return llmclient.ChatRequest(
             model=self.model,
-            max_tokens=4096,
+            # the answer alone: a from: block can run to
+            # sqlgrammar.MAX_RELATION_LEN characters and the description and
+            # rationale ride along with it. Thinking is charged to the same
+            # ceiling by every provider, and app/llmclient.py adds that
+            # headroom on top — which is what this seam ran out of at 4096,
+            # the whole allowance going into the reasoning a hard measure
+            # needs and nothing left to write the tool call with.
+            max_tokens=config.MEASURE_WRITER_MAX_TOKENS,
             system=_system_prompt(),
             tools=_TOOLS,
             prompt=build_user_prompt(request),
+            # long, static, and re-sent on every repair round and every turn
+            # of an authoring session — exactly what a cache breakpoint is for
+            cache_system=True,
             # a complex measure is a genuine reasoning problem — thinking is on
             # unless the caller turned it off, same as the composer
             thinking=config.LLM_THINKING_DEFAULT if request.thinking is None else request.thinking,

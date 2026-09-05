@@ -1099,25 +1099,35 @@ async function runCheck(m, owner, statusEl) {
 // dimensions the fact table has declared so far, offered as emits
 // candidates (emits names dimension(s) the from: block computes itself —
 // e.g. a per-entity milestone date — see subscriptions.yaml's
-// median_tenure_days)
-function emitsPicker(m, owner, redraw) {
+// median_tenure_days). A generated timeline is left out: it is not a column
+// of the fact table, so no block can output one and emitting it can only
+// fail at query time.
+//
+// Redraws itself rather than asking its caller to redraw everything, so it
+// can sit on a measure *card* as well as in the modal — re-rendering the card
+// list on every chip click would cost the author whatever they were typing.
+function emitsPicker(m, owner) {
   const wrap = el("div", { class: "mf-subset" });
-  const dims = componentOf(owner.name).flatMap((d) => d.dimensions);
-  if (!dims.length) {
-    wrap.append(note("declare a dimension above to offer it here, or type its name once the block outputs it"));
-    return wrap;
-  }
-  for (const d of dims) {
-    const on = (m.emits || []).includes(d.name);
-    const chip = el("button", { class: "chip" + (on ? " on" : "") },
-      el("span", { class: "tick" }, on ? "✓" : ""), el("span", { class: "lbl" }, d.name));
-    chip.addEventListener("click", () => {
-      m.emits = on ? (m.emits || []).filter((x) => x !== d.name) : [...(m.emits || []), d.name];
-      markDirty();
-      redraw();
-    });
-    wrap.append(chip);
-  }
+  const dims = componentOf(owner.name).flatMap((d) => d.dimensions).filter((d) => !d.spine);
+  const draw = () => {
+    wrap.replaceChildren();
+    if (!dims.length) {
+      wrap.append(note("declare a dimension above to offer it here — emits names one this table already has"));
+      return;
+    }
+    for (const d of dims) {
+      const on = (m.emits || []).includes(d.name);
+      const chip = el("button", { class: "chip" + (on ? " on" : "") },
+        el("span", { class: "tick" }, on ? "✓" : ""), el("span", { class: "lbl" }, d.name));
+      chip.addEventListener("click", () => {
+        m.emits = on ? (m.emits || []).filter((x) => x !== d.name) : [...(m.emits || []), d.name];
+        markDirty();
+        draw();
+      });
+      wrap.append(chip);
+    }
+  };
+  draw();
   return wrap;
 }
 
@@ -1192,6 +1202,7 @@ async function askForMeasureInto(owner, text, ui, existing = null) {
           ...(hasFrom(existing) ? { from: existing.from, emits: existing.emits || [] } : {}) }
       : null,
     history: measureAsks,
+    thinking: ui.thinking(),
   }, { onStatus: (msg) => ui.setStatus(msg) });
 
   const written = measureOrThrow(payload);
@@ -1248,6 +1259,8 @@ function measureCard(m, owner, idx, box) {
   if (isFramed) {
     card.append(el("div", { class: "field-label", style: "margin-top:6px" }, "FROM · the derived rows this measure aggregates ({model} scan, {dims} carried through — ⤢ EXPAND for guidance)"));
     card.append(fromEditor(m, owner, status));
+    card.append(el("div", { class: "field-label", style: "margin-top:8px" }, "EMITS · dimensions the block computes itself"));
+    card.append(emitsPicker(m, owner));
     card.append(el("div", { class: "field-label", style: "margin-top:8px" }, "EXPR · aggregates the from: block's output"));
     card.append(exprEditor(m, owner, status));
   } else {
@@ -1401,7 +1414,7 @@ function drawMeasureModal() {
         + "allowed; no other table and no table function is."),
       fromEditor(m, owner, status),
       el("div", { class: "field-label", style: "margin-top:10px" }, "EMITS · dimensions the block computes itself"),
-      emitsPicker(m, owner, drawMeasureModal),
+      emitsPicker(m, owner),
       el("div", { class: "field-label", style: "margin-top:10px" }, "EXPR · aggregates the from: block's output"),
       exprEditor(m, owner, status, { rows: 2, cls: "mf-expr mm-expr" }));
   } else {

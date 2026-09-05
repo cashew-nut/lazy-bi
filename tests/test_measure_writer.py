@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import pytest
 
+from app import config, llmclient
 from app import measurewriter as mw
 from app.api import measures as measures_api
 
@@ -56,6 +57,18 @@ def sales(models):
 @pytest.fixture(scope="module")
 def sales_ctx(sales):
     return mw.build_context(sales, scope="model")
+
+
+@pytest.fixture(scope="module")
+def subs(models):
+    """The model with the shapes complex measures are actually asked for:
+    one row per subscription, a start and an end per customer."""
+    return models["subscriptions"]
+
+
+@pytest.fixture(scope="module")
+def subs_ctx(subs):
+    return mw.build_context(subs, scope="model")
 
 
 # ── the context: introspected, never taken from the caller ──────────────────
@@ -136,6 +149,39 @@ def test_visual_prompt_shows_the_query_and_its_parameters(sales):
     prompt = mw.build_user_prompt(mw.WriteRequest(instruction="growth", context=ctx))
     assert "grain 1q" in prompt and "ON A VISUAL" in prompt
     assert "param('name')" in prompt and "periods (int" in prompt
+
+
+# ── the request: enough budget to think AND to write ────────────────────────
+
+def test_the_request_budgets_the_answer_and_caches_the_system_prompt(sales_ctx, monkeypatch):
+    """What ran out on the first complex measure anyone asked for: 4096 tokens
+    covering both the reasoning "the median time to a customer's first order,
+    by signup cohort" needs and the from: block it then has to write. The seam
+    now asks for the answer alone and app/llmclient.py adds the room to think
+    on top of it."""
+    monkeypatch.setattr(config, "LLM_REASONING_TOKENS", 8192)
+    writer = mw.LLMMeasureWriter(api_key="k", model="claude-sonnet-5", client=object())
+
+    request = writer._request(mw.WriteRequest(
+        instruction="median days to a customer's first order, by signup cohort",
+        context=sales_ctx))
+    assert request.max_tokens == config.MEASURE_WRITER_MAX_TOKENS
+    # the shipped default has to leave room for a from: block (up to
+    # sqlgrammar.MAX_RELATION_LEN characters) once the thinking is paid for
+    assert config.MEASURE_WRITER_MAX_TOKENS >= 8192
+    assert request.thinking
+    # long, static, and re-sent on every repair round of every turn
+    assert request.cache_system
+
+    assert llmclient.AnthropicClient()._kwargs(request)["max_tokens"] == (
+        config.MEASURE_WRITER_MAX_TOKENS + 8192)
+
+
+def test_the_system_prompt_is_byte_identical_between_attempts():
+    """A cache breakpoint is only worth declaring if the prefix under it does
+    not move — and the aggregate list is read from a live catalog, which is
+    exactly the kind of thing that would move."""
+    assert mw._system_prompt() == mw._system_prompt()
 
 
 # ── check(): the same rules the save paths enforce ──────────────────────────
@@ -239,6 +285,75 @@ def test_verify_reports_an_unreachable_source_instead_of_blaming_the_measure(sal
     assert "boom" in verdict.note
 
 
+# ── the worked patterns the prompt teaches ──────────────────────────────────
+# The system prompt hands the model three from: shapes to copy and one join
+# rule. Every one of them is asserted here the only way that means anything:
+# by running it against the real bucket. A pattern that stopped working would
+# otherwise go on being taught, and be found by an author's rejected measure.
+
+def test_the_prompt_teaches_the_placeholder_rules_and_a_preflight():
+    system = mw._system_prompt()
+    assert "USING ({dims})" in system                   # the ambiguous-join fix
+    assert "qualifies only the first name" in system    # f.{dims} does not work
+    assert "BEFORE YOU ANSWER" in system                # the four-point re-read
+    assert "WORKED PATTERNS" in system
+
+
+def test_pattern_a_time_to_an_entitys_first_event_runs(subs, subs_ctx):
+    """The prompt's hardest pattern, and the one an author reaches for first:
+    a per-entity interval, reduced to a median, bucketed by a date the block
+    derives rather than one the raw rows carry."""
+    verdict = mw.verify(subs, subs_ctx, measure(
+        name="median_days_to_churn", expr="MEDIAN(days_to_first)", emits=["start_month"],
+        from_source="SELECT {dims},\n"
+                    "       date_diff('day', MIN(start_date), MIN(end_date)) AS days_to_first,\n"
+                    "       MIN(start_date) AS start_month\n"
+                    "FROM {model}\n"
+                    "WHERE end_date IS NOT NULL\n"
+                    "GROUP BY {dims}, customer_id"))
+    assert verdict.ok and verdict.ran, verdict.error
+    assert verdict.preview["value"] > 0
+
+
+def test_pattern_c_semi_additive_takes_each_entitys_latest_row(subs, subs_ctx):
+    """QUALIFY with the query's dimensions inside the partition — the shape a
+    balance or level needs, and the one that silently double-counts if the
+    dimensions are left out of it."""
+    verdict = mw.verify(subs, subs_ctx, measure(
+        name="latest_fee", expr="SUM(monthly_fee)", format="currency",
+        from_source="SELECT {dims}, monthly_fee\n"
+                    "FROM {model}\n"
+                    "QUALIFY row_number() OVER (PARTITION BY {dims}, customer_id "
+                    "ORDER BY start_date DESC) = 1"))
+    assert verdict.ok and verdict.ran, verdict.error
+    assert verdict.preview["value"] > 0
+
+
+def test_two_ctes_carrying_the_dimensions_join_with_using(subs, subs_ctx):
+    """{dims} expands to bare quoted names, so both sides of a self-join carry
+    the same column names and the final SELECT {dims} is ambiguous. USING
+    ({dims}) is the fix the prompt gives — and the error it avoids is asserted
+    here too, because that is what makes the rule worth teaching."""
+    block = ("WITH per_customer AS (\n"
+             "  SELECT {dims}, customer_id, SUM(monthly_fee) AS fee\n"
+             "  FROM {model} GROUP BY {dims}, customer_id\n"
+             "), totals AS (\n"
+             "  SELECT {dims}, SUM(monthly_fee) AS total FROM {model} GROUP BY {dims}\n"
+             ")\n"
+             "SELECT {dims}, fee / NULLIF(total, 0) AS share\n"
+             "FROM per_customer JOIN totals %s")
+    ok = mw.verify(subs, subs_ctx, measure(
+        name="top_customer_share", expr="MAX(share)", format="percent",
+        from_source=block % "USING ({dims})"))
+    assert ok.ok and ok.ran, ok.error
+
+    ambiguous = mw.verify(subs, subs_ctx, measure(
+        name="top_customer_share", expr="MAX(share)", format="percent",
+        from_source=block % "ON TRUE"))
+    assert not ambiguous.ok
+    assert "Ambiguous reference" in ambiguous.error
+
+
 # ── the loop: propose -> verify -> repair ───────────────────────────────────
 
 def test_a_rejected_proposal_is_repaired_with_the_error_in_hand(sales, sales_ctx):
@@ -327,6 +442,21 @@ def test_route_streams_a_verified_measure(author_client, monkeypatch):
     assert payload["verified"] is True
     assert payload["preview"]["value"] > 0
     assert payload["rationale"] == "plain sum"
+
+
+def test_route_carries_the_thinking_toggle_through_to_the_writer(author_client, monkeypatch):
+    """The ASK AI bar's THINKING toggle is only worth having if what it says
+    reaches the request. An absent field still means "the server's default",
+    which is what an untouched bar sends."""
+    writer = _fake(monkeypatch, [measure(name="ai_units", expr="SUM(quantity)")])
+    assert _write(author_client, thinking=False).status_code == 200
+    assert writer.requests[-1].thinking is False
+
+    assert _write(author_client, thinking=True).status_code == 200
+    assert writer.requests[-1].thinking is True
+
+    assert _write(author_client).status_code == 200
+    assert writer.requests[-1].thinking is None
 
 
 def test_route_reports_the_repair_round(author_client, monkeypatch):

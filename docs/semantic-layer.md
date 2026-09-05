@@ -188,7 +188,12 @@ modelling form both carry an ASK AI bar that describes the fact table to a
 model and gets back a measure that has already been compiled *and run* — see
 [Conversational Analytics → The measure writer](conversational-analytics.md#the-measure-writer-appmeasurewriterpy).
 It writes all three shapes, `from:` blocks included, and what it produces is
-saved through the same endpoints a hand-written measure is.
+saved through the same endpoints a hand-written measure is. The bar carries a
+THINKING toggle, per ask: a measure that has to derive rows before it can
+aggregate them is a real reasoning problem, and "total units" is not. Either
+way the step and its `emits:` land in editable controls — the lab's + ADD STEP
+and EMITS row, the form's card — so an asked-for measure and a typed one are
+the same measure afterwards.
 
 The full grammar — what's allowed inside an `expr:`, the function allowlist,
 window measures, `param()` visual parameters — is documented in

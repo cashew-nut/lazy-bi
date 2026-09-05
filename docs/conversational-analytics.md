@@ -1,8 +1,8 @@
 # Conversational Analytics
 
-**Source:** `app/llm.py` (623 lines) · `app/llmclient.py` (731 lines) ·
+**Source:** `app/llm.py` (623 lines) · `app/llmclient.py` (765 lines) ·
 `app/nlq.py` (675 lines) · `app/composer.py` (563 lines) ·
-`app/measurewriter.py` (1,096 lines) · `app/memorystore.py` (191 lines) ·
+`app/measurewriter.py` (1,218 lines) · `app/memorystore.py` (191 lines) ·
 `app/conversationstore.py` (214 lines)
 
 Every LLM-backed surface in this codebase — Chat, the modelling panel's
@@ -83,15 +83,25 @@ which carry nothing worth showing). This is what makes the Composer's page
 appear as it's written and the sandbox agent's code fill in live on either
 provider, not just Anthropic's.
 
-**Two OpenAI-wire quirks absorbed here, invisibly to every caller**:
+**One OpenAI-wire quirk absorbed here, invisibly to every caller**:
 reasoning models rename `max_tokens` → `max_completion_tokens`, guessed
 from the model id (`_REASONING_MODEL_RE`) and self-corrected on the
-provider's first 400 (`_swap_token_param`); and `max_completion_tokens` is
-one pooled budget for *reasoning* tokens and the *answer*, so
-`CI_LLM_REASONING_TOKENS` (default 8192) is added on top there — without
-that headroom, a reasoning model can spend its whole allowance thinking and
-never reach the tool call, which `_no_tool_call()` reports as exactly that
-diagnosis rather than a bare "model did not call any tool."
+provider's first 400 (`_swap_token_param`).
+
+**And one rule that is not a quirk at all, because no provider escapes it**:
+thinking comes out of the same ceiling as the answer. `max_completion_tokens`
+is one pooled budget for *reasoning* tokens and the answer; Anthropic's
+`max_tokens` counts extended-thinking tokens the same way. So each seam's
+`max_tokens` states how much *answer* it needs — 1024 for a query proposal,
+8192 for a composed page or a measure — and `reasoning_headroom()` adds
+`CI_LLM_REASONING_TOKENS` (default 8192) on top wherever thinking is
+actually going out: unconditionally under `max_completion_tokens` (a
+reasoning model reasons whether or not anyone asked it to), and whenever
+`thinking_requested()` under plain `max_tokens`. Without that headroom the
+model can spend its whole allowance thinking and never reach the tool call,
+which `_no_tool_call()` reports as exactly that diagnosis — naming the knob
+for the wire it happened on — rather than a bare "model did not call any
+tool."
 
 **`key_fingerprint(api_key)`** (`len=32 sha256=dfd5e83e`-shaped) exists for
 the one failure a 401 can't describe on its own: a key that's correct at
@@ -338,9 +348,21 @@ becomes an `Attempt(measure, error)` in the next prompt, under an explicit
 instruction to fix the cause rather than resend or retreat to something
 trivially different. Every attempt and its error travels back to the UI, so a
 measure that took two tries says so instead of looking like magic. Three
-attempts is the ceiling — past that the cause is usually data that isn't
-there, and the author is better served by the error and the last attempt than
-by more waiting.
+attempts is the ceiling (`CI_MEASURE_WRITER_ATTEMPTS`) — past that the cause
+is usually data that isn't there, and the author is better served by the
+error and the last attempt than by more waiting.
+
+**Sized for the hard case, because the hard case is the point.** A `from:`
+block alone may run to `sqlgrammar.MAX_RELATION_LEN` characters, and this is
+the seam that reliably thinks the longest before writing one — and both come
+out of the same ceiling (see `reasoning_headroom()` above). So `CI_MEASURE_WRITER_MAX_TOKENS` (default 8192) budgets the answer
+alone and the client adds the room to think on top. A single number covering
+both is what a complex measure exhausts: the model spends it on the reasoning
+"the median time to a customer's first order, by signup cohort" needs and
+stops before it ever emits the tool call. The long, static system prompt
+carries a cache breakpoint (`cache_system`), since it is re-sent on every
+repair round of every turn — which is also why the aggregate list it embeds
+is read from the catalog once per process rather than per request.
 
 **Context is built live per request** (`build_context()`), never taken from
 the client — the caller names a model (or the modelling form's unsaved draft
@@ -357,6 +379,21 @@ aggregate, de-duplicating to a coarser entity, first/last event per entity,
 semi-additive balances) — and its function list is read from
 `sqlgrammar.aggregate_functions() & allowed_functions()`, so it can't
 advertise something the validator would refuse.
+
+For the complex shape it goes further than describing it, because describing
+it is what the repair loop keeps having to correct. Three **worked patterns**
+give the block structure to copy (time to an entity's first event, an
+aggregate of an aggregate, a semi-additive latest-row); the **placeholder
+mechanics** are spelled out, since `{dims}` expands to bare quoted column
+names and so cannot be qualified, wrapped or aliased — and two of the block's
+own CTEs that both carry it must be joined with `USING ({dims})` or the final
+`SELECT {dims}` is ambiguous; an emitted **time** dimension is to be output as
+the raw derived date, because the engine truncates it to whatever grain the
+query asked for; and a closing **pre-flight** asks for one re-read against the
+four things the validator actually rejects. Each of those patterns is a test
+in `tests/test_measure_writer.py` that runs it against the real bucket — the
+prompt teaches nothing that isn't executable, and a pattern that stopped
+working fails the suite rather than an author's measure.
 
 **Saving is deliberately not this module's job**, same as the Composer: a
 verified draft lands in the measure lab or the modelling form, and the author

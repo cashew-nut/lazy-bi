@@ -685,9 +685,10 @@ if LLM_MODEL and LLM_MODEL not in LLM_MODEL_CHOICES:
 # anything else has to be named.
 #
 # *Whether* to ask is the UI's THINKING toggle (per conversation in chat,
-# per session in the modelling panel and the Composer) — this list decides
-# where that toggle is offered at all, and a request for thinking on a model
-# that isn't listed is dropped rather than sent (app/llmclient.py).
+# per session in the modelling panel and the Composer, per ask on the measure
+# lab's and modelling form's ASK AI bars) — this list decides where that
+# toggle is offered at all, and a request for thinking on a model that isn't
+# listed is dropped rather than sent (app/llmclient.py).
 LLM_THINKING_MODELS = set(_csv(
     "CI_LLM_THINKING_MODELS",
     [m for m in ("claude-opus-4-8", "claude-sonnet-5") if m in LLM_MODEL_CHOICES],
@@ -697,6 +698,24 @@ LLM_THINKING_MODELS = set(_csv(
 # client that omits the field) gets.
 LLM_THINKING_DEFAULT = _bool("CI_LLM_THINKING_DEFAULT", True)
 LLM_REASONING_EFFORT = _env("CI_LLM_REASONING_EFFORT", "medium")
+
+# AI-authored measures (app/measurewriter.py). The *answer* here can be long —
+# a from: block alone may be sqlgrammar.MAX_RELATION_LEN characters, with the
+# expression, description and rationale on top — and a complex measure ("the
+# median time to a customer's first order, by signup cohort") is also the one
+# ask that reliably thinks for a long while first. Both come out of one
+# ceiling on both wires, so this
+# number is the answer alone and app/llmclient.py adds LLM_REASONING_TOKENS on
+# top wherever thinking is actually going out. Raising it costs nothing until
+# a measure is actually hard enough to use it: max_tokens is a ceiling, not a
+# spend.
+MEASURE_WRITER_MAX_TOKENS = _int("CI_MEASURE_WRITER_MAX_TOKENS", 8192)
+# One proposal plus repairs. Every attempt is a full model call and one real
+# query against the source, so the ceiling stays low: past the last failure
+# the cause is nearly always something no amount of re-prompting fixes — a
+# column that isn't in the data — and the author is better served by seeing
+# the error than by waiting.
+MEASURE_WRITER_ATTEMPTS = _int("CI_MEASURE_WRITER_ATTEMPTS", 3)
 
 # Sandbox coding agent (app/sandbox_agent.py) — writes SQL for the open
 # notebook, and fills in a converted pipeline's lineage. Shares CI_LLM_API_KEY

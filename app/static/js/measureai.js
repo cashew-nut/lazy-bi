@@ -14,7 +14,7 @@
 "use strict";
 
 import { canAuthor } from "./auth.js";
-import { isChatEnabled, parseSSE } from "./chat.js";
+import { isChatEnabled, parseSSE, renderThinkingToggle, supportsThinking, thinkingDefault } from "./chat.js";
 import { el, fmtMeasure } from "./lib.js";
 
 /* Both surfaces hide the bar unless this deployment has an LLM configured and
@@ -84,16 +84,37 @@ export function outcomeNote(payload) {
   return bits.join(" · ");
 }
 
-/* The ask bar itself: an input, a button, and a status line, wired so a turn
-   can't be started twice. `onAsk(text, ui)` does the actual call — the bar
-   knows nothing about which surface it is on. */
+/* The ask bar itself: an input, a THINKING toggle, a button and a status
+   line, wired so a turn can't be started twice. `onAsk(text, ui)` does the
+   actual call — the bar knows nothing about which surface it is on.
+
+   The toggle is here rather than on each surface because both of them want
+   it and it means the same thing on either: a measure that has to derive
+   rows before it can aggregate them is a genuine reasoning problem and worth
+   the wait, while "total units" is not. It stays null until someone touches
+   it, so an untouched bar asks for the server's default rather than for a
+   state the bar invented. */
 export function askBar({ placeholder, onAsk, hint = "" }) {
   const input = el("input", { class: "ai-ask-input", placeholder, spellcheck: "false" });
   const btn = el("button", { class: "btn alt ai-ask-btn" }, "✨ ASK AI");
   const status = el("div", { class: "ai-ask-status" });
+  const thinkInput = el("input", { type: "checkbox" });
+  const thinkBox = el("label", { class: "flag-toggle" }, thinkInput, el("span", {}, "THINKING"));
   const bar = el("div", { class: "ai-ask" },
-    el("div", { class: "ai-ask-row" }, input, btn),
+    el("div", { class: "ai-ask-row" }, input, thinkBox, btn),
     status);
+
+  let thinking = null;      // null = whatever the server defaults to
+  // The capability list arrives with /api/health, which can land after a bar
+  // built at boot (the measure lab wires itself once) — so this is callable
+  // again rather than only being read here.
+  function syncThinking() {
+    thinkBox.hidden = !supportsThinking();
+    renderThinkingToggle(thinkBox, thinkInput, null,
+      thinking == null ? thinkingDefault() : thinking);
+  }
+  syncThinking();
+  thinkInput.addEventListener("change", () => { thinking = thinkInput.checked; });
 
   let busy = false;
   const ui = {
@@ -105,6 +126,10 @@ export function askBar({ placeholder, onAsk, hint = "" }) {
       status.textContent = text;
     },
     clear() { input.value = ""; },
+    // what the toggle is asking for right now — null means "server default",
+    // which is what /api/measures/write/stream reads an absent field as
+    thinking: () => thinking,
+    syncThinking,
   };
   if (hint) ui.setStatus(hint);
 
@@ -114,6 +139,9 @@ export function askBar({ placeholder, onAsk, hint = "" }) {
     busy = true;
     btn.disabled = true;
     input.disabled = true;
+    // the turn is already on the wire: flipping the toggle now would change
+    // nothing about it, so it goes quiet until the answer lands
+    thinkInput.disabled = true;
     ui.setStatus("thinking…");
     try {
       await onAsk(text, ui);
@@ -123,6 +151,7 @@ export function askBar({ placeholder, onAsk, hint = "" }) {
       busy = false;
       btn.disabled = false;
       input.disabled = false;
+      syncThinking();          // back to whatever the model's capability allows
     }
   }
 
