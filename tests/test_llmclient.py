@@ -425,9 +425,9 @@ def test_the_budget_remedy_is_chosen_by_wire_not_by_provider_name(provider, expe
 
 
 def test_reasoning_models_get_headroom_above_the_answer_budget(monkeypatch):
-    """A seam's max_tokens means "how much answer do I need" — which is what
-    Anthropic's max_tokens means and what max_completion_tokens does not,
-    since it also has to cover the reasoning the model does first."""
+    """A seam's max_tokens means "how much answer do I need", and
+    max_completion_tokens does not: it also has to cover the reasoning the
+    model does first, whether or not anybody asked it to think."""
     monkeypatch.setattr(config, "LLM_REASONING_TOKENS", 8192)
     monkeypatch.setattr(config, "LLM_MAX_TOKENS_PARAM", "auto")
     req = _request()
@@ -444,6 +444,47 @@ def test_reasoning_models_get_headroom_above_the_answer_budget(monkeypatch):
                               tools=req.tools, prompt=req.prompt))
     assert plain["max_tokens"] == 1024
     assert "max_completion_tokens" not in plain
+
+
+def test_extended_thinking_gets_the_same_headroom_on_the_anthropic_wire(monkeypatch):
+    """Anthropic's max_tokens is only "how much answer" while nobody is
+    thinking — extended thinking is drawn from that same ceiling. This is the
+    bug the measure writer met: 4096 covering both the reasoning a complex
+    from: measure needs and the block it then has to write, the model spending
+    the lot on the former and never reaching the tool call (_no_tool_call's
+    "length"). The seam's number goes on meaning the answer; the room to think
+    is added here."""
+    monkeypatch.setattr(config, "LLM_REASONING_TOKENS", 8192)
+    client = llmclient.AnthropicClient()
+
+    thinking = _request(model="claude-sonnet-5", max_tokens=8192, thinking=True)
+    assert client._kwargs(thinking)["max_tokens"] == 8192 + 8192
+
+    # nobody asked to think: the seam's budget is left exactly alone
+    quiet = _request(model="claude-sonnet-5", max_tokens=8192, thinking=False)
+    assert client._kwargs(quiet)["max_tokens"] == 8192
+
+    # asked for, but this model can't — the parameter is dropped, so the
+    # headroom must be too, or every Haiku request pays for room it can't use
+    haiku = _request(model="claude-haiku-4-5-20251001", max_tokens=8192, thinking=True)
+    assert client._thinking_kwargs(haiku) == {}
+    assert client._kwargs(haiku)["max_tokens"] == 8192
+
+
+def test_thinking_on_the_openai_wire_gets_headroom_under_either_parameter(monkeypatch):
+    """A thinking-capable model billed under plain max_tokens (a gateway
+    serving one that the reasoning-model prefix doesn't match) pools the two
+    the same way, so it needs the same headroom — and a reasoning model gets
+    it whether or not thinking was asked for."""
+    monkeypatch.setattr(config, "LLM_REASONING_TOKENS", 8192)
+    monkeypatch.setattr(config, "LLM_MAX_TOKENS_PARAM", "auto")
+    monkeypatch.setattr(config, "LLM_THINKING_MODELS", {"claude-sonnet-5"})
+    client = llmclient.OpenAIClient(api_key="k")
+
+    gatewayed = client._kwargs(_request(model="claude-sonnet-5", max_tokens=1024, thinking=True))
+    assert gatewayed["max_tokens"] == 1024 + 8192
+
+    assert client._kwargs(_request(model="claude-sonnet-5", max_tokens=1024))["max_tokens"] == 1024
 
 
 def test_openai_stream_tolerates_a_usage_only_final_chunk(monkeypatch):

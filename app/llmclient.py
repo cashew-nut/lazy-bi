@@ -373,8 +373,12 @@ def _no_tool_call(reason: str | None, model: str, provider: str = "openai") -> L
             )
         else:
             logger.warning(
-                "%s hit max_tokens before calling a tool — extended thinking draws on the "
-                "same budget as the answer, so the seam's limit has to cover both.", model,
+                "%s hit max_tokens before calling a tool — on this wire extended thinking "
+                "comes out of the same ceiling as the answer, so a request asking for both "
+                "needs room for both: raise the seam's answer budget "
+                "(CI_MEASURE_WRITER_MAX_TOKENS for a measure) or the thinking headroom "
+                "CI_LLM_REASONING_TOKENS (currently %d).",
+                model, config.LLM_REASONING_TOKENS,
             )
         return LLMError("the model used its whole token budget before calling a tool")
     if reason == "content_filter":
@@ -440,6 +444,34 @@ def _anthropic_reason(message) -> str | None:
     return "length" if stop == "max_tokens" else stop
 
 
+# ── the token budget: answer + room to think ──────────────────────────────
+
+def thinking_requested(req: ChatRequest) -> bool:
+    """Is extended thinking actually going out with this request?
+
+    Two things have to agree on the answer — whether to send the parameter at
+    all, and whether the token ceiling has to cover reasoning as well as the
+    answer — and a disagreement between them is exactly the failure this
+    module warns about in _no_tool_call: a request that asks for thinking
+    without the headroom spends its whole allowance thinking and stops before
+    it ever emits the tool call.
+    """
+    return bool(req.thinking) and req.model in config.LLM_THINKING_MODELS
+
+
+def reasoning_headroom(req: ChatRequest) -> int:
+    """What to add to a seam's answer budget so the model can think first.
+
+    Each seam's max_tokens says how much *answer* it needs (1024 for a query
+    proposal, 8192 for a composed page or a measure). Thinking is not answer,
+    but no provider bills it to a separate ceiling: Anthropic's max_tokens
+    counts thinking tokens, and the OpenAI wire's max_completion_tokens
+    counts reasoning tokens. So the headroom is added here, once, in the one
+    place both wires call — and the callers' number keeps meaning one thing.
+    """
+    return config.LLM_REASONING_TOKENS if thinking_requested(req) else 0
+
+
 class AnthropicClient:
     """Anthropic Messages API with forced tool use. `base_url` covers any
     Anthropic-compatible endpoint; provider="bedrock" swaps in the SigV4
@@ -476,7 +508,9 @@ class AnthropicClient:
         )
         return dict(
             model=req.model,
-            max_tokens=req.max_tokens,
+            # extended thinking is drawn from this same ceiling, so a seam
+            # that asks for both needs room for both — see reasoning_headroom
+            max_tokens=req.max_tokens + reasoning_headroom(req),
             system=self._system(req),
             tools=req.tools,
             tool_choice=tool_choice,
@@ -487,7 +521,7 @@ class AnthropicClient:
         """The `thinking` kwarg, omitted entirely for a model that doesn't
         support adaptive thinking rather than sent unconditionally and left
         to 400 with "adaptive thinking is not supported on this model"."""
-        if req.thinking and req.model in config.LLM_THINKING_MODELS:
+        if thinking_requested(req):
             return {"thinking": {"type": "adaptive", "display": "summarized"}}
         return {}
 
@@ -635,17 +669,17 @@ class OpenAIClient:
             ),
         )
         param = self._max_tokens_param(req.model)
-        # The budget each seam asks for is how much *answer* it needs (1024
-        # for a query proposal, 8192 for a composed page) — which is what
-        # Anthropic's max_tokens means. max_completion_tokens does not: it
-        # covers the model's reasoning tokens as well, and a reasoning model
-        # will happily spend the entire allowance thinking and stop before it
-        # ever emits the tool call. So add headroom on exactly the wire where
-        # the two are pooled, keeping the callers' number meaning one thing.
+        # A reasoning model spends reasoning tokens whether or not anybody
+        # asked it to think, and max_completion_tokens is the ceiling they
+        # come out of — so that wire gets the headroom unconditionally. A
+        # model billed under plain max_tokens needs it only when thinking was
+        # actually requested. Either way the seam's own number goes on meaning
+        # "how much answer do I need" (reasoning_headroom).
         kwargs[param] = req.max_tokens + (
-            config.LLM_REASONING_TOKENS if param == "max_completion_tokens" else 0
+            config.LLM_REASONING_TOKENS if param == "max_completion_tokens"
+            else reasoning_headroom(req)
         )
-        if req.thinking and req.model in config.LLM_THINKING_MODELS and config.LLM_REASONING_EFFORT:
+        if thinking_requested(req) and config.LLM_REASONING_EFFORT:
             kwargs["reasoning_effort"] = config.LLM_REASONING_EFFORT
         return kwargs
 

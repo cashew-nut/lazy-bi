@@ -60,6 +60,13 @@ services:
       CI_LLM_MODEL_CHOICES: ${CI_LLM_MODEL_CHOICES:-}
       CI_LLM_THINKING_MODELS: ${CI_LLM_THINKING_MODELS:-}
       CI_LLM_THINKING_DEFAULT: ${CI_LLM_THINKING_DEFAULT:-}
+      # thinking is charged to the same ceiling as the answer on every
+      # provider, so this is the headroom added on top of each feature's own
+      # limit — and the measure writer, which writes the longest answers and
+      # thinks the longest first, has its own
+      CI_LLM_REASONING_TOKENS: ${CI_LLM_REASONING_TOKENS:-}
+      CI_MEASURE_WRITER_MAX_TOKENS: ${CI_MEASURE_WRITER_MAX_TOKENS:-}
+      CI_MEASURE_WRITER_ATTEMPTS: ${CI_MEASURE_WRITER_ATTEMPTS:-}
       CI_LLM_API_VERSION: ${CI_LLM_API_VERSION:-}
       CI_LLM_AWS_REGION: ${CI_LLM_AWS_REGION:-}
     volumes:
@@ -110,6 +117,13 @@ services:
       CI_LLM_MODEL_CHOICES: ${CI_LLM_MODEL_CHOICES:-}
       CI_LLM_THINKING_MODELS: ${CI_LLM_THINKING_MODELS:-}
       CI_LLM_THINKING_DEFAULT: ${CI_LLM_THINKING_DEFAULT:-}
+      # thinking is charged to the same ceiling as the answer on every
+      # provider, so this is the headroom added on top of each feature's own
+      # limit — and the measure writer, which writes the longest answers and
+      # thinks the longest first, has its own
+      CI_LLM_REASONING_TOKENS: ${CI_LLM_REASONING_TOKENS:-}
+      CI_MEASURE_WRITER_MAX_TOKENS: ${CI_MEASURE_WRITER_MAX_TOKENS:-}
+      CI_MEASURE_WRITER_ATTEMPTS: ${CI_MEASURE_WRITER_ATTEMPTS:-}
       CI_LLM_API_VERSION: ${CI_LLM_API_VERSION:-}
       CI_LLM_AWS_REGION: ${CI_LLM_AWS_REGION:-}
     volumes:
