@@ -206,3 +206,17 @@ def test_a_generated_timeline_is_never_offered_as_an_emit(client):
     for name in ("measurelab.js", "modelform.js"):
         js = client.get(f"/static/js/{name}").text
         assert "!d.spine" in js, f"{name} offers spine dimensions as emits candidates"
+
+
+def test_an_imported_dimension_is_offered_as_an_emit(client):
+    """The form's picker read each dataset's own `dimensions:` and nothing
+    else, so a fact table that declares none of its own and imports them all —
+    the ordinary shape once a common dimension model exists — got "declare a
+    dimension above" and no way to set emits: at all. takenIn() is the list
+    that already counts a fact table's imports as well as its own.
+
+    The lab's picker never had the bug: it reads the *resolved* model catalog
+    from the server, where an imported dimension is just a dimension."""
+    form = client.get("/static/js/modelform.js").text
+    picker = form[form.index("function emitsPicker"):form.index("function exprEditor")]
+    assert "takenIn(owner.name)" in picker

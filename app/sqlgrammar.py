@@ -676,6 +676,41 @@ def referenced_columns(text: str) -> set:
     return referenced_names(text)
 
 
+def relation_column_names(text: str) -> set:
+    """Every identifier a whole *relation* reads as a column.
+
+    referenced_names() answers this for a single expression; a `from:` block
+    is a whole statement — CTEs, joins, window partitions, a nested select —
+    so the walk covers the statement rather than one select list. A qualified
+    reference contributes every part of its path (`f.started_at` gives both),
+    because the caller is matching names against a catalog, not resolving
+    scopes, and a false extra name costs it nothing.
+
+    A parse failure answers "nothing": the block is validated for real by
+    compile_relation, and that is where its error belongs.
+    """
+    try:
+        parsed = _parse(text, text)
+    except SqlCompileError:
+        return set()
+    names: set = set()
+
+    def visit(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                visit(item)
+            return
+        if not isinstance(value, dict):
+            return
+        if value.get("class") == "COLUMN_REF":
+            names.update(p for p in value.get("column_names") or [] if isinstance(p, str))
+        for item in value.values():
+            visit(item)
+
+    visit(parsed["statements"][0])
+    return names
+
+
 # ── decomposition, for instant-mode extracts ─────────────────────────────
 # Re-aggregating an already-aggregated extract in the browser is only sound
 # for measures that decompose into additive parts. This walks a validated

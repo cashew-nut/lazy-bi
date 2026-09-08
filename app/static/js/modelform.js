@@ -1096,31 +1096,43 @@ async function runCheck(m, owner, statusEl) {
     : `<span class="err">✗ ${res.error}</span>`;
 }
 
-// dimensions the fact table has declared so far, offered as emits
-// candidates (emits names dimension(s) the from: block computes itself —
-// e.g. a per-entity milestone date — see subscriptions.yaml's
-// median_tenure_days). A generated timeline is left out: it is not a column
-// of the fact table, so no block can output one and emitting it can only
-// fail at query time.
+// dimensions the fact table can offer as emits candidates (emits names
+// dimension(s) the from: block computes itself — e.g. a per-entity milestone
+// date — see subscriptions.yaml's median_tenure_days).
+//
+// Every dimension the fact table *has*, native or imported: a block reads the
+// post-import scan, where a common model's dimensions arrive under their own
+// names alongside the source's, so an imported one is as emittable as a
+// declared one. Reading only the datasets' own `dimensions` left the picker
+// empty for the ordinary shape of a fact table that declares none of its own
+// and imports all of them.
+//
+// A generated timeline is still left out: it is not a column of the fact
+// table, so no block can output one and emitting it can only fail at query
+// time.
 //
 // Redraws itself rather than asking its caller to redraw everything, so it
 // can sit on a measure *card* as well as in the modal — re-rendering the card
 // list on every chip click would cost the author whatever they were typing.
 function emitsPicker(m, owner) {
   const wrap = el("div", { class: "mf-subset" });
-  const dims = componentOf(owner.name).flatMap((d) => d.dimensions).filter((d) => !d.spine);
+  const own = componentOf(owner.name).flatMap((d) => d.dimensions);
+  const dims = new Set(own.filter((d) => !d.spine).map((d) => d.name));
+  for (const name of takenIn(owner.name).keys()) {
+    if (!own.some((d) => d.name === name)) dims.add(name);   // imported
+  }
   const draw = () => {
     wrap.replaceChildren();
-    if (!dims.length) {
-      wrap.append(note("declare a dimension above to offer it here — emits names one this table already has"));
+    if (!dims.size) {
+      wrap.append(note("declare or import a dimension above to offer it here — emits names one this table already has"));
       return;
     }
-    for (const d of dims) {
-      const on = (m.emits || []).includes(d.name);
+    for (const name of dims) {
+      const on = (m.emits || []).includes(name);
       const chip = el("button", { class: "chip" + (on ? " on" : "") },
-        el("span", { class: "tick" }, on ? "✓" : ""), el("span", { class: "lbl" }, d.name));
+        el("span", { class: "tick" }, on ? "✓" : ""), el("span", { class: "lbl" }, name));
       chip.addEventListener("click", () => {
-        m.emits = on ? (m.emits || []).filter((x) => x !== d.name) : [...(m.emits || []), d.name];
+        m.emits = on ? (m.emits || []).filter((x) => x !== name) : [...(m.emits || []), name];
         markDirty();
         draw();
       });

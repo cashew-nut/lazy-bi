@@ -12,6 +12,7 @@ from app import duck
 from app.sqlgrammar import (
     SqlCompileError, compile_expression, compile_relation, is_window_expr,
     lag_period_param_names, referenced_names, referenced_parameter_names,
+    relation_column_names,
 )
 
 ROWS = """
@@ -161,6 +162,32 @@ def test_is_window_expr_detects_window_functions():
 
 def test_referenced_names_excludes_function_names():
     assert referenced_names("SUM(revenue) OVER w") == {"revenue"}
+
+
+# relation_column_names answers the same question for a whole `from:` block —
+# what the engine asks to know which dimension imports the block needs kept in
+# the scan (engine._from_block_dimensions).
+
+def test_relation_column_names_reaches_into_ctes_and_window_partitions():
+    names = relation_column_names("""
+        WITH ranked AS (
+          SELECT "__dim", study_id, started_at,
+                 ROW_NUMBER() OVER (PARTITION BY "__dim", study_id ORDER BY month) AS rn
+          FROM __model
+        )
+        SELECT "__dim", date_diff('day', MIN(started_at), MIN(month)) AS d
+        FROM ranked WHERE rn = 1 GROUP BY "__dim", study_id
+    """)
+    assert {"study_id", "started_at", "month", "rn"} <= names
+
+
+def test_relation_column_names_keeps_both_halves_of_a_qualified_reference():
+    assert {"f", "started_at"} <= relation_column_names("SELECT f.started_at FROM __model AS f")
+
+
+def test_relation_column_names_of_unparseable_sql_is_empty():
+    # the block is validated for real by compile_relation; this one only reads
+    assert relation_column_names("SELECT {dims} FROM {model}") == set()
 
 
 def test_running_total_over_partition():
