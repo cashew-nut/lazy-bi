@@ -33,7 +33,7 @@ import duckdb
 from . import cache, config, duck, semantic, sqlgrammar
 from .semantic import (
     Dimension, ImportBinding, Model, ModelError, Source, TIME_GRAINS,
-    MODEL_RELATION, render_from_block,
+    MODEL_RELATION, PLACEHOLDER_DIM, render_from_block,
 )
 
 FILTER_OPS = {"eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in", "contains"}
@@ -707,10 +707,10 @@ def _filter_sql(model: Model, spec: dict, schema: dict, alias: str = "") -> tupl
     return f"{col} {_COMPARE_SQL[op]} ?", [_coerce(spec.get("value"), dtype)]
 
 
-def _referenced_dimensions(query: dict) -> dict:
+def _referenced_dimensions(model: Model, query: dict) -> dict:
     """Every dimension name a query touches -> the grain it asked for (None if
-    it didn't). Drives which interval imports scan() brings in, and how far it
-    thins them — see scan()."""
+    it didn't). Drives which imports scan() brings in, and how far it thins an
+    interval one — see scan()."""
     names: dict = {}
     for entry in query.get("dimensions", []):
         if isinstance(entry, str):
@@ -720,7 +720,38 @@ def _referenced_dimensions(query: dict) -> dict:
     for spec in query.get("filters", []):
         if spec.get("field"):
             names.setdefault(spec["field"], None)
+    # a grain the query asked for wins; a block only says *that* it reads the
+    # column, never at what bucket size
+    for name in _from_block_dimensions(model, query):
+        names.setdefault(name, None)
     return names
+
+
+def _from_block_dimensions(model: Model, query: dict) -> set:
+    """Dimensions a queried measure's `from:` block reads without grouping by.
+
+    A block is SQL over the fact scan, so it may name any column that scan
+    carries — an imported bundle's dimensions included, since a bundle's
+    columns arrive under their dimension names (see _scan_bundle). scan() drops
+    a `how: left` import nothing reads, and "nothing reads it" has to count
+    these blocks too: otherwise a measure whose block reads one of a bundle's
+    dimensions works only while the query happens to *group by* another of
+    them, and fails with DuckDB's own "not found in FROM clause" as soon as it
+    doesn't — a measure that works by dimension, which is not a thing an author
+    can be asked to reason about.
+    """
+    inline = {m["name"]: m for m in (query.get("inline_measures") or []) if m.get("name")}
+    names: set = set()
+    for name in query.get("measures") or []:
+        spec = inline.get(name)
+        if spec is not None:
+            source = spec.get("from")
+        else:
+            source = model.measures[name].from_source if name in model.measures else None
+        if source:
+            names |= sqlgrammar.relation_column_names(
+                render_from_block(source, [PLACEHOLDER_DIM]))
+    return names & set(model.dimensions)
 
 
 # ── building one fact table's query ──────────────────────────────────────
@@ -829,7 +860,7 @@ def _build_single(model: Model, query: dict, row_cap: Optional[int] = None) -> t
     and _build_parts embeds it once per fact table."""
     resolved_params = resolve_parameter_values(
         query.get("parameters") or [], query.get("parameter_values") or {})
-    dims_in_play = _referenced_dimensions(query)
+    dims_in_play = _referenced_dimensions(model, query)
     relation = scan(model, dims_in_play)
     schema = scan_schema(model, dims_in_play)
     build = _Build()

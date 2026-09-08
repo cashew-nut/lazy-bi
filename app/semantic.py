@@ -48,6 +48,12 @@ validator's "which tables may this name" rule has one concrete answer, and the
 engine's own CTE carries the same name."""
 
 
+PLACEHOLDER_DIM = "__dim"
+"""Stand-in for the query's grouping columns when a `from:` block is rendered
+outside a query — load-time validation, and reading which columns the block
+names. Never reaches a real statement."""
+
+
 def render_from_block(source: str, dims: list[str]) -> str:
     """A `from:` block with its placeholders filled in.
 
@@ -70,7 +76,7 @@ def validate_from_block(source: str, owner: str, dims: Optional[list[str]] = Non
     substituted and the same check runs again over the real text."""
     try:
         return sqlgrammar.compile_relation(
-            render_from_block(source, dims if dims is not None else ["__dim"]),
+            render_from_block(source, dims if dims is not None else [PLACEHOLDER_DIM]),
             allowed_tables={MODEL_RELATION},
         )
     except sqlgrammar.SqlCompileError as exc:

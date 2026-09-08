@@ -876,6 +876,105 @@ def test_framed_measure_timeline_respects_grain(framed_model):
     assert r["rows"][0]["median_days_to_75"] == 20.0
 
 
+# --- Regression: a `from:` block reading a column an imported dimension bundle
+# supplies. scan() drops a `how: left` import no dimension in the query reads,
+# which was only ever asked about the query's *own* dimensions and filters — so
+# the block's answer depended on what else the query happened to group by:
+# by-country it bound fine, by-month alone the column was no longer in the scan
+# and DuckDB reported `Referenced column "start_date" not found in FROM clause`.
+
+@pytest.fixture(scope="module")
+def framed_import_model(seeded):
+    """The framed_model events, with `start_date` moved out to an imported
+    bundle that also carries `country` — so a query can read one of the
+    bundle's dimensions without reading the other."""
+    client = s3.client()
+    days = {"S1": [0, 10, 20, 30], "S2": [0, 100], "S3": [0, 5, 8]}
+    site = {"S1": "P1", "S2": "P1", "S3": "P2"}
+    rows = [{"study_id": sid, "site_id": site[sid],
+             "event_date": date(2025, 1, 1) + timedelta(days=d)}
+            for sid, offsets in days.items() for d in offsets]
+    buf = io.BytesIO()
+    pq.write_table(pa.Table.from_pylist(rows), buf)
+    client.put_object(Bucket=config.BUCKET, Key="test/framed_import_events.parquet",
+                      Body=buf.getvalue())
+    client.put_object(Bucket=config.BUCKET, Key="test/framed_import_sites.csv",
+                      Body=b"site_id,country,start_date\nP1,NL,2025-01-01\nP2,PL,2025-01-01\n")
+
+    bundle = semantic.parse_bundle_text(f"""
+name: framed_sites
+datasets:
+  - name: sites
+    source: {{format: csv, path: s3://{config.BUCKET}/test/framed_import_sites.csv}}
+    dimensions:
+      - {{name: country, label: Country}}
+      - {{name: start_date, label: Start Date, type: time}}
+""")
+    model = semantic.parse_model_text(f"""
+name: test_framed_import
+source: {{format: parquet, path: s3://{config.BUCKET}/test/framed_import_events.parquet}}
+dimensions:
+  - {{name: event_date, label: Event Date, type: time}}
+measures:
+  - name: events
+    expr: COUNT(*)
+  - name: median_days_since_start
+    expr: MEDIAN(days_since_start)
+    from: |
+      SELECT {{dims}}, study_id,
+             date_diff('day', MIN(start_date), MAX(event_date)) AS days_since_start,
+             MAX(event_date) AS event_date
+      FROM {{model}}
+      GROUP BY {{dims}}, study_id
+    emits: [event_date]
+dimension_imports:
+  - {{bundle: framed_sites, anchor_dataset: sites, on: site_id, how: left}}
+""")
+    return semantic.resolve_model(model, {"framed_sites": bundle})
+
+
+def test_from_block_reads_imported_column_without_grouping_by_its_bundle(framed_import_model):
+    # last event minus start: S1 30, S2 100, S3 8 -- all in 2025
+    r = engine.run_query(framed_import_model, {
+        "dimensions": [{"name": "event_date", "grain": "1y"}],
+        "measures": ["median_days_since_start"],
+    })
+    assert r["row_count"] == 1
+    assert r["rows"][0]["median_days_since_start"] == 30.0
+
+
+def test_from_block_answer_does_not_depend_on_the_query_s_other_dimensions(framed_import_model):
+    # the same three studies, split by their site's country: NL median(30, 100),
+    # PL median(8) -- the by-country breakdown of the number above
+    r = engine.run_query(framed_import_model, {
+        "dimensions": [{"name": "event_date", "grain": "1y"}, {"name": "country"}],
+        "measures": ["median_days_since_start"],
+    })
+    values = {row["country"]: row["median_days_since_start"] for row in r["rows"]}
+    assert values == {"NL": 65.0, "PL": 8.0}
+
+
+def test_import_is_still_pruned_when_no_from_block_reads_it(framed_import_model):
+    # the pruning itself is intact: a query touching none of the bundle's
+    # dimensions, through a measure with no from: block, never joins it
+    assert "country" not in engine.scan_schema(
+        framed_import_model, engine._referenced_dimensions(framed_import_model, {
+            "dimensions": ["event_date"], "measures": ["events"]}))
+
+
+def test_inline_from_block_pulls_its_import_in_too(framed_import_model):
+    r = engine.run_query(framed_import_model, {
+        "dimensions": [], "measures": ["studies_started"],
+        "inline_measures": [{
+            "name": "studies_started",
+            "expr": "COUNT(*)",
+            "from": ("SELECT {dims}, study_id FROM {model} "
+                     "WHERE start_date IS NOT NULL GROUP BY {dims}, study_id"),
+        }],
+    })
+    assert r["rows"][0]["studies_started"] == 3
+
+
 
 
 def test_shipped_framed_measure_end_to_end(models):
