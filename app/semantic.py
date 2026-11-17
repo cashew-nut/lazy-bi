@@ -1708,6 +1708,142 @@ def _split_parts(model: Model) -> Model:
     return model
 
 
+# ---------------------------------------------------------------------------
+# RELATED(): a measure reading one value off a related lookup row.
+#
+# A fact row relates to at most one row of each lookup it joins to (an order
+# line has one product, a region one territory) — the many-to-one direction a
+# `joins:` entry, a dataset relation or an equality import declares. RELATED()
+# reads a column off that one row, the way DAX's RELATED() does, so a measure
+# can test a lookup attribute without a from: block:
+#
+#     SUM(CASE WHEN RELATED(products.tier) = 'premium' THEN quantity END)
+#     COUNT(*) FILTER (WHERE RELATED(territory_name) = 'EMEA')
+#
+# Two spellings. RELATED(table.column) names any column of a joined dataset or
+# of an imported bundle's dataset, declared as a dimension or not.
+# RELATED(dimension) names a dimension the fact table already offers — the
+# useful case being an imported one, which a plain measure otherwise only sees
+# while the query happens to group or filter by something from its bundle.
+#
+# What it buys over naming a joined column bare: it is unambiguous (a joined
+# column that collides with a fact column arrives suffixed `_right`), it can
+# reach an imported bundle's non-dimension columns, and it is what tells the
+# engine to bring that join into the scan even when no dimension of it is in
+# play (engine._related_columns). A `how: between` import is refused: it
+# matches a fact row to *every* period it spans, so there is no one row to
+# read from, and joining it would multiply every measure in the query.
+# ---------------------------------------------------------------------------
+
+RELATED_PREFIX = "__related__"
+
+
+@dataclass(frozen=True)
+class RelatedRef:
+    """One resolved RELATED(...) reference."""
+    kind: str        # "join" | "import" | "dimension"
+    table: str       # the joined/bundle dataset read from ("" for a dimension)
+    column: str      # that dataset's own column, or the dimension's name
+    index: int = -1  # into model.joins ("join") or model.import_bindings ("import")
+    target: str = "" # the scan column the reference compiles to
+
+
+def related_tables(model: Model) -> list[str]:
+    """The table names RELATED(table.column) may use on this fact table — what
+    an error message lists when a name is not one of them."""
+    names = [j.name for j in model.joins]
+    for binding in model.import_bindings:
+        if not binding.import_spec.is_interval:
+            names.extend(binding.included_datasets)
+    return list(dict.fromkeys(names))
+
+
+def _imported_dimension_binding(model: Model, name: str) -> Optional[int]:
+    """Which import supplied dimension `name`, or None for a native one (a
+    native dimension shadows an imported namesake, see _resolve_part_imports)."""
+    dim = model.dimensions.get(name)
+    for index, binding in enumerate(model.import_bindings):
+        owner = binding.dimension_owners.get(name)
+        if owner is None:
+            continue
+        offered = binding.bundle.datasets[owner].dimensions[name]
+        if dim == replace(offered, column=name):
+            return index
+    return None
+
+
+def resolve_related(model: Model, qualifier: Optional[str], column: str) -> RelatedRef:
+    """What RELATED(qualifier.column) — or RELATED(column), with qualifier None
+    — reads on this fact table (a single part: a model with several resolves
+    against the part that owns the measure). Structural only; whether the
+    column really exists in the related source is the engine's to check, since
+    only it reads schemas. ModelError on anything that does not resolve."""
+    shown = f"RELATED({qualifier + '.' if qualifier else ''}{column})"
+    tables = related_tables(model)
+    listing = ", ".join(tables) if tables else "none — this fact table joins nothing"
+    if qualifier is None:
+        dim = model.dimensions.get(column)
+        if dim is None:
+            raise ModelError(
+                f"{shown}: '{column}' is not a dimension of this fact table — name the "
+                f"table it comes from too, RELATED(table.{column}) (related tables: {listing})")
+        if dim.spine:
+            raise ModelError(
+                f"{shown}: '{column}' is a generated timeline, with many values per row — "
+                "RELATED() reads one value off a related row")
+        index = _imported_dimension_binding(model, column)
+        if index is not None and model.import_bindings[index].import_spec.is_interval:
+            raise ModelError(
+                f"{shown}: '{column}' comes from a 'how: between' import, which matches a "
+                "row to every period it spans — there is no one related row to read from")
+        return RelatedRef(kind="dimension", table="", column=column,
+                          index=-1 if index is None else index, target=dim.column)
+
+    wanted = qualifier.lower()
+    found: list[RelatedRef] = []
+    for index, join in enumerate(model.joins):
+        if join.name.lower() == wanted:
+            found.append(RelatedRef(kind="join", table=join.name, column=column, index=index))
+    interval_hit = False
+    for index, binding in enumerate(model.import_bindings):
+        for ds in binding.included_datasets:
+            if ds.lower() != wanted:
+                continue
+            if binding.import_spec.is_interval:
+                interval_hit = True
+                continue
+            found.append(RelatedRef(kind="import", table=ds, column=column, index=index))
+    if not found:
+        if interval_hit:
+            raise ModelError(
+                f"{shown}: '{qualifier}' is joined with 'how: between', which matches a row "
+                "to every period it spans — there is no one related row to read from")
+        raise ModelError(
+            f"{shown}: '{qualifier}' is not a table related to this fact table "
+            f"(related tables: {listing})")
+    if len(found) > 1:
+        raise ModelError(
+            f"{shown}: '{qualifier}' names more than one related table here (a join and an "
+            "import, or two imports of the same bundle) — rename the join, or subset an import")
+    ref = found[0]
+    return replace(ref, target=f"{RELATED_PREFIX}{ref.table}__{column}")
+
+
+def _check_related(model: Model) -> None:
+    """Load-time check that every RELATED(...) in a part's measures names
+    something this fact table actually relates to — a typo in a table name
+    fails the model the way an unknown bundle does, not the first query."""
+    for part in model.parts or []:
+        for meas in part.model.measures.values():
+            if meas.from_source:
+                continue
+            for qualifier, column in sqlgrammar.referenced_related(meas.expr_source):
+                try:
+                    resolve_related(part.model, qualifier, column)
+                except ModelError as exc:
+                    raise ModelError(f"model '{model.name}': measure '{meas.name}': {exc}") from exc
+
+
 def resolve_model(model: Model, bundles: dict[str, DimensionBundle]) -> Model:
     """Merge each part's imported dimensions in, against the bundles currently
     loaded — the half of resolution that needs to look outside the file.
@@ -1718,12 +1854,15 @@ def resolve_model(model: Model, bundles: dict[str, DimensionBundle]) -> Model:
     grouped by" has its final answer. Mutates and returns `model`; idempotent,
     so a hot-reload can re-resolve a model already in the registry."""
     if not model.is_composite:
-        return _resolve_part_imports(model, bundles)
+        _resolve_part_imports(model, bundles)
+        _check_related(model)
+        return model
     for part in model.parts:
         _resolve_part_imports(part.model, bundles)
     _check_shared_types(model)
     model.import_bindings = []
     model.dimensions = shared_dimensions(model.parts)
+    _check_related(model)
     return model
 
 

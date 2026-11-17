@@ -485,8 +485,12 @@ def _validate_measure_body(model: semantic.Model, m: MeasureIn) -> None:
             except Exception as exc:
                 raise HTTPException(status_code=400, detail=f"source not reachable: {exc}")
         try:
-            sqlgrammar.compile_expression(m.expr, schema, window=is_window,
-                                          parameter_values={})
+            # RELATED(...) is resolved against this model's joins and imports
+            # here, exactly as a query will, so a measure naming a table the
+            # fact doesn't relate to is refused on save rather than on first use
+            sqlgrammar.compile_expression(
+                m.expr, schema, window=is_window, parameter_values={},
+                related=None if is_window else engine.related_resolver(model))
         except sqlgrammar.SqlCompileError as exc:
             raise HTTPException(status_code=400, detail=f"measure '{m.name}': {exc}")
 

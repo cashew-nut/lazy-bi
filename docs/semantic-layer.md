@@ -195,6 +195,56 @@ way the step and its `emits:` land in editable controls — the lab's + ADD STEP
 and EMITS row, the form's card — so an asked-for measure and a typed one are
 the same measure afterwards.
 
+### RELATED(): reading a lookup value in a measure
+
+A fact row relates to at most one row of each lookup it joins to — an order
+line has one product, a region one territory. `RELATED()` reads a column off
+that one row, as DAX's `RELATED()` does, so a measure can test a lookup
+attribute in a `CASE` or `FILTER` instead of needing a `from:` block:
+
+```yaml
+measures:
+  - name: premium_units
+    expr: SUM(CASE WHEN RELATED(products.tier) = 'military-grade' THEN quantity END)
+  - name: emea_orders
+    expr: COUNT(DISTINCT order_id) FILTER (WHERE RELATED(territory_name) = 'EMEA')
+```
+
+Two spellings:
+
+- **`RELATED(table.column)`**: any column of a joined dataset (a `joins:`
+  entry, or a related dataset in the `datasets:` shape) or of a dataset an
+  equality `dimension_imports:` entry pulls in, whether or not a dimension
+  declares it. `table` is the join's or bundle dataset's `name`.
+- **`RELATED(dimension)`**: a dimension the fact table offers. The useful case
+  is an imported one. A plain measure only sees an imported dimension while
+  the query happens to group or filter by something from that bundle; through
+  `RELATED()` it is always there.
+
+What it buys over naming a joined column bare: it's unambiguous (a joined
+column whose name collides with a fact column arrives suffixed `_right`), it
+reaches a bundle's non-dimension columns, and it tells the engine to bring that
+join into the scan (`engine._related_columns`). Only the columns a query's
+measures actually read are carried, each under a hidden
+`__related__<table>__<column>` name.
+
+Rules (`semantic.resolve_related`, checked at load time by `_check_related`
+for the table name and at save and query time for the column):
+
+- The relation has to be **many-to-one** from the fact table, as in DAX. A
+  join whose key isn't unique on the lookup side fans out every measure in the
+  query, as it already would for a dimension read through it.
+- A **`how: between` import is refused**: it matches a row to every period it
+  spans, so there is no one row to read from.
+- A **spine** dimension is refused for the same reason.
+- Not inside a **window** measure (reference a plain sibling measure that uses
+  `RELATED()` instead), a **`from:` block** (whose `{model}` already carries
+  the joined columns), or the `expr:` of a `from:` measure.
+- On a model with several fact tables it resolves against the part that owns
+  the measure.
+
+`RELATED()` measures decompose for instant mode like any other aggregate.
+
 The full grammar — what's allowed inside an `expr:`, the function allowlist,
 window measures, `param()` visual parameters — is documented in
 [Query Engine → The SQL grammar](query-engine.md#the-sql-grammar),

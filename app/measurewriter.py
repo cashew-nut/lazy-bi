@@ -493,6 +493,14 @@ CASE WHEN, CAST, COALESCE, NULLIF, IN, BETWEEN, LIKE/ILIKE, IS NULL, DISTINCT \
 aggregates and aggregate FILTER (WHERE ...). A ratio of two aggregates \
 (SUM(a) / SUM(b)) is a plain measure — the division happens after both sides \
 are reduced, which is exactly right.
+   RELATED(x) reads one value off the fact row's related lookup row, for a \
+predicate on a lookup attribute without a from: block:
+     SUM(CASE WHEN RELATED(territory_name) = 'EMEA' THEN amount END)
+     COUNT(*) FILTER (WHERE RELATED(products.tier) = 'premium')
+   RELATED(dimension) takes any listed dimension — use it for one that comes \
+from an imported bundle, which a bare name would not reach. \
+RELATED(table.column) takes a joined or imported table's own column. Never \
+inside a window expression or a from: block.
 
 2. WINDOW — reads other measures' ALREADY-AGGREGATED values, after the group-by.
      SUM(revenue) OVER w                                      -- running total
@@ -629,8 +637,8 @@ date and only then summed:
 GROUNDING — everything you may name is in the prompt below.
 - expr (when there is no from: block) may name SOURCE COLUMNS only, from the \
 list below; joined lookup columns are already in it. A dimension's `name` is not \
-a column — use the column it maps to. In a window expression, bare names are \
-sibling measure names instead.
+a column — use the column it maps to, or RELATED(dimension_name). In a window \
+expression, bare names are sibling measure names instead.
 - Inside from:, name source columns and declared dimensions; the block's own \
 output columns are what expr then aggregates.
 - Never invent a column, a dimension, a table or a function. If what you need \
