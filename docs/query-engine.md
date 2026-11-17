@@ -207,8 +207,16 @@ to blocklist a new one when DuckDB adds it.
 **What's legal inside an `expr:`**: column references, literals, the usual
 operators, `IN`, `AND`/`OR`/`NOT`, `IS [NOT] NULL`, `BETWEEN`,
 `LIKE`/`ILIKE`, `CASE WHEN`, `CAST`, `COALESCE`, aggregate
-`FILTER (WHERE …)`, `DISTINCT` aggregates, and any allowed scalar/aggregate/
-macro call. `_require_aggregate()` rejects an expression with no aggregate
+`FILTER (WHERE …)`, `DISTINCT` aggregates, any allowed scalar/aggregate/
+macro call, and `RELATED(table.column)` / `RELATED(dimension)` — see
+[Semantic Layer → RELATED()](semantic-layer.md#related-reading-a-lookup-value-in-a-measure).
+`RELATED` is the one name besides `param` this module knows that DuckDB
+doesn't: the walk checks its shape (one column reference, one or two parts)
+and, given a resolver (`engine.related_resolver`), replaces the call node with
+a plain column reference before emitting. Without a resolver — model load, the
+form's per-keystroke check — it is shape-checked and emitted as written, for a
+later compile against the model to resolve. It is refused in a window measure
+and inside a `from:` block. `_require_aggregate()` rejects an expression with no aggregate
 at all (a bare column reduces nothing). A **window** measure
 (`is_window_expr`) is legal too — `_WINDOW_ONLY` names (`lag`, `rank`,
 `row_number`, …) are refused *without* an `OVER` clause, with a message

@@ -288,7 +288,8 @@ def source_schema(source: Source) -> dict:
         raise QueryError(f"cannot read {source.format} source '{source.path}': {exc}") from exc
 
 
-def _scan_bundle(binding: ImportBinding) -> tuple[str, list[str]]:
+def _scan_bundle(binding: ImportBinding,
+                 related: tuple = ()) -> tuple[str, list[str]]:
     """One imported dimension bundle as a projected subquery, plus the column
     names it exposes.
 
@@ -303,7 +304,11 @@ def _scan_bundle(binding: ImportBinding) -> tuple[str, list[str]]:
     The projection is the part that matters downstream: every included
     dimension arrives under its *dimension* name rather than the bundle's own
     column name, so a model whose source has a `month` of its own can import a
-    calendar that also has one."""
+    calendar that also has one.
+
+    `related` adds RELATED(dataset.column) reads to that projection, each under
+    its RelatedRef.target — a bundle column no dimension declares can still be
+    read that way, without a name it could collide on."""
     bundle = binding.bundle
     included = set(binding.included_datasets)
     edge_by_pair = {(ds.name, j.to): j
@@ -361,6 +366,8 @@ def _scan_bundle(binding: ImportBinding) -> tuple[str, list[str]]:
                 keep(name, dim.geo.lon, dim.geo.lon)
     for key in binding.import_spec.right_on:
         keep(anchor, key, key)
+    for ref in related:
+        keep(ref.table, ref.column, ref.target)
     return f"(SELECT {', '.join(projected)} FROM {sql})", columns
 
 
@@ -474,7 +481,8 @@ def _source_columns(source: Source) -> list[str]:
     return list(source_schema(source))
 
 
-def scan(model: Model, dimensions: Optional[dict] = None) -> str:
+def scan(model: Model, dimensions: Optional[dict] = None,
+         related: frozenset = frozenset()) -> str:
     """The model's base source plus its joins and imported dimension bundles,
     as one projected subquery — usable as `FROM <this> AS alias`.
 
@@ -490,6 +498,11 @@ def scan(model: Model, dimensions: Optional[dict] = None) -> str:
 
     None means "unknown — apply everything at day grain", the right answer for
     schema introspection.
+
+    `related` is the RELATED(table.column) reads the query's measures make
+    (semantic.RelatedRef, kind "join" or "import" — see _related_columns): each
+    is carried as one extra column named by its target, and an import one of
+    them reads from is joined whether or not any of its dimensions is in play.
     """
     if model.is_composite:
         raise QueryError(
@@ -500,6 +513,7 @@ def scan(model: Model, dimensions: Optional[dict] = None) -> str:
     from_sql = f"{scan_source(model.source)} AS {_q(FACT_ALIAS)}"
     parts: list[tuple[str, list[str]]] = [(FACT_ALIAS, _source_columns(model.source))]
 
+    related_select: list[str] = []
     for index, join in enumerate(model.joins):
         alias = f"__j{index}"
         on = " AND ".join(
@@ -508,11 +522,17 @@ def scan(model: Model, dimensions: Optional[dict] = None) -> str:
         how = "INNER" if join.how == "inner" else "LEFT"
         from_sql += f" {how} JOIN {scan_source(join.source)} AS {_q(alias)} ON {on}"
         parts.append((alias, _source_columns(join.source)))
+        related_select.extend(
+            f"{_q(alias)}.{_q(ref.column)} AS {_q(ref.target)}"
+            for ref in sorted(related, key=lambda r: r.target)
+            if ref.kind == "join" and ref.index == index)
 
     for index, binding in enumerate(model.import_bindings):
         alias = f"__i{index}"
         spec = binding.import_spec
-        bundle_sql, bundle_columns = _scan_bundle(binding)
+        reads = tuple(sorted((r for r in related if r.kind == "import" and r.index == index),
+                             key=lambda r: r.target))
+        bundle_sql, bundle_columns = _scan_bundle(binding, reads)
         if spec.is_interval:
             if dimensions is not None and not set(dimensions) & set(binding.dimension_owners):
                 continue
@@ -529,7 +549,7 @@ def scan(model: Model, dimensions: Optional[dict] = None) -> str:
         # with its neighbours (models/sales.yaml) would slow down every query
         # that has nothing to do with dates. `inner` also *filters* the model's
         # rows, so it has to be applied whether or not its dimensions are read.
-        if (dimensions is not None and spec.how == "left"
+        if (dimensions is not None and spec.how == "left" and not reads
                 and not set(dimensions) & set(binding.dimension_owners)):
             continue
         on = " AND ".join(
@@ -540,7 +560,7 @@ def scan(model: Model, dimensions: Optional[dict] = None) -> str:
         parts.append((alias, bundle_columns))
 
     select, _ = _projection(parts)
-    return f"(SELECT {', '.join(select)} FROM {from_sql})"
+    return f"(SELECT {', '.join([*select, *related_select])} FROM {from_sql})"
 
 
 def _interval_join(bundle_sql: str, bundle_columns: list[str], binding: ImportBinding,
@@ -620,15 +640,124 @@ def _model_cache_key(model: Model) -> tuple:
     return (model.name, token)
 
 
-def scan_schema(model: Model, dimensions: Optional[dict] = None) -> dict:
+def scan_schema(model: Model, dimensions: Optional[dict] = None,
+                related: frozenset = frozenset()) -> dict:
     """Cached column schema for scan(model, dimensions) — same "which joins are
     in play" rules as scan() (see its docstring), just memoized so the
     model/measure editors and every query's own schema lookup don't each
     re-resolve the whole join plan's schema from S3."""
     key = ("scan_schema", _model_cache_key(model),
-           None if dimensions is None else tuple(sorted(dimensions)))
+           None if dimensions is None else tuple(sorted(dimensions)),
+           tuple(sorted(r.target for r in related)))
     return cache.get_or_set(key, config.SCHEMA_CACHE_TTL,
-                            lambda: _relation_schema(scan(model, dimensions)))
+                            lambda: _relation_schema(scan(model, dimensions, related)))
+
+
+# ── RELATED(): reading a value off a related lookup row ──────────────────
+
+def _check_related_column(model: Model, ref: semantic.RelatedRef) -> None:
+    """A RELATED(table.column) whose column the related source doesn't have
+    is refused here, by name, rather than as DuckDB's binder error about a
+    `__related__…` column the author never wrote. Footer-only and cached."""
+    if ref.kind == "join":
+        source = model.joins[ref.index].source
+    elif ref.kind == "import":
+        source = model.import_bindings[ref.index].bundle.datasets[ref.table].source
+    else:
+        return
+    columns = source_schema(source)
+    if ref.column not in columns:
+        known = ", ".join(sorted(columns)) or "none"
+        raise sqlgrammar.SqlCompileError(
+            f"RELATED({ref.table}.{ref.column}): '{ref.table}' has no column "
+            f"'{ref.column}' (its columns: {known})", kind="unknown_column")
+
+
+def related_resolver(model: Model) -> sqlgrammar.RelatedResolver:
+    """The callback sqlgrammar.compile_expression rewrites RELATED(...) with,
+    for one fact table: resolve the reference against the model, check the
+    column really exists, answer the scan column it compiles to. Every path
+    that compiles a measure against a model — a query, a save — uses this one,
+    so what saves is what runs."""
+    def resolve(qualifier: Optional[str], column: str) -> str:
+        try:
+            ref = semantic.resolve_related(model, qualifier, column)
+            _check_related_column(model, ref)
+        except semantic.ModelError as exc:
+            raise sqlgrammar.SqlCompileError(str(exc), kind="unknown_column") from exc
+        except QueryError as exc:
+            raise sqlgrammar.SqlCompileError(str(exc)) from exc
+        return ref.target
+    return resolve
+
+
+def _refuse_related(qualifier: Optional[str], column: str) -> str:
+    raise sqlgrammar.SqlCompileError(
+        "RELATED() can't be used in the expr of a measure with a from: block — that "
+        "expr aggregates the block's own output; read the related value inside the "
+        "block instead (its {model} carries the fact table's joined columns)")
+
+
+def _plain_measure_texts(model: Model, query: dict) -> list[tuple[str, str]]:
+    """(name, expr) for every measure this query aggregates over the fact
+    rows: the requested ones without a from: block, plus a requested window
+    measure's sibling dependencies — the same set _split_measures compiles
+    with the scan, and so the set whose RELATED() reads the scan must carry."""
+    inline = {m["name"]: m for m in (query.get("inline_measures") or [])
+              if isinstance(m, dict) and m.get("name")}
+
+    def text_of(name: str) -> tuple[Optional[str], Optional[str]]:
+        spec = inline.get(name)
+        if spec is not None:
+            return spec.get("expr"), spec.get("from")
+        meas = model.measures.get(name)
+        return (meas.expr_source, meas.from_source) if meas else (None, None)
+
+    out: list[tuple[str, str]] = []
+    seen: set = set()
+
+    def add(name: str, top: bool) -> None:
+        if name in seen:
+            return
+        seen.add(name)
+        text, from_source = text_of(name)
+        if not isinstance(text, str) or from_source:
+            return
+        if "over" in text.lower() and sqlgrammar.is_window_expr(text):
+            if top:
+                for dep in sqlgrammar.referenced_names(text):
+                    if dep in inline or dep in model.measures:
+                        add(dep, False)
+            return
+        out.append((name, text))
+
+    for name in query.get("measures") or []:
+        add(name, True)
+    return out
+
+
+def _related_columns(model: Model, query: dict, dims_in_play: dict) -> frozenset:
+    """What the query's RELATED() reads need from the scan.
+
+    A RELATED(dimension) read puts that dimension in play (mutating
+    `dims_in_play`), which is all it takes for scan() to bring its import in —
+    the same rule that brings one in for a filter. A RELATED(table.column) read
+    comes back as a RelatedRef for scan() to project. Each reference is checked
+    here, before the scan is built, so a bad one is reported as the measure's
+    error rather than as a binder error over a column the author never wrote."""
+    refs: set = set()
+    for name, text in _plain_measure_texts(model, query):
+        for qualifier, column in sqlgrammar.referenced_related(text):
+            try:
+                ref = semantic.resolve_related(model, qualifier, column)
+                _check_related_column(model, ref)
+            except (semantic.ModelError, sqlgrammar.SqlCompileError) as exc:
+                raise QueryError(f"measure '{name}': {exc}") from exc
+            if ref.kind == "dimension":
+                dims_in_play.setdefault(ref.column, None)
+            else:
+                refs.add(ref)
+    return frozenset(refs)
 
 
 def _interval_binding_for(model: Model, dimension: str) -> Optional[ImportBinding]:
@@ -861,8 +990,9 @@ def _build_single(model: Model, query: dict, row_cap: Optional[int] = None) -> t
     resolved_params = resolve_parameter_values(
         query.get("parameters") or [], query.get("parameter_values") or {})
     dims_in_play = _referenced_dimensions(model, query)
-    relation = scan(model, dims_in_play)
-    schema = scan_schema(model, dims_in_play)
+    related = _related_columns(model, query, dims_in_play)
+    relation = scan(model, dims_in_play, related)
+    schema = scan_schema(model, dims_in_play, related)
     build = _Build()
 
     # ── dimensions, and the one spine among them ──
@@ -1165,11 +1295,14 @@ def _split_measures(model: Model, query: dict, schema: dict, resolved_params: di
     if not measure_names:
         raise QueryError("query needs at least one measure")
 
+    resolver = related_resolver(model)
+
     def add_plain(name: str, text: str) -> None:
         if name in plain_names:
             return
         plain_names.add(name)
-        plain.append((name, _compile(name, text, measure_schema, resolved_params)))
+        plain.append((name, _compile(name, text, measure_schema, resolved_params,
+                                     related=resolver)))
 
     def resolve(name: str, *, is_dependency: bool) -> None:
         spec = inline.get(name)
@@ -1211,11 +1344,12 @@ def _split_measures(model: Model, query: dict, schema: dict, resolved_params: di
 
 
 def _compile(name: str, text: str, schema: Optional[dict], resolved_params: dict,
-             *, window_spec: str = "") -> str:
+             *, window_spec: str = "",
+             related: Optional[sqlgrammar.RelatedResolver] = None) -> str:
     try:
         return sqlgrammar.compile_expression(
             text, schema, window=bool(window_spec), window_spec=window_spec,
-            parameter_values=resolved_params)
+            parameter_values=resolved_params, related=related)
     except sqlgrammar.SqlCompileError as exc:
         raise QueryError(f"measure '{name}': {exc}") from exc
 
@@ -1339,7 +1473,7 @@ def _framed_ctes(build: _Build, model: Model, model_cte: str, result: Optional[s
                 select.append(f"{trunc} AS {_q(d)}")
             else:
                 select.append(_q(d))
-        select.append(f"{_compile(name, expr_text, derived_schema, resolved_params)} AS {_q(name)}")
+        select.append(f"{_compile(name, expr_text, derived_schema, resolved_params, related=_refuse_related)} AS {_q(name)}")
         part = build.cte(f"__m{index}", f"SELECT {', '.join(select)} FROM ({rendered}) GROUP BY ALL")
         if result is None:
             result = part

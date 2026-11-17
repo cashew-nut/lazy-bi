@@ -28,7 +28,7 @@ from __future__ import annotations
 import json
 import re
 import threading
-from typing import Any, Literal, Optional
+from typing import Any, Callable, Literal, Optional
 
 import duckdb
 
@@ -147,6 +147,18 @@ _DENY_NAMES = {
 # `param` is the one name this module knows that DuckDB does not: a visual
 # parameter reference, resolved to a literal before anything is emitted.
 PARAM_FUNCTION = "param"
+# `related` is the other: a lookup across one of the fact table's many-to-one
+# relations, `RELATED(products.tier)` or `RELATED(territory_name)`. It is not a
+# function at all once compiled — the walk swaps the call for a plain column
+# reference the engine has arranged for its scan to carry (see
+# semantic.resolve_related and engine._related_columns). This module only
+# knows its *shape*; what a name may resolve to is the model's business, handed
+# in as a callback.
+RELATED_FUNCTION = "related"
+# resolver(qualifier, column) -> the column name RELATED(...) reads in the
+# relation being compiled, or SqlCompileError. qualifier is None for the
+# one-part form, RELATED(dimension_name).
+RelatedResolver = Callable[[Optional[str], str], str]
 
 _catalog_lock = threading.Lock()
 _allowed_functions: Optional[set[str]] = None
@@ -266,8 +278,15 @@ def _emit(node: dict) -> str:
 
 class _Walker:
     def __init__(self, *, classes: set[str], schema: Optional[dict],
-                 window: bool, allow_tables: Optional[set[str]] = None):
+                 window: bool, allow_tables: Optional[set[str]] = None,
+                 related: Optional[RelatedResolver] = None):
         self.classes = classes
+        # None: check RELATED(...) for shape and leave the call in place — what
+        # a structural check with no model in scope (model load, the form's
+        # per-keystroke check) can do. A resolver: rewrite it into the column
+        # it names, which is what a query (and a save against a model) does.
+        self.related = related
+        self.related_refs: set[tuple[Optional[str], str]] = set()
         self.schema = schema
         # window mode: bare identifiers are sibling *measure* names over an
         # already-aggregated relation, not raw source columns, so `schema` (when
@@ -298,6 +317,11 @@ class _Walker:
                 kind="limit_exceeded")
 
         cls = node.get("class")
+        if cls == "FUNCTION" and (node.get("function_name") or "").lower() == RELATED_FUNCTION:
+            # handled whole: its argument names a column of *another* table,
+            # which the ordinary column check below would wrongly refuse
+            self._related(node)
+            return
         if cls:
             self._check_class(cls, node)
         # a table reference is not an expression class; it carries `type` instead
@@ -362,6 +386,44 @@ class _Walker:
             raise SqlCompileError(f"unknown or disallowed function '{name}'",
                                   kind="unknown_function")
         self.functions.add(name)
+
+    def _related(self, node: dict) -> None:
+        if node.get("schema") or node.get("catalog"):
+            raise SqlCompileError("RELATED() cannot be schema-qualified")
+        if self.allow_tables is not None:
+            raise SqlCompileError(
+                "RELATED() is for a measure's expr — inside a from: block, {model} already "
+                "carries the fact table's joined columns, so name the column directly")
+        if self.window:
+            raise SqlCompileError(
+                "RELATED() reads a value off each fact row, and a window measure reads "
+                "already-aggregated measures — put the RELATED() in a plain measure and "
+                "reference that measure here")
+        args = node.get("children") or []
+        shaped = (len(args) == 1 and isinstance(args[0], dict)
+                  and args[0].get("class") == "COLUMN_REF"
+                  and 1 <= len(args[0].get("column_names") or []) <= 2
+                  and not node.get("distinct") and not node.get("filter")
+                  and not (node.get("order_bys") or {}).get("orders"))
+        if not shaped:
+            raise SqlCompileError(
+                "RELATED() takes one column of a related table — RELATED(table.column), "
+                "e.g. RELATED(products.tier), or a dimension the model reads from one, "
+                "e.g. RELATED(territory_name)")
+        parts = args[0]["column_names"]
+        qualifier, column = (None, parts[0]) if len(parts) == 1 else (parts[0], parts[1])
+        self.related_refs.add((qualifier, column))
+        self.nodes += 1
+        if self.related is None:
+            return
+        target = self.related(qualifier, column)
+        self.columns.add(target)
+        # transplant: the call node becomes the column reference it resolved
+        # to, so what is emitted is an ordinary column of the scan
+        reference = args[0]
+        node.clear()
+        node.update(reference)
+        node["column_names"] = [target]
 
     def _check_table(self, node_type: str, node: dict) -> None:
         if self.allow_tables is None:
@@ -510,6 +572,7 @@ def compile_expression(
     window_spec: str = "",
     parameter_values: Optional[dict] = None,
     require_aggregate: bool = True,
+    related: Optional[RelatedResolver] = None,
 ) -> str:
     """Validate one measure expression and return the SQL to embed.
 
@@ -523,6 +586,10 @@ def compile_expression(
     (the aggregated one in window mode). None skips the existence check, which
     is what model load does — parsing config should not fetch a schema from
     S3 — while every path that has a live schema uses it.
+
+    `related` resolves each `RELATED(...)` to the column of the scan it reads
+    (see RELATED_FUNCTION); without one the call is checked for shape only and
+    emitted as written, for a later compile against a model to resolve.
     """
     if not isinstance(text, str) or not text.strip():
         raise SqlCompileError("measure expression is empty")
@@ -543,7 +610,8 @@ def compile_expression(
         raise SqlCompileError("a measure expression cannot have its own grouping or ordering")
 
     expression = select_list[0]
-    walker = _Walker(classes=_EXPRESSION_CLASSES, schema=schema, window=window)
+    walker = _Walker(classes=_EXPRESSION_CLASSES, schema=schema, window=window,
+                     related=related)
     walker.walk(expression)
     if parameter_values is None and PARAM_FUNCTION in walker.functions:
         raise SqlCompileError(
@@ -659,6 +727,9 @@ def referenced_names(text: str) -> set:
             return
         if not isinstance(value, dict):
             return
+        if (value.get("class") == "FUNCTION"
+                and (value.get("function_name") or "").lower() == RELATED_FUNCTION):
+            return      # names a column of another table — see referenced_related
         if value.get("class") == "COLUMN_REF":
             parts = value.get("column_names") or []
             if parts:
@@ -674,6 +745,43 @@ def referenced_columns(text: str) -> set:
     """Alias of referenced_names, for callers reading raw source columns —
     same answer, different intent at the call site."""
     return referenced_names(text)
+
+
+def referenced_related(text: str) -> set:
+    """Every `RELATED(...)` lookup an expression makes, as (qualifier, column)
+    pairs — qualifier None for the one-part RELATED(dimension) form. What the
+    engine reads to decide which related columns a query's scan must carry
+    before anything is compiled against it. A parse failure answers "none":
+    compile_expression is where its error belongs."""
+    if not isinstance(text, str) or RELATED_FUNCTION not in text.lower():
+        return set()
+    try:
+        parsed = _parse(f"SELECT {text} {_CTX} WINDOW w AS ()")
+    except SqlCompileError:
+        return set()
+    found: set = set()
+
+    def visit(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                visit(item)
+            return
+        if not isinstance(value, dict):
+            return
+        if (value.get("class") == "FUNCTION"
+                and (value.get("function_name") or "").lower() == RELATED_FUNCTION):
+            args = value.get("children") or []
+            parts = (args[0].get("column_names") or []) if len(args) == 1 and isinstance(args[0], dict) else []
+            if len(parts) == 1:
+                found.add((None, parts[0]))
+            elif len(parts) == 2:
+                found.add((parts[0], parts[1]))
+            return
+        for item in value.values():
+            visit(item)
+
+    visit(parsed["statements"][0]["node"]["select_list"])
+    return found
 
 
 def relation_column_names(text: str) -> set:
